@@ -1,0 +1,5 @@
+{
+    "BackendUrl": "http://192.168.90.39:8000",
+    "TenantApiKey": "default-tenant-key",
+    "AgentId": "PYTHON-AGENT-01"
+}

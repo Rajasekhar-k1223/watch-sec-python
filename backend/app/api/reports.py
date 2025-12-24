@@ -1,0 +1,101 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+import json
+
+from ..db.session import get_db
+from ..db.models import Agent, AgentReportEntity, Tenant
+from ..socket_instance import sio # Import Socket.IO server instance
+
+router = APIRouter()
+
+# --- History Endpoint ---
+@router.get("/history/{agent_id}")
+async def get_agent_history(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    # current_user: User = Depends(get_current_user) # Optionally secure this
+):
+    query = select(AgentReportEntity).where(AgentReportEntity.AgentId == agent_id).order_by(AgentReportEntity.Timestamp.desc()).limit(100)
+    result = await db.execute(query)
+    history = result.scalars().all()
+    return history
+
+
+# DTO (Pydantic Model)
+class AgentReportDto(BaseModel):
+    AgentId: str
+    Status: str
+    CpuUsage: float
+    MemoryUsage: float
+    Timestamp: datetime
+    TenantApiKey: str
+    InstalledSoftwareJson: Optional[str] = None
+    LocalIp: Optional[str] = None
+    Gateway: Optional[str] = None
+
+@router.post("/report")
+async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)):
+    print(f"[API] Received Report from {dto.AgentId}")
+
+    # 1. Authenticate Tenant
+    result = await db.execute(select(Tenant).where(Tenant.ApiKey == dto.TenantApiKey))
+    tenant = result.scalars().first()
+
+    if not tenant:
+        print(f"[API] Unauthorized Tenant Key: {dto.TenantApiKey}")
+        raise HTTPException(status_code=401, detail="Unauthorized Tenant")
+
+    # 2. Insert Report History
+    new_report = AgentReportEntity(
+        AgentId=dto.AgentId,
+        TenantId=tenant.Id,
+        Status=dto.Status,
+        CpuUsage=dto.CpuUsage,
+        MemoryUsage=dto.MemoryUsage,
+        Timestamp=dto.Timestamp
+    )
+    db.add(new_report)
+
+    # 3. Sync Agent Config (Persistent Entity)
+    result = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
+    agent = result.scalars().first()
+
+    if not agent:
+        # New Agent
+        agent = Agent(
+            AgentId=dto.AgentId,
+            TenantId=tenant.Id,
+            ScreenshotsEnabled=True,
+            LastSeen=datetime.utcnow(),
+            LocalIp=dto.LocalIp or "0.0.0.0",
+            Gateway=dto.Gateway or "Unknown",
+            InstalledSoftwareJson=dto.InstalledSoftwareJson or "[]"
+        )
+        db.add(agent)
+    else:
+        # Update Existing
+        agent.LastSeen = datetime.utcnow()
+        agent.TenantId = tenant.Id
+        if dto.InstalledSoftwareJson:
+            agent.InstalledSoftwareJson = dto.InstalledSoftwareJson
+        if dto.LocalIp:
+            agent.LocalIp = dto.LocalIp
+        if dto.Gateway:
+            agent.Gateway = dto.Gateway
+    
+    await db.commit()
+
+    # 4. Broadcast via Socket.IO
+    details = f"Status: {dto.Status} | CPU: {dto.CpuUsage:.1f}% | MEM: {dto.MemoryUsage:.1f}MB"
+    await sio.emit('ReceiveEvent', {
+        'agentId': dto.AgentId,
+        'title': 'System Heartbeat',
+        'details': details,
+        'timestamp': dto.Timestamp.isoformat()
+    })
+
+    return {"TenantId": tenant.Id, "ScreenshotsEnabled": agent.ScreenshotsEnabled}

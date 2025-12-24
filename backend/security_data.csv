@@ -1,0 +1,7 @@
+text,category
+Failed password for root from 192.168.1.1,Authentication Failure
+sudo: user attempts to execute malicious script,Privilege Escalation
+USB Drive detected: E:\ (Volume Serial X),DLP Event
+System shutdown initiated by user,System Event
+Network scan detected from external IP,Network Intrusion
+File deleted: C:\Windows\System32\drivers\etc\hosts,File Integrity

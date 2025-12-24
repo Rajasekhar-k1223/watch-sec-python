@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: watch-sec-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql+aiomysql://root:rootpassword@db_sql:3306/watchsec
+      - MONGO_URL=mongodb://mongo:27017
+      - HOST=0.0.0.0
+    depends_on:
+      - db_sql
+      - mongo
+    volumes:
+      - ./backend/storage:/app/storage
+
+  db_sql:
+    image: mysql:8.0
+    container_name: watch-sec-sql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: watchsec
+    ports:
+      - "3307:3306" # Mapped to 3307 to avoid conflict with local MySQL
+    volumes:
+      - sql_data:/var/lib/mysql
+
+  mongo:
+    image: mongo:6.0
+    container_name: watch-sec-mongo
+    ports:
+      - "27018:27017" # Mapped to 27018 to avoid conflict with local Mongo
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  sql_data:
+  mongo_data:
