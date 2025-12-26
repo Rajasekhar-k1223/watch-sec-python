@@ -57,3 +57,8 @@ class ScreenshotDto(BaseModel):
     Timestamp: datetime
     IsAlert: bool
     Url: str
+
+class AgentSettingsUpdate(BaseModel):
+    ScreenshotQuality: Optional[int] = 80
+    ScreenshotResolution: Optional[str] = "Original"
+    MaxScreenshotSize: Optional[int] = 0

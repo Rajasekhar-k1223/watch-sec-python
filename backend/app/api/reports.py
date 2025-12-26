@@ -33,6 +33,7 @@ class AgentReportDto(BaseModel):
     MemoryUsage: float
     Timestamp: datetime
     TenantApiKey: str
+    Hostname: Optional[str] = None
     InstalledSoftwareJson: Optional[str] = None
     LocalIp: Optional[str] = None
     Gateway: Optional[str] = None
@@ -69,8 +70,9 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         agent = Agent(
             AgentId=dto.AgentId,
             TenantId=tenant.Id,
-            ScreenshotsEnabled=True,
+            ScreenshotsEnabled=False,
             LastSeen=datetime.utcnow(),
+            Hostname=dto.Hostname or "Unknown",
             LocalIp=dto.LocalIp or "0.0.0.0",
             Gateway=dto.Gateway or "Unknown",
             InstalledSoftwareJson=dto.InstalledSoftwareJson or "[]"
@@ -80,6 +82,8 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         # Update Existing
         agent.LastSeen = datetime.utcnow()
         agent.TenantId = tenant.Id
+        if dto.Hostname:
+            agent.Hostname = dto.Hostname
         if dto.InstalledSoftwareJson:
             agent.InstalledSoftwareJson = dto.InstalledSoftwareJson
         if dto.LocalIp:
@@ -98,4 +102,10 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         'timestamp': dto.Timestamp.isoformat()
     })
 
-    return {"TenantId": tenant.Id, "ScreenshotsEnabled": agent.ScreenshotsEnabled}
+    return {
+        "TenantId": tenant.Id, 
+        "ScreenshotsEnabled": agent.ScreenshotsEnabled,
+        "ScreenshotQuality": agent.ScreenshotQuality or 80,
+        "ScreenshotResolution": agent.ScreenshotResolution or "Original",
+        "MaxScreenshotSize": agent.MaxScreenshotSize or 0
+    }

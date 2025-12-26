@@ -1,5 +1,5 @@
 {
-    "BackendUrl": "https://malpractice-storm-therapy-exceptional.trycloudflare.com",
-    "TenantApiKey": "default-tenant-key",
-    "AgentId": "PYTHON-AGENT-01"
+    "BackendUrl": "http://localhost:8000",
+    "TenantApiKey": "e7cdae55-2e7e-467a-bdc5-3cbf5d321368",
+    "AgentId": "EILT0094-32D62E1B"
 }

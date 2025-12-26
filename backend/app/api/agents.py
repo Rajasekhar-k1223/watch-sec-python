@@ -7,6 +7,7 @@ from typing import Optional, List
 from ..db.session import get_db
 from ..db.models import Agent, User
 from .deps import get_current_user
+from ..socket_instance import sio
 
 router = APIRouter()
 
@@ -75,3 +76,63 @@ async def toggle_screenshots(
     await db.commit()
     
     return {"AgentId": agent.AgentId, "ScreenshotsEnabled": agent.ScreenshotsEnabled}
+
+@router.post("/{agent_string_id}/take-screenshot")
+async def take_screenshot(
+    agent_string_id: str,
+    current_user: User = Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    try:
+        # Local import to avoid circular dependencies
+        # from ..socket_instance import sio
+
+        # Find Agent
+        result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
+        agent = result.scalars().first()
+        
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Check Tenant Scoping
+        if current_user.Role != "SuperAdmin":
+            if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+                 raise HTTPException(status_code=403, detail="Not authorized")
+
+        # Emit Command to Agent Room
+        print(f"[API] Triggering Manual Screenshot for {agent.AgentId}")
+        await sio.emit('TakeScreenshot', {'AgentId': agent.AgentId}, room=agent.AgentId)
+
+        return {"status": "triggered", "agentId": agent.AgentId}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Return 500 but try to ensure CORS doesn't block reading it in dev
+        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
+
+from ..schemas import AgentSettingsUpdate
+
+@router.post("/{agent_string_id}/settings")
+async def update_settings(
+    agent_string_id: str,
+    settings: AgentSettingsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+             raise HTTPException(status_code=403, detail="Not authorized")
+
+    agent.ScreenshotQuality = settings.ScreenshotQuality
+    agent.ScreenshotResolution = settings.ScreenshotResolution
+    agent.MaxScreenshotSize = settings.MaxScreenshotSize
+    
+    await db.commit()
+    
+    return {"status": "Updated", "settings": settings}

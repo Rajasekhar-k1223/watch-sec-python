@@ -13,7 +13,12 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # SQLAlchemy Engine (Async)
-engine = create_async_engine(settings.DATABASE_URL, echo=True)
+engine = create_async_engine(
+    settings.DATABASE_URL, 
+    echo=False, # Optimized for Performance & Log Clarity
+    pool_size=20,
+    max_overflow=10
+)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 Base = declarative_base()

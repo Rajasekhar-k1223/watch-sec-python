@@ -30,14 +30,20 @@ class Agent(Base):
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(255), unique=True, index=True)
     TenantId = Column(Integer, nullable=False)
-    ScreenshotsEnabled = Column(Boolean, default=True)
+    ScreenshotsEnabled = Column(Boolean, default=False)
     LastSeen = Column(DateTime, default=datetime.utcnow)
+    Hostname = Column(String(255), default="Unknown")
     Latitude = Column(Float, default=0.0)
     Longitude = Column(Float, default=0.0)
     Country = Column(Text, nullable=True)
     InstalledSoftwareJson = Column(Text, nullable=True)
     LocalIp = Column(String(50), default="0.0.0.0")
     Gateway = Column(String(50), default="Unknown")
+    
+    # Screenshot Settings
+    ScreenshotQuality = Column(Integer, default=80)
+    ScreenshotResolution = Column(String(50), default="Original")
+    MaxScreenshotSize = Column(Integer, default=0) # KB, 0=Unlimited
 
 class AgentReportEntity(Base):
     __tablename__ = "AgentReports"

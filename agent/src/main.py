@@ -15,10 +15,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Add src to path if running nicely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from modules.live_stream import LiveStreamer
 from modules.fim import FileIntegrityMonitor
 from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
+
+import uuid
 
 # Load Config
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
@@ -31,7 +34,23 @@ except Exception as e:
 
 BACKEND_URL = config.get("BackendUrl", "http://localhost:8000")
 API_KEY = config.get("TenantApiKey", "")
-AGENT_ID = config.get("AgentId", platform.node())
+AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
+
+# Dynamic Agent ID Logic
+if AGENT_ID == "PYTHON-AGENT-01" or not AGENT_ID:
+    hostname = platform.node()
+    unique_suffix = str(uuid.uuid4())[:8].upper()
+    AGENT_ID = f"{hostname}-{unique_suffix}"
+    print(f"[Init] Generated New Agent ID: {AGENT_ID}")
+    
+    # Update Config with new ID to persist it
+    config["AgentId"] = AGENT_ID
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=4)
+        print(f"[Init] Saved new Agent ID to config.json")
+    except Exception as e:
+        print(f"[Init] Failed to save config: {e}")
 
 # Socket.IO Client
 sio = socketio.AsyncClient()
@@ -41,11 +60,26 @@ fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
+live_streamer = LiveStreamer(AGENT_ID, sio) # We will inject loop later or relies on get_event_loop in thread if safe
 
 @sio.event
 async def connect():
-    print("[WS] Connected to Backend")
+    print(f"[STREAM_DEBUG] Agent Connected to Backend. Joining Room: {AGENT_ID}")
+    # Explicitly join room as fail-safe
     await sio.emit('join_room', {'room': AGENT_ID})
+
+@sio.on('start_stream')
+async def on_start_stream(data):
+    print(f"[STREAM_DEBUG] Agent received start_stream Command!")
+    loop = asyncio.get_running_loop()
+    live_streamer.start_streaming(loop)
+
+@sio.on('stop_stream')
+async def on_stop_stream(data):
+    print(f"[STREAM_DEBUG] Agent received stop_stream Command!")
+    live_streamer.stop_streaming()
+
+# ... (keep other handlers)
 
 @sio.on('RefetchPolicy')
 async def on_refetch_policy(data):
@@ -108,6 +142,7 @@ async def system_monitor_loop():
             payload = {
                 "AgentId": AGENT_ID,
                 "Status": "Online",
+                "Hostname": platform.node(),
                 "CpuUsage": cpu,
                 "MemoryUsage": mem.used / (1024 * 1024), # MB
                 "Timestamp": datetime.utcnow().isoformat(),
@@ -122,6 +157,19 @@ async def system_monitor_loop():
                 # verify=False bypasses SSL self-signed errors
                 resp = await asyncio.to_thread(requests.post, f"{BACKEND_URL}/api/report", json=payload, timeout=5, verify=False)
                 if resp.status_code == 200:
+                    data = resp.json()
+                    # Handle Feature Flags
+                    if "ScreenshotsEnabled" in data:
+                        screen_cap.set_enabled(data["ScreenshotsEnabled"])
+                        
+                    # Handle Quality/Res Settings
+                    if "ScreenshotQuality" in data:
+                        screen_cap.set_config(
+                            quality=data.get("ScreenshotQuality"), 
+                            resolution=data.get("ScreenshotResolution"), 
+                            max_size=data.get("MaxScreenshotSize")
+                        )
+                        
                     print(f"[Report] Sent: CPU {cpu}% | MEM {payload['MemoryUsage']:.1f}MB")
                 else:
                     print(f"[Report] Error {resp.status_code}: {resp.text}")
@@ -138,7 +186,7 @@ async def main():
     
     # Connect WebSocket
     try:
-        await sio.connect(BACKEND_URL)
+        await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
     except Exception as e:
         print(f"[WS] Connection Failed (Will retry later): {e}")
 

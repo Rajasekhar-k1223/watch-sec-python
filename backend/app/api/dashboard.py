@@ -3,18 +3,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
 from typing import List, Optional
+from datetime import datetime, timedelta
 
 from ..db.session import get_db
-from ..db.models import AgentReportEntity
+from ..db.models import AgentReportEntity, Agent
 
 router = APIRouter()
 
-from datetime import datetime, timedelta
-from sqlalchemy import func
-
 @router.get("/status")
 async def get_dashboard_status(tenantId: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    # Fetch Real Reports
+    # 1. Fetch Agents for metadata (Hostname + LastSeen)
+    agent_query = select(Agent)
+    if tenantId:
+       agent_query = agent_query.where(Agent.TenantId == tenantId)
+    agent_result = await db.execute(agent_query)
+    # Store full agent object or specific fields
+    agents_map = {a.AgentId: a for a in agent_result.scalars().all()}
+
+    # 2. Fetch Real Reports
     query = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
     if tenantId:
         query = query.where(AgentReportEntity.TenantId == tenantId)
@@ -26,12 +32,35 @@ async def get_dashboard_status(tenantId: Optional[int] = None, db: AsyncSession 
     latest = {}
     for r in all_reports:
         if r.AgentId not in latest:
+            # Use Server-Side 'LastSeen' if available to avoid Agent Clock Drift causing "Offline"
+            last_seen = r.Timestamp
+            hostname = "Unknown"
+            
+            agent_ref = agents_map.get(r.AgentId)
+            if agent_ref:
+                hostname = agent_ref.Hostname
+                # Prefer the server-recorded check-in time
+                if agent_ref.LastSeen:
+                    last_seen = agent_ref.LastSeen
+
+            # Calculate Dynamic Status (Server-Side Source of Truth)
+            # If seen in last 120 seconds (2 mins), it's Online.
+            now_utc = datetime.utcnow()
+            time_diff = (now_utc - last_seen).total_seconds()
+            computed_status = "Online" if time_diff < 120 else "Offline"
+
+            # Ensure timestamp is ISO formatted with 'Z' so frontend knows it's UTC
+            ts_str = last_seen.isoformat()
+            if not ts_str.endswith("Z"):
+                ts_str += "Z"
+
             latest[r.AgentId] = {
                 "agentId": r.AgentId,
-                "status": r.Status,
+                "status": computed_status, # Overwrite reported status with calculated status
                 "cpuUsage": r.CpuUsage,
                 "memoryUsage": r.MemoryUsage,
-                "timestamp": r.Timestamp,
+                "timestamp": ts_str, 
+                "hostname": hostname,
                 "latitude": 0.0, # Default if missing
                 "longitude": 0.0 
             }

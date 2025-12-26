@@ -1,4 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import FileResponse
+from typing import List, Optional
+from jose import JWTError, jwt
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from ..core.security import SECRET_KEY, ALGORITHM
+from ..db.session import get_db
 from fastapi.responses import FileResponse
 from typing import List
 from datetime import datetime
@@ -33,7 +41,7 @@ async def list_screenshots(
             continue
             
         for filename in os.listdir(date_dir_path):
-            if not filename.endswith(".webp"):
+            if not (filename.endswith(".webp") or filename.endswith(".png")):
                 continue
                 
             # Parse Filename: HHmmss_filename.webp
@@ -95,7 +103,8 @@ async def upload_screenshot(
         # Frontend expects: connection.on("ReceiveScreen", (agentId, base64) => ...)
         # We need to send Data URI scheme
         b64_str = base64.b64encode(file_bytes).decode('utf-8')
-        data_uri = f"data:image/png;base64,{b64_str}"
+        mime_type = "image/webp" if filename.endswith(".webp") else "image/png"
+        data_uri = f"data:{mime_type};base64,{b64_str}"
         
         await sio.emit('ReceiveScreen', (agent_id, data_uri))
             
@@ -104,16 +113,55 @@ async def upload_screenshot(
         print(f"Error uploading screenshot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+from jose import JWTError, jwt
+from ..core.security import SECRET_KEY, ALGORITHM
+
+# Custom Dependency to allow Token in Query Params for Images (<img> tags can't set headers)
+async def get_current_user_images(
+    token: str = None, # Start with query param
+    current_user: User = Depends(get_current_user) # Try standard header auth
+):
+    # This logic is tricky because Depends(get_current_user) will RAISE 401 if header missing.
+    # We should make header auth optional, or implement manual logic.
+    pass 
+
+# Retrying implementing logic properly without double dependency conflict.
+async def get_image_access_user(
+    token: Optional[str] = None, # Query Param
+    db: AsyncSession = Depends(get_db)
+):
+    if not token:
+        # If no token param, this endpoint effectively acts publicly or we just fail.
+        # But wait, frontend might use Header OR Param.
+        # Since 'view_screenshot' is used by <img> tags, it almost exclusively relies on Query Param in this architecture.
+        # So we enforce Query Param.
+        raise HTTPException(status_code=401, detail="Not authenticated (Query token missing)")
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+             raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.Username == username))
+    user = result.scalars().first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
 @router.get("/view/{agent_id}/{date}/{filename}")
 async def view_screenshot(
     agent_id: str,
     date: str,
     filename: str,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_image_access_user) # Swapped dependency
 ):
     path = os.path.join(STORAGE_BASE, agent_id, date, filename)
     
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Screenshot not found")
         
-    return FileResponse(path, media_type="image/webp")
+    media_type = "image/webp" if filename.endswith(".webp") else "image/png"
+    return FileResponse(path, media_type=media_type)
