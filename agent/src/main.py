@@ -7,6 +7,10 @@ import platform
 from datetime import datetime, timedelta
 import os
 import sys
+import urllib3
+
+# Suppress insecure request warnings for development
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Add src to path if running nicely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +64,12 @@ async def on_kill_process(data):
     # Ack back to server
     await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': msg, 'Success': success})
 
+@sio.on('TakeScreenshot')
+async def on_take_screenshot(data):
+    print(f"[CMD] Taking Screenshot...")
+    success, msg = await asyncio.to_thread(screen_cap.capture_now)
+    await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': msg, 'Success': success})
+
 @sio.on('Isolate')
 async def on_isolate(data):
     print(f"[CMD] *** ISOLATE COMMAND RECEIVED ***")
@@ -107,10 +117,10 @@ async def system_monitor_loop():
                 "Gateway": "Unknown"
             }
 
-            # Send HTTP Report
             try:
                 # Use async run_in_executor for request to avoid blocking
-                resp = await asyncio.to_thread(requests.post, f"{BACKEND_URL}/api/report", json=payload, timeout=5)
+                # verify=False bypasses SSL self-signed errors
+                resp = await asyncio.to_thread(requests.post, f"{BACKEND_URL}/api/report", json=payload, timeout=5, verify=False)
                 if resp.status_code == 200:
                     print(f"[Report] Sent: CPU {cpu}% | MEM {payload['MemoryUsage']:.1f}MB")
                 else:

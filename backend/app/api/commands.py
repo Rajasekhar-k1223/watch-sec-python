@@ -35,3 +35,13 @@ async def execute_command(
     }) # Broadcast to all for now or use room=agent_id if implemented
 
     return {"Status": "Sent", "Message": f"Command '{req.Command}' sent to {agent_id}"}
+
+@router.post("/screenshot/{agent_id}")
+async def trigger_screenshot(
+    agent_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    # Emit TakeScreenshot event to the specific agent room
+    print(f"[CMD] Requesting Screenshot from {agent_id}")
+    await sio.emit("TakeScreenshot", {}, room=agent_id)
+    return {"Status": "Sent", "Message": "Screenshot request sent"}

@@ -1,6 +1,7 @@
 import psutil
 import os
 import signal
+import platform
 
 class ProcessSecurity:
     def get_running_processes(self):
@@ -61,6 +62,8 @@ class ProcessSecurity:
                         pass
             except Exception as e:
                 print(f"[Sec] Registry Error: {e}")
+        elif platform.system() == 'Darwin':
+             pass # TODO: Implement Mac Software Scan
         else:
             # Linux (Debian/RPM)
             import subprocess

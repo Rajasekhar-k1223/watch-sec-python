@@ -72,9 +72,8 @@ async def download_agent(
             
         # Inject Values
         config_data["TenantApiKey"] = tenant.ApiKey
-        # Hardcoded for now or get from env. Request object unavailable? can use Starlette Request if needed.
-        # Using the Docker Host IP or similar
-        config_data["BackendUrl"] = "http://localhost:8000" 
+        # Inject configured Backend URL or fallback to local IP (not localhost)
+        config_data["BackendUrl"] = os.getenv("APP_BACKEND_URL", "http://192.168.1.9:8000") 
             
         with open(config_path, "w") as f:
             json.dump(config_data, f, indent=2)

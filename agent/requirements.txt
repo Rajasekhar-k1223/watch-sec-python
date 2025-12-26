@@ -6,3 +6,5 @@ watchdog==3.0.0
 mss==9.0.1
 pyinstaller==6.3.0
 
+cx_Freeze
+aiohttp==3.9.1

