@@ -37,6 +37,9 @@ API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
 
 # Dynamic Agent ID Logic
+# Known default IDs that should be replaced
+DEFAULT_IDS = ["PYTHON-AGENT-01", "EILT0094-32D62E1B", ""]
+
 hostname = platform.node()
 # Check if ID is default OR doesn't match this machine (cloned config)
 # We check if the current AGENT_ID starts with the hostname to ensure it belongs to this machine.
