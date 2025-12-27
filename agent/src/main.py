@@ -12,6 +12,18 @@ import urllib3
 # Suppress insecure request warnings for development
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+import aiohttp
+# Monkey Patch for aiohttp 3.9+ compatibility
+if not hasattr(aiohttp, 'ClientWSTimeout'):
+    class MockClientWSTimeout(aiohttp.ClientTimeout):
+        def __init__(self, ws_close=None, ws_receive=None, **kwargs):
+            # Swallow legacy args
+            super().__init__(**kwargs)
+    try:
+        aiohttp.ClientWSTimeout = MockClientWSTimeout
+        print("[Init] Monkey-patched aiohttp.ClientWSTimeout (Advanced)")
+    except: pass
+
 # Add src to path if running nicely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -207,6 +219,7 @@ async def main():
             break
         except Exception as e:
             print(f"[WS] Connection Failed (Retrying in 5s): {e}")
+            await sio.disconnect()
             await asyncio.sleep(5)
 
     # Start Security Modules
