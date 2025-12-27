@@ -37,15 +37,22 @@ API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
 
 # Dynamic Agent ID Logic
-# Known default IDs that should be replaced
-DEFAULT_IDS = ["PYTHON-AGENT-01", "EILT0094-32D62E1B", ""]
-
-if AGENT_ID in DEFAULT_IDS or not AGENT_ID:
-    hostname = platform.node()
-    print(f"[Init] Detected default/missing Agent ID ({AGENT_ID}). Regenerating for {hostname}...")
+hostname = platform.node()
+# Check if ID is default OR doesn't match this machine (cloned config)
+# We check if the current AGENT_ID starts with the hostname to ensure it belongs to this machine.
+if AGENT_ID in DEFAULT_IDS or not AGENT_ID or not AGENT_ID.startswith(hostname):
+    print(f"[Init] ID Mismatch (Stored: '{AGENT_ID}' vs Host: '{hostname}'). Regenerating...")
     unique_suffix = str(uuid.uuid4())[:8].upper()
     AGENT_ID = f"{hostname}-{unique_suffix}"
     print(f"[Init] Generated New Agent ID: {AGENT_ID}")
+    
+    # Update Config
+    config["AgentId"] = AGENT_ID
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"[Init] Error saving config: {e}")
     
     # Update Config with new ID to persist it
     config["AgentId"] = AGENT_ID
