@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=mysql+aiomysql://root:rootpassword@db_sql:3306/watchsec
+      - DATABASE_URL=mysql+aiomysql://root:Admin!123@db_sql:3306/watchsec
       - MONGO_URL=mongodb://mongo:27017
       - HOST=0.0.0.0
     depends_on:
