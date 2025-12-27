@@ -26,14 +26,14 @@ async def connect(sid, environ, auth=None):
     print(f"Socket Connected: {sid}. Auth: {auth}")
     if auth and 'room' in auth:
         room = auth['room']
-        sio.enter_room(sid, room)
+        await sio.enter_room(sid, room)
         print(f"[STREAM_DEBUG] Socket {sid} Auto-JOINED room {room} via Auth")
 
 @sio.on('join_room')
 async def join_room(sid, data):
     room = data.get('room')
     if room:
-        sio.enter_room(sid, room)
+        await sio.enter_room(sid, room)
         print(f"[STREAM_DEBUG] Socket {sid} JOINED room {room}")
         # Verify
         # participants = sio.manager.rooms.get('/', {}).get(room, "Unknown")

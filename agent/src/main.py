@@ -199,10 +199,15 @@ async def main():
     print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
     
     # Connect WebSocket
-    try:
-        await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
-    except Exception as e:
-        print(f"[WS] Connection Failed (Will retry later): {e}")
+    # Connect WebSocket with Retry
+    while True:
+        try:
+            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
+            print("[WS] Connected!")
+            break
+        except Exception as e:
+            print(f"[WS] Connection Failed (Retrying in 5s): {e}")
+            await asyncio.sleep(5)
 
     # Start Security Modules
     fim.start()
