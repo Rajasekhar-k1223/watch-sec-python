@@ -37,8 +37,9 @@ API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
 
 # Dynamic Agent ID Logic
-if AGENT_ID == "PYTHON-AGENT-01" or not AGENT_ID:
-    hostname = platform.node()
+hostname = platform.node()
+if AGENT_ID == "PYTHON-AGENT-01" or not AGENT_ID or not AGENT_ID.startswith(hostname):
+    print(f"[Init] Detected invalid or stale Agent ID ({AGENT_ID}). Regenerating for {hostname}...")
     unique_suffix = str(uuid.uuid4())[:8].upper()
     AGENT_ID = f"{hostname}-{unique_suffix}"
     print(f"[Init] Generated New Agent ID: {AGENT_ID}")
