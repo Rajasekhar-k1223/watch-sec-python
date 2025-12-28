@@ -10,3 +10,7 @@ cx_Freeze
 aiohttp==3.9.3
 
 Pillow==10.2.0
+aiortc
+av
+numpy
+opencv-python-headless

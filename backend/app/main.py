@@ -11,7 +11,7 @@ app = FastAPI(title="WatchSec Backend", version="2.0.0")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://192.168.1.9:5173", "http://192.168.1.9:3000", "http://localhost:5173"], 
+    allow_origins=["http://192.168.1.5:5173", "http://192.168.1.5:3000", "http://localhost:5173"], 
     allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+",
     allow_credentials=True,
     allow_methods=["*"],
@@ -67,12 +67,52 @@ async def StartStream(sid, data):
         
         # Print ALL rooms to see what's available
         print(f"[STREAM_DEBUG] Available Rooms: {list(namespace_rooms.keys())}")
+        print(f"[STREAM_DEBUG] Available Rooms: {list(namespace_rooms.values())}")
+        print(f"[STREAM_DEBUG] Available Rooms: {namespace_rooms}")
         print(f"[STREAM_DEBUG] StartStream for {target_agent_id}. Room Participants: {participants}")
     except Exception as e:
         print(f"[STREAM_DEBUG] Could not inspect room: {e}")
 
-    print(f"[STREAM_DEBUG] Backend received start_stream. Relaying...")
+    print(f"[STREAM_DEBUG] Backend received start_stream for: {target_agent_id}")   
+    
+    # DEBUG: Inspect Room
+    try:
+        # Note: Accessing internal room manager structures may vary by version/manager type
+        # Ideally: sio.manager.rooms[namespace][room_name]
+        namespace = '/'
+        if hasattr(sio.manager, 'rooms'):
+            rooms_map = sio.manager.rooms.get(namespace, {})
+            members = rooms_map.get(target_agent_id, set())
+            print(f"[STREAM_DEBUG] Room '{target_agent_id}' Members: {members}")
+            print(f"[STREAM_DEBUG] All Rooms: {list(rooms_map.keys())}")
+        else:
+            print("[STREAM_DEBUG] Cannot inspect rooms (Manager structure unknown)")
+    except Exception as e:
+        print(f"[STREAM_DEBUG] Room Inspection Failed: {e}")
+
+    print(f"[STREAM_DEBUG] Backend received start_stream for: {target_agent_id}. Relaying to room.")
     await sio.emit('start_stream', data, room=target_agent_id)
+
+# WebRTC Signaling Handlers
+@sio.on('webrtc_offer')
+async def on_webrtc_offer(sid, data):
+    # Agent -> Frontend (or vice versa, usually Agent -> Frontend in this design)
+    target = data.get('target')
+    # print(f"[WebRTC] Relaying Offer to {target}")
+    await sio.emit('webrtc_offer', data, room=target, skip_sid=sid)
+
+@sio.on('webrtc_answer')
+async def on_webrtc_answer(sid, data):
+    # Frontend -> Agent
+    target = data.get('target')
+    # print(f"[WebRTC] Relaying Answer to {target}")
+    await sio.emit('webrtc_answer', data, room=target, skip_sid=sid)
+
+@sio.on('ice_candidate')
+async def on_ice_candidate(sid, data):
+    target = data.get('target')
+    # print(f"[WebRTC] Relaying ICE Candidate to {target}")
+    await sio.emit('ice_candidate', data, room=target, skip_sid=sid)
 
 @sio.on('stop_stream')
 async def StopStream(sid, data):
@@ -89,13 +129,14 @@ async def StreamFrame(sid, data):
     
     # Debug Frame Receipt
     img_len = len(data.get('image', ''))
-    # Throttle logs slightly or just print short info
-    print(f"[STREAM_DEBUG] Frame received from {agent_id}, Size: {img_len}")
-
+    
     # Check Room (Diagnosis)
-    # participants = sio.manager.rooms.get('/', {}).get(agent_id, set())
-    # if not participants:
-    #     print(f"[STREAM_DEBUG] WARNING: No listeners in room {agent_id}! Frame dropped.")
+    try:
+        namespace_rooms = sio.manager.rooms.get('/', {})
+        participants = namespace_rooms.get(agent_id, set())
+        print(f"[STREAM_DEBUG] Frame Rx from {agent_id} ({img_len} bytes). Broadcasting to room '{agent_id}' (Members: {len(participants)})")
+    except Exception as e:
+         print(f"[STREAM_DEBUG] Frame Rx from {agent_id} ({img_len} bytes). Broadcasting... (Room Check Fail: {e})")
 
     # Broadcast to room so frontend receives it
     await sio.emit('receive_stream_frame', data, room=agent_id)

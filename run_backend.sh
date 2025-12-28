@@ -21,11 +21,11 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 
-# Activate Virtual Environment
-source "$VENV_DIR/bin/activate"
+# Activate Virtual Environment not strictly needed if we use direct paths, but good for shell
+# source "$VENV_DIR/bin/activate"
 
 echo "Installing Dependencies into virtual environment..."
-pip install -r requirements.txt
+"$VENV_DIR/bin/pip" install -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "Warning: Pip install failed. Trying to proceed anyway..."
 fi
@@ -34,5 +34,5 @@ echo "Starting Server on Port 8000..."
 echo "Connects to Railway Cloud DBs defined in .env"
 echo ""
 
-# Run uvicorn using the venv's python
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Run uvicorn using the venv's python explicitly
+"$VENV_DIR/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

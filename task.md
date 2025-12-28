@@ -1,0 +1,21 @@
+# Startup Tasks
+
+- [x] Analyze startup requirements <!-- id: 0 -->
+- [x] Start Python Backend <!-- id: 1 -->
+- [x] Start Python Agent <!-- id: 2 -->
+- [x] Analyze startup requirements <!-- id: 0 -->
+- [x] Start Python Backend <!-- id: 1 -->
+- [x] Start Python Agent <!-- id: 2 -->
+- [x] Start Frontend Services <!-- id: 3 -->
+- [x] Sync Frontend changes to GitHub <!-- id: 4 -->
+- [x] Sync Python Backend/Agent changes to GitHub <!-- id: 5 -->
+- [x] Investigate Agent Config Update Issue <!-- id: 6 -->
+- [x] Refine Agent ID Persistence Logic <!-- id: 7 -->
+- [x] Implement Robust Dynamic Agent Identity <!-- id: 8 -->
+- [x] Debug Live Stream Connection <!-- id: 9 -->
+- [x] Enhance Live Monitor (Recent Activities + Append Data) <!-- id: 10 -->
+- [x] Fix Backend Dependency (cffi) Issue <!-- id: 11 -->
+- [x] Migrate Localhost to System IP <!-- id: 12 -->
+- [x] Fix Python Version Mismatch (3.10 vs 3.11) <!-- id: 13 -->
+- [x] Debug Real-time Data Update on Recent Activity Page <!-- id: 14 -->
+- [x] Update Project IP (192.168.1.9 -> 192.168.1.2) <!-- id: 15 -->

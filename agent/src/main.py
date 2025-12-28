@@ -32,6 +32,7 @@ from modules.fim import FileIntegrityMonitor
 from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
+from modules.activity_monitor import ActivityMonitor
 
 import uuid
 
@@ -44,66 +45,54 @@ except Exception as e:
     print(f"Error loading config: {e}")
     config = {}
 
-BACKEND_URL = config.get("BackendUrl", "http://192.168.1.9:8000")
+BACKEND_URL = config.get("BackendUrl", "http://192.168.1.5:8000")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
 
-# Dynamic Agent ID Logic
-# Known default IDs that should be replaced
-DEFAULT_IDS = ["PYTHON-AGENT-01", "EILT0094-32D62E1B", ""]
-
-hostname = platform.node()
-# Check if ID is default OR doesn't match this machine (cloned config)
-# We check if the current AGENT_ID starts with the hostname to ensure it belongs to this machine.
-if AGENT_ID in DEFAULT_IDS or not AGENT_ID or not AGENT_ID.startswith(hostname):
-    print(f"[Init] ID Mismatch (Stored: '{AGENT_ID}' vs Host: '{hostname}'). Regenerating...")
-    unique_suffix = str(uuid.uuid4())[:8].upper()
-    AGENT_ID = f"{hostname}-{unique_suffix}"
-    print(f"[Init] Generated New Agent ID: {AGENT_ID}")
-    
-    # Update Config
-    config["AgentId"] = AGENT_ID
-    try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(config, f, indent=4)
-    except Exception as e:
-        print(f"[Init] Error saving config: {e}")
-    
-    # Update Config with new ID to persist it
-    config["AgentId"] = AGENT_ID
-    try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(config, f, indent=4)
-        print(f"[Init] Saved new Agent ID to config.json")
-    except Exception as e:
-        print(f"[Init] Failed to save config: {e}")
-
 # Socket.IO Client
-sio = socketio.AsyncClient()
+sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False)
 
 # Initialize Modules
 fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
+activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 live_streamer = LiveStreamer(AGENT_ID, sio) # We will inject loop later or relies on get_event_loop in thread if safe
+
+from modules.webrtc_stream import WebRTCManager
+
+# ...
+# Existing LiveStreamer (Keep for fallback if needed, or disable)
+# live_streamer = LiveStreamer(AGENT_ID, sio) 
+webrtc_manager = WebRTCManager(sio, AGENT_ID)
 
 @sio.event
 async def connect():
     print(f"[STREAM_DEBUG] Agent Connected to Backend. Joining Room: {AGENT_ID}")
-    # Explicitly join room as fail-safe
-    await sio.emit('join_room', {'room': AGENT_ID})
+    # Explicitly join room as fail-safe - REMOVED as Backend handles it via Auth
+    # await sio.emit('join_room', {'room': AGENT_ID})
 
 @sio.on('start_stream')
 async def on_start_stream(data):
-    print(f"[STREAM_DEBUG] Agent received start_stream Command!")
-    loop = asyncio.get_running_loop()
-    live_streamer.start_streaming(loop)
+    print(f"[WebRTC] Received start_stream Command! Data: {data}", flush=True)
+    # loop = asyncio.get_running_loop()
+    # live_streamer.start_streaming(loop)
+    await webrtc_manager.start_stream()
 
 @sio.on('stop_stream')
 async def on_stop_stream(data):
-    print(f"[STREAM_DEBUG] Agent received stop_stream Command!")
-    live_streamer.stop_streaming()
+    print(f"[WebRTC] Received stop_stream Command!")
+    # live_streamer.stop_streaming()
+    await webrtc_manager.stop_stream()
+
+@sio.on('webrtc_answer')
+async def on_webrtc_answer(data):
+    await webrtc_manager.handle_answer(data)
+
+@sio.on('ice_candidate')
+async def on_ice_candidate(data):
+    await webrtc_manager.handle_ice_candidate(data)
 
 # ... (keep other handlers)
 
@@ -225,6 +214,7 @@ async def main():
     # Start Security Modules
     fim.start()
     screen_cap.start()
+    activity_mon.start()
 
     # Start Tasks
     await system_monitor_loop()
@@ -235,4 +225,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Stopping...")
         screen_cap.stop()
+        activity_mon.stop()
         sys.exit(0)

@@ -53,16 +53,16 @@ class LiveStreamer:
                     sct_img = sct.grab(monitor)
                     img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
                     
-                    # 2. Resize for Performance (720p max width)
+                    # 2. Resize for Performance (800px width for fluidity)
                     w, h = img.size
-                    if w > 1280:
-                        ratio = 1280 / w
+                    if w > 800: # Smaller for speed
+                        ratio = 800 / w
                         new_h = int(h * ratio)
-                        img = img.resize((1280, new_h), Image.Resampling.LANCZOS)
+                        img = img.resize((800, new_h), Image.Resampling.BILINEAR) # Bilinear is faster than Lanczos
                     
                     # 3. Compress to WebP
                     bio = BytesIO()
-                    img.save(bio, format="WEBP", quality=60) # Lower quality for speed
+                    img.save(bio, format="WEBP", quality=50) # Quality 50 for speed
                     b64_data = base64.b64encode(bio.getvalue()).decode('utf-8')
                     
                     if self.frames_sent == 0:
@@ -70,14 +70,15 @@ class LiveStreamer:
                     self.frames_sent += 1
                     
                     if self.loop and self.loop.is_running():
-                         asyncio.run_coroutine_threadsafe(
-                             self.sio.emit('stream_frame', {'agentId': self.agent_id, 'image': b64_data}),
-                             self.loop
-                         )
+                        print(f"[STREAM_DEBUG] Emitting Frame {self.frames_sent} ({len(b64_data)} bytes)")
+                        asyncio.run_coroutine_threadsafe(
+                            self.sio.emit('stream_frame', {'agentId': self.agent_id, 'image': b64_data}),
+                            self.loop
+                        )
                     
-                    # Cap at ~2 FPS (0.5s)
+                    # Cap at ~20 FPS (0.05s)
                     elapsed = time.time() - start_time
-                    sleep_time = max(0.5 - elapsed, 0)
+                    sleep_time = max(0.05 - elapsed, 0)
                     time.sleep(sleep_time)
                     
                 except Exception as e:

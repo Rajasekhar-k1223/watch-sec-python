@@ -13,6 +13,8 @@ from ..db.models import User
 
 router = APIRouter()
 
+from ..socket_instance import sio
+
 # --- Security Events ---
 
 @router.get("/{agent_id}", response_model=List[SecurityEventLog])
@@ -98,4 +100,13 @@ async def log_activity(
     # ...
 
     await collection.insert_one(log_entry)
+
+    # Broadcast via Socket.IO
+    await sio.emit('ReceiveEvent', {
+        'agentId': dto.AgentId,
+        'title': dto.ActivityType, # e.g. "Process Started", "File Modified"
+        'details': f"{dto.ProcessName or ''} {dto.WindowTitle or dto.Url or ''}".strip(),
+        'timestamp': dto.Timestamp.isoformat()
+    })
+
     return {"status": "Logged"}
