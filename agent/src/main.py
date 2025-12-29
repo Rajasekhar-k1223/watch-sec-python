@@ -45,7 +45,7 @@ except Exception as e:
     print(f"Error loading config: {e}")
     config = {}
 
-BACKEND_URL = config.get("BackendUrl", "http://192.168.1.5:8000")
+BACKEND_URL = config.get("BackendUrl", "http://192.168.1.2:8000")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
 

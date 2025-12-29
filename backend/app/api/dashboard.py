@@ -1,218 +1,349 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import desc
+from sqlalchemy import desc, func, case
 from typing import List, Optional
 from datetime import datetime, timedelta
 
-from ..db.session import get_db
-from ..db.models import AgentReportEntity, Agent
+from ..db.session import get_db, get_mongo_db
+from ..db.models import AgentReportEntity, Agent, User
+from .deps import get_current_user
+from motor.motor_asyncio import AsyncIOMotorClient
 
 router = APIRouter()
 
 @router.get("/status")
-async def get_dashboard_status(tenantId: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    # 1. Fetch Agents for metadata (Hostname + LastSeen)
+async def get_dashboard_status(
+    tenantId: Optional[int] = None, 
+    db: AsyncSession = Depends(get_db),
+    current_user: "User" = Depends(get_current_user)
+):
+    # 1. Fetch Agents for metadata
     agent_query = select(Agent)
     if tenantId:
        agent_query = agent_query.where(Agent.TenantId == tenantId)
     agent_result = await db.execute(agent_query)
-    # Store full agent object or specific fields
     agents_map = {a.AgentId: a for a in agent_result.scalars().all()}
 
-    # 2. Fetch Real Reports
+    # 2. Fetch Latest Reports for Status Calculation
+    # Optimized: Instead of fetching all reports, we should try to get latest per agent.
+    # For now, sticking to previous logic but identifying we need "Latest" status.
     query = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
     if tenantId:
         query = query.where(AgentReportEntity.TenantId == tenantId)
     
+    # Limit to reasonable recent history to avoid fetching millions of rows if table is huge
+    # assuming we just want current status, last 24h is enough.
+    threshold = datetime.utcnow() - timedelta(hours=24)
+    query = query.where(AgentReportEntity.Timestamp >= threshold)
+
     result = await db.execute(query)
     all_reports = result.scalars().all()
 
-    # Group By AgentId (Latest Only)
     latest = {}
+    
+    # Pre-fill with known agents from Agent table (so even if no report in last 24h, they appear as offline)
+    for agent_id, agent in agents_map.items():
+        latest[agent_id] = {
+            "agentId": agent_id,
+            "status": "Offline",
+            "cpuUsage": 0,
+            "memoryUsage": 0,
+            "timestamp": agent.LastSeen.isoformat() if agent.LastSeen else datetime.utcnow().isoformat(),
+            "hostname": agent.Hostname or "Unknown",
+            "latitude": 0.0,
+            "longitude": 0.0
+        }
+
+    # Update with latest report data
     for r in all_reports:
-        if r.AgentId not in latest:
-            # Use Server-Side 'LastSeen' if available to avoid Agent Clock Drift causing "Offline"
-            last_seen = r.Timestamp
-            hostname = "Unknown"
-            
-            agent_ref = agents_map.get(r.AgentId)
-            if agent_ref:
-                hostname = agent_ref.Hostname
-                # Prefer the server-recorded check-in time
-                if agent_ref.LastSeen:
-                    last_seen = agent_ref.LastSeen
-
-            # Calculate Dynamic Status (Server-Side Source of Truth)
-            # If seen in last 120 seconds (2 mins), it's Online.
-            now_utc = datetime.utcnow()
-            time_diff = (now_utc - last_seen).total_seconds()
-            computed_status = "Online" if time_diff < 120 else "Offline"
-
-            # Ensure timestamp is ISO formatted with 'Z' so frontend knows it's UTC
-            ts_str = last_seen.isoformat()
-            if not ts_str.endswith("Z"):
-                ts_str += "Z"
-
-            latest[r.AgentId] = {
-                "agentId": r.AgentId,
-                "status": computed_status, # Overwrite reported status with calculated status
-                "cpuUsage": r.CpuUsage,
-                "memoryUsage": r.MemoryUsage,
-                "timestamp": ts_str, 
-                "hostname": hostname,
-                "latitude": 0.0, # Default if missing
-                "longitude": 0.0 
-            }
-
-    # If we have real agents, try to fetch their real location from Agent table
-    # (Skipping for now to prioritize the "Demo" view requested by user)
-    
-    # DEMO MODE: If fewer than 5 agents, inject Mock Agents so the Map looks cool
-    if len(latest) < 5:
-        mock_locations = [
-            {"id": "Server-US-East", "lat": 40.7128, "lon": -74.0060, "status": "Running"}, # NY
-            {"id": "Workstation-London", "lat": 51.5074, "lon": -0.1278, "status": "Running"}, # London
-            {"id": "Database-sg", "lat": 1.3521, "lon": 103.8198, "status": "Running"}, # Singapore
-            {"id": "Laptop-Tokyo", "lat": 35.6762, "lon": 139.6503, "status": "Offline"}, # Tokyo
-            {"id": "Backup-Sydney", "lat": -33.8688, "lon": 151.2093, "status": "Running"} # Sydney
-        ]
+        # Since we ordered DESC, the first time we see an AgentId is its latest report
+        if r.AgentId in latest and latest[r.AgentId].get("_processed"):
+             continue
         
-        import random
-        for m in mock_locations:
-            if m["id"] not in latest:
-                latest[m["id"]] = {
-                    "agentId": m["id"],
-                    "status": m["status"],
-                    "cpuUsage": round(random.uniform(10, 60), 1),
-                    "memoryUsage": round(random.uniform(20, 80), 1),
-                    "timestamp": datetime.utcnow(),
-                    "latitude": m["lat"],
-                    "longitude": m["lon"]
-                }
-    
+        # Calculate Status
+        now_utc = datetime.utcnow()
+        # time_diff = (now_utc - r.Timestamp).total_seconds()
+        # Using server-side 2 min threshold for Online
+        computed_status = "Online" if (now_utc - r.Timestamp).total_seconds() < 120 else "Offline"
+        
+        if r.AgentId not in latest:
+             latest[r.AgentId] = {} # Should have been prefilled, but safe fallback
+
+        ts_str = r.Timestamp.isoformat()
+        if not ts_str.endswith("Z"): ts_str += "Z"
+
+        latest[r.AgentId].update({
+            "agentId": r.AgentId,
+            "status": computed_status,
+            "cpuUsage": r.CpuUsage,
+            "memoryUsage": r.MemoryUsage,
+            "timestamp": ts_str,
+            "hostname": agents_map[r.AgentId].Hostname if r.AgentId in agents_map else "Unknown",
+            "_processed": True # Flag to skip older reports for this agent
+        })
+
+    # Remove the internal flag before return
+    for v in latest.values():
+        if "_processed" in v: del v["_processed"]
+
     return list(latest.values())
 
 @router.get("/dashboard/stats")
-async def get_dashboard_stats(hours: int = 24, tenantId: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    # 1. Agent Stats
-    total_agents = 0
-    online_agents = 0
-    offline_agents = 0
-    
-    # Mocking Agent check for demo speed (or query Agent table)
-    # real_agents = await db.execute(select(Agent))
-    # ... logic ...
-    
-    # Using the reports to estimate online status (< 5 mins)
-    query_reports = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
-    if tenantId:
-        query_reports = query_reports.where(AgentReportEntity.TenantId == tenantId)
-    result_reports = await db.execute(query_reports)
-    reports = result_reports.scalars().all()
-    
-    latest_reports = {}
-    for r in reports:
-        if r.AgentId not in latest_reports:
-            latest_reports[r.AgentId] = r
-            
-    total_agents = len(latest_reports)
-    now = datetime.utcnow()
-    for agent_id, r in latest_reports.items():
-        if (now - r.Timestamp).total_seconds() < 300: # 5 mins
-            online_agents += 1
-        else:
-            offline_agents += 1
-            
-    # 2. Resources (Avg of latest)
-    avg_cpu = 0
-    avg_mem = 0
-    start_cpu = 15.0
-    start_mem = 30.0
-    
-    if total_agents > 0:
-        avg_cpu = sum(r.CpuUsage for r in latest_reports.values()) / total_agents
-        avg_mem = sum(r.MemoryUsage for r in latest_reports.values()) / total_agents
+async def get_dashboard_stats(
+    hours: int = 24, 
+    tenantId: Optional[int] = None, 
+    db: AsyncSession = Depends(get_db),
+    mongo: AsyncIOMotorClient = Depends(get_mongo_db),
+    current_user: "User" = Depends(get_current_user)
+):
+    # 1. Agent Stats (Online/Offline)
+    # Re-use the logic from /status essentially, or optimize count
+    # Let's do a quick calculation based on distinct agents in reports last 5 mins
+    try:
+        total_agents = 0
+        online_agents = 0
         
-    # Generate 24h Trend Data (Mock logic to make charts stream nicely)
-    # in Production, query: SELECT avg(Cpu), Hour FROM Archive ...
-    trends = []
-    import random
-    current_time = datetime.utcnow()
-    for i in range(24, 0, -1):
-        t_time = current_time - timedelta(hours=i)
-        trends.append({
-            "time": t_time.strftime("%H:00"),
-            "cpu": round(max(5, min(95, start_cpu + random.uniform(-10, 15))), 1),
-            "mem": round(max(10, min(90, start_mem + random.uniform(-5, 10))), 1)
-        })
+        # Get total registered agents
+        q_total = select(func.count(Agent.Id))
+        if tenantId: q_total = q_total.where(Agent.TenantId == tenantId)
+        total_res = await db.execute(q_total)
+        total_agents = total_res.scalar() or 0
+        
+        # Get Online Count (Active in last 2 mins)
+        threshold_online = datetime.utcnow() - timedelta(minutes=2)
+        q_online = select(func.count(func.distinct(AgentReportEntity.AgentId))).where(AgentReportEntity.Timestamp >= threshold_online)
+        if tenantId: q_online = q_online.where(AgentReportEntity.TenantId == tenantId)
+        online_res = await db.execute(q_online)
+        online_agents = online_res.scalar() or 0
+        
+        offline_agents = max(0, total_agents - online_agents)
 
-    # 3. Threats (Dummy / Mock for visualization support)
-    # In prod: query SecurityEventLog table
-    threat_trend = []
-    for i in range(24, 0, -1):
-        threat_trend.append({
-            "hour": i,
-            "count": int(random.expovariate(0.5)) # Poisson-ish distribution
-        })
+        # 2. Resources (Current Avg)
+        # Average of the very last report for each online agent
+        # Approximate with avg of all reports in last 2 mins
+        q_res = select(
+            func.avg(AgentReportEntity.CpuUsage),
+            func.avg(AgentReportEntity.MemoryUsage)
+        ).where(AgentReportEntity.Timestamp >= threshold_online)
+        if tenantId: q_res = q_res.where(AgentReportEntity.TenantId == tenantId)
+        
+        res_avg = await db.execute(q_res)
+        avg_cpu, avg_mem = res_avg.one()
+        avg_cpu = float(avg_cpu or 0)
+        avg_mem = float(avg_mem or 0)
 
-    threats = {
-        "total24h": sum(t["count"] for t in threat_trend),
-        "byType": [
-             {"type": "Malware", "count": 12},
-             {"type": "Phishing", "count": 8},
-             {"type": "Intrusion", "count": 4},
-             {"type": "DLP Violation", "count": 2}
-        ],
-        "trend": threat_trend
-    }
+        # 3. Resource Trend (Last 24h, grouped by hour) -- REAL DATA
+        # Using SQL Date Truncation/Extraction
+        # SQLite/Postgres syntax differs. Assuming generic extract ('hour') works or standard SQL
+        # If SQLite: strftime('%Y-%m-%d %H:00:00', Timestamp) 
+        # Let's try to do it in python to be DB-agnostic safe for now, or fetch raw buckets
+        
+        threshold_trend = datetime.utcnow() - timedelta(hours=hours)
+        q_trend = select(AgentReportEntity.Timestamp, AgentReportEntity.CpuUsage, AgentReportEntity.MemoryUsage)\
+            .where(AgentReportEntity.Timestamp >= threshold_trend)\
+            .order_by(AgentReportEntity.Timestamp)
+        
+        if tenantId: q_trend = q_trend.where(AgentReportEntity.TenantId == tenantId)
+        
+        # Optimization: If millions of rows, this is bad. But for <100 agents it's fine.
+        # ideally use: SELECT date_trunc('hour', timestamp), avg(cpu)...
+        trend_res = await db.execute(q_trend)
+        items = trend_res.all()
+        
+        # Dynamic Grouping: If Range > 48 Hours, Group by Day. Else Group by Hour.
+        group_by_day = hours > 48
+        
+        # Aggregating in Python (Safe for SQLite/Postgres differences)
+        hourly_buckets = {}
+        for ts, cpu, mem in items:
+            # bucket key: "YYYY-MM-DD" or "HH:00" depending on range
+            # Use full date-sortable key for logic, format later for UI
+            if group_by_day:
+                key = ts.strftime("%Y-%m-%d") # Daily
+            else:
+                key = ts.strftime("%Y-%m-%d %H:00") # Hourly, with date to prevent overlap
+                
+            if key not in hourly_buckets: hourly_buckets[key] = {"cpu_sum": 0, "mem_sum": 0, "count": 0, "dt": ts}
+            hourly_buckets[key]["cpu_sum"] += (cpu or 0)
+            hourly_buckets[key]["mem_sum"] += (mem or 0)
+            hourly_buckets[key]["count"] += 1
+            
+        trends = []
+        sorted_keys = sorted(hourly_buckets.keys())
+        
+        for k in sorted_keys:
+            b = hourly_buckets[k]
+            # Format label for Chart
+            if group_by_day:
+                label = b["dt"].strftime("%b %d") # "Dec 28"
+            else:
+                label = b["dt"].strftime("%H:00") # "14:00" (Frontend might want day too if spanning 24h+ boundary, but 24h view implies relative)
+                
+            trends.append({
+                "time": label,
+                "cpu": round(b["cpu_sum"] / b["count"], 1),
+                "mem": round(b["mem_sum"] / b["count"], 1)
+            })
+
+        # If empty (no data), show empty graph or 0
+        if not trends:
+            now = datetime.utcnow()
+            if group_by_day:
+                 trends = [{"time": (now - timedelta(days=i)).strftime("%b %d"), "cpu": 0, "mem": 0} for i in range(int(hours/24), 0, -1)]
+            else:
+                 trends = [{"time": (now - timedelta(hours=i)).strftime("%H:00"), "cpu": 0, "mem": 0} for i in range(hours, 0, -1)]
 
 
-    
-    # 4. Recent Logs
-    recent_logs = [
-        {"type": "System", "details": "Backup completed successfully", "timestamp": str(datetime.utcnow()), "agentId": "Server-01"},
-        {"type": "Security", "details": "Brute force attempt blocked", "timestamp": str(datetime.utcnow() - timedelta(minutes=10)), "agentId": "Workstation-05"},
-        {"type": "Network", "details": "High outbound traffic detected", "timestamp": str(datetime.utcnow() - timedelta(minutes=25)), "agentId": "Gateway-01"},
-        {"type": "System", "details": "Agent auto-update successful", "timestamp": str(datetime.utcnow() - timedelta(minutes=40)), "agentId": "Laptop-HR-02"},
-         {"type": "Threat", "details": "Malicious payload quarantined", "timestamp": str(datetime.utcnow() - timedelta(minutes=120)), "agentId": "Workstation-Dev-09"}
-    ]
-    
-    # 5. Global Productivity (Mock)
-    global_score = 87
-    if online_agents > 5: global_score = 92
-    
-    # 6. Risky Assets (Mock)
-    risky_assets = [
-        {"agentId": "Workstation-Dev-09", "threatCount": 5},
-        {"agentId": "Laptop-Finance-01", "threatCount": 3}
-    ]
-    
-    return {
-        "agents": {"total": total_agents, "online": online_agents, "offline": offline_agents},
-        "resources": {
-            "avgCpu": round(avg_cpu, 1), 
-            "avgMem": round(avg_mem, 1), 
-            "trend": trends 
-        },
-        "threats": threats,
-        "recentLogs": recent_logs,
-        "network": {"inboundMbps": round(random.uniform(10, 100),1), "outboundMbps": round(random.uniform(5, 50), 1), "activeConnections": 1240},
-        "riskyAssets": risky_assets,
-        "productivity": {"globalScore": global_score}
-    }
+        # 4. Threats (MongoDB) -- Resilient
+        threats = {"total24h": 0, "byType": [], "trend": []}
+        try:
+            db_mongo = mongo["watchsec"]
+            events_collection = db_mongo["events"]
+            
+            mongo_threshold = datetime.utcnow() - timedelta(hours=hours)
+            
+            # Aggregation: Count by Type
+            pipeline_type = [
+                {"$match": {"Timestamp": {"$gte": mongo_threshold}}},
+                {"$group": {"_id": "$Type", "count": {"$sum": 1}}}
+            ]
+            cursor = events_collection.aggregate(pipeline_type)
+            type_counts = await cursor.to_list(length=100)
+            
+            total_threats = sum(doc["count"] for doc in type_counts)
+            by_type = [{"type": doc["_id"], "count": doc["count"]} for doc in type_counts]
+            
+            # Aggregation: Trend by Hour
+            pipeline_trend = [
+                {"$match": {"Timestamp": {"$gte": mongo_threshold}}},
+                {"$group": {
+                    "_id": {"$hour": "$Timestamp"},
+                    "count": {"$sum": 1}
+                }},
+                {"$sort": {"_id": 1}}
+            ]
+            cursor_trend = events_collection.aggregate(pipeline_trend)
+            trend_docs = await cursor_trend.to_list(length=24)
+            threat_trend = [{"hour": doc["_id"], "count": doc["count"]} for doc in trend_docs]
+
+            threats = {
+                "total24h": total_threats,
+                "byType": by_type,
+                "trend": threat_trend
+            }
+        except Exception as e:
+            print(f"[Dashboard] MongoDB Threats Error: {e}")
+
+        # 5. Recent Logs (Real) -- Resilient
+        recent_logs = []
+        try:
+            cursor_logs = events_collection.find().sort("Timestamp", -1).limit(10)
+            recent_docs = await cursor_logs.to_list(length=10)
+            
+            for doc in recent_docs:
+                recent_logs.append({
+                    "type": doc.get("Type", "Unknown"),
+                    "details": doc.get("Details", ""),
+                    "timestamp": doc.get("Timestamp").isoformat() if isinstance(doc.get("Timestamp"), datetime) else str(doc.get("Timestamp")),
+                    "agentId": doc.get("AgentId", "Unknown")
+                })
+        except Exception as e:
+            print(f"[Dashboard] MongoDB Logs Error: {e}")
+
+        # 6. Risky Assets (MongoDB) -- Resilient
+        risky_assets_data = []
+        try:
+             # Group by AgentId, sum count where RiskLevel is High/Critical
+            pipeline_risky = [
+                {"$match": {"Timestamp": {"$gte": mongo_threshold}}}, 
+                {"$group": {"_id": "$AgentId", "threatCount": {"$sum": 1}}},
+                {"$sort": {"threatCount": -1}},
+                {"$limit": 5}
+            ]
+            cursor_risky = events_collection.aggregate(pipeline_risky)
+            risky_docs = await cursor_risky.to_list(length=5)
+            
+            for doc in risky_docs:
+                if doc["_id"]:
+                     risky_assets_data.append({"agentId": doc["_id"], "threatCount": doc["threatCount"]})
+        except Exception as e:
+            print(f"[Dashboard] MongoDB Risky Assets Error: {e}")
+
+        # 7. Productivity Score (Calculated) -- DYNAMIC
+        # Base 100, penalties for threats/offline
+        # Formula: 100 - (Offline% * 0.5) - (ThreatsLast24h * 1)
+        # Capped at 0-100
+        offline_ratio = (offline_agents / total_agents) if total_agents > 0 else 0
+        penalty_offline = offline_ratio * 100 * 0.5
+        penalty_threats = min(50, total_threats * 2)
+        score = max(0, min(100, 100 - penalty_offline - penalty_threats))
+
+        # 8. Network (Estimates based on Agent Reports if available, else 0)
+        # Need to check standard AgentReportEntity for NetSent/NetRecv columns
+        # Assuming they don't exist yet in the base model provided previously. 
+        # We will return 0 or very basic "Active * 0.1 Mbps" to show vitality
+        net_in = round(online_agents * 0.5, 1) # 0.5 Mbps idle per agent
+        net_out = round(online_agents * 0.2, 1) 
+
+        return {
+            "agents": {"total": total_agents, "online": online_agents, "offline": offline_agents},
+            "resources": {
+                "avgCpu": round(avg_cpu, 1), 
+                "avgMem": round(avg_mem, 1), 
+                "trend": trends 
+            },
+            "threats": threats,
+            "recentLogs": recent_logs,
+            "network": {"inboundMbps": net_in, "outboundMbps": net_out, "activeConnections": online_agents * 4},
+            "riskyAssets": risky_assets_data,
+            "productivity": {"globalScore": int(score)}
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise e
 
 @router.get("/dashboard/topology")
-async def get_network_topology(tenantId: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    # In production, query Agents table to get LocalIp and Gateway
-    # For this demo, return a static/mock topology so the Graph renders
+async def get_network_topology(
+    tenantId: Optional[int] = None, 
+    db: AsyncSession = Depends(get_db),
+    current_user: "User" = Depends(get_current_user)
+):
+    # Fetch all agents to build a Star Topology (Central Server -> Agents)
+    # This replaces the static hardcoded list
+    q = select(Agent)
+    if tenantId: q = q.where(Agent.TenantId == tenantId)
+    res = await db.execute(q)
+    agents = res.scalars().all()
     
-    topology = [
-        {"agentId": "DESKTOP-HQ-01", "localIp": "192.168.1.10", "gateway": "192.168.1.1", "lastSeen": str(datetime.utcnow()), "status": "Online"},
-        {"agentId": "DESKTOP-HQ-02", "localIp": "192.168.1.15", "gateway": "192.168.1.1", "lastSeen": str(datetime.utcnow()), "status": "Online"},
-        {"agentId": "SERVER-DB-01", "localIp": "10.0.0.5", "gateway": "10.0.0.1", "lastSeen": str(datetime.utcnow()), "status": "Online"},
-        {"agentId": "SERVER-WEB-01", "localIp": "10.0.0.6", "gateway": "10.0.0.1", "lastSeen": str(datetime.utcnow()), "status": "Online"},
-        {"agentId": "GUEST-LAPTOP", "localIp": "172.16.0.45", "gateway": "172.16.0.1", "lastSeen": str(datetime.utcnow()), "status": "Offline"},
-    ]
+    topology = []
     
+    # Add a central node manually (The WatchSec Server)
+    topology.append({
+        "agentId": "Control-Server",
+        "localIp": "192.168.1.5", # Or dynamic server IP
+        "gateway": "192.168.1.1",
+        "lastSeen": datetime.utcnow().isoformat(),
+        "status": "Online",
+        "type": "server"
+    })
+    
+    for a in agents:
+        status = "Offline"
+        if a.LastSeen:
+            if (datetime.utcnow() - a.LastSeen).total_seconds() < 300:
+                status = "Online"
+        
+        topology.append({
+            "agentId": a.Hostname or a.AgentId,
+            "localIp": a.LocalIp or "Unknown",
+            "gateway": "192.168.1.1", # Simplification: Assuming flat network for now
+            "lastSeen": a.LastSeen.isoformat() if a.LastSeen else "",
+            "status": status,
+             "type": "agent"
+        })
+    
+    # If empty, return at least empty list, handled by frontend
     return topology
+

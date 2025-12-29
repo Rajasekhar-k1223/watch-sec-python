@@ -5,7 +5,11 @@ from datetime import datetime
 import shutil
 
 from .deps import get_current_user
-from ..db.models import User
+from .deps import get_current_user
+from ..db.models import User, Agent
+from ..db.session import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 router = APIRouter()
 
@@ -16,9 +20,15 @@ STORAGE_SHADOWS = "storage/Shadows"
 async def upload_audio(
     file: UploadFile = File(...),
     agent_id: str = "Unknown",
+    db: AsyncSession = Depends(get_db)
     # current_user: User = Depends(get_current_user) # Agent might upload without user context if using API Key
 ):
-    # TODO: Validate Agent API Key if no user context
+    # Validate Agent if ID provided
+    if agent_id and agent_id != "Unknown":
+        result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = result.scalars().first()
+        if not agent:
+             raise HTTPException(status_code=404, detail="Agent not found")
     
     try:
         # Structure: storage/Audio/{agent_id}/{date_hour}/
@@ -40,10 +50,17 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail="Upload failed")
 
 @router.post("/shadow")
+@router.post("/shadow")
 async def upload_shadow(
     file: UploadFile = File(...),
-    agent_id: str = "Unknown"
+    agent_id: str = "Unknown",
+    db: AsyncSession = Depends(get_db)
 ):
+    # Validate
+    if agent_id and agent_id != "Unknown":
+         result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+         if not result.scalars().first():
+             raise HTTPException(status_code=404, detail="Agent not found")
     try:
         # Structure: storage/Shadows/{agent_id}/{date}/
         now = datetime.utcnow()

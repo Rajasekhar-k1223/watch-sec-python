@@ -13,9 +13,20 @@ from datetime import datetime
 import os
 import shutil
 
-from ..schemas import ScreenshotDto
+from ..db.session import get_db
+from ..db.models import User, Agent
 from .deps import get_current_user
 from ..db.models import User
+
+from pydantic import BaseModel
+
+class ScreenshotDto(BaseModel):
+    Filename: str
+    Timestamp: datetime
+    Size: int
+    Url: str
+    Date: str 
+    IsAlert: bool = False
 
 router = APIRouter()
 
@@ -49,13 +60,19 @@ async def list_screenshots(
                 time_part = filename.split('_')[0]
                 date_time_str = f"{date_dir_name} {time_part}"
                 timestamp = datetime.strptime(date_time_str, "%Y%m%d %H%M%S")
+                
+                # Get Size
+                file_full_path = os.path.join(date_dir_path, filename)
+                size = os.path.getsize(file_full_path)
             except:
                 timestamp = datetime.utcnow()
+                size = 0
 
             result.append(ScreenshotDto(
                 Filename=filename,
                 Date=date_dir_name,
                 Timestamp=timestamp,
+                Size=size,
                 IsAlert="_ALERT" in filename,
                 Url=f"/api/screenshots/view/{agent_id}/{date_dir_name}/{filename}"
             ))
@@ -72,8 +89,16 @@ from ..socket_instance import sio
 async def upload_screenshot(
     file: UploadFile = File(...),
     agent_id: str = Form(...),
-    created_at: str = Form(...) # ISO Format
+    created_at: str = Form(...), # ISO Format
+    db: AsyncSession = Depends(get_db)
 ):
+    # 1. Validate Agent Exists
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
+    if not agent:
+        # Fail silently or 404 to avoid leaking? Agent expects 200 usually or logs error.
+        raise HTTPException(status_code=404, detail="Agent not registered")
+
     # Structure: storage/Screenshots/{agent_id}/{date_Ymd}/
     try:
         # Read file bytes first (we need them for both saving and emitting)

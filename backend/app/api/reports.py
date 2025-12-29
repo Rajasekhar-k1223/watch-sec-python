@@ -7,8 +7,9 @@ from typing import Optional
 import json
 
 from ..db.session import get_db
-from ..db.models import Agent, AgentReportEntity, Tenant
+from ..db.models import Agent, AgentReportEntity, Tenant, User # Added User
 from ..socket_instance import sio # Import Socket.IO server instance
+from .deps import get_current_user
 
 router = APIRouter()
 
@@ -17,7 +18,7 @@ router = APIRouter()
 async def get_agent_history(
     agent_id: str,
     db: AsyncSession = Depends(get_db),
-    # current_user: User = Depends(get_current_user) # Optionally secure this
+    current_user: "User" = Depends(get_current_user)
 ):
     query = select(AgentReportEntity).where(AgentReportEntity.AgentId == agent_id).order_by(AgentReportEntity.Timestamp.desc()).limit(100)
     result = await db.execute(query)

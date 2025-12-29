@@ -39,13 +39,18 @@ async def login_for_access_token(form_data: LoginRequest, db: AsyncSession = Dep
     if form_data.username == "admin" and form_data.password == "admin123":
         auth_success = True
         if not user:
-            # Create a Mock User object if DB is empty so token generation works
-            class MockUser:
-                Username = "admin"
-                Role = "SuperAdmin"
-                TenantId = 1 # Default ID
-                PasswordHash = ""
-            user = MockUser()
+            # Create REAL User object so token validation (deps.py) works
+            from ..core.security import get_password_hash
+            new_admin = User(
+                Username="admin",
+                PasswordHash=get_password_hash("admin123"),
+                Role="SuperAdmin",
+                TenantId=1
+            )
+            db.add(new_admin)
+            await db.commit()
+            await db.refresh(new_admin)
+            user = new_admin
 
     elif user and verify_password(form_data.password, user.PasswordHash):
         auth_success = True
@@ -58,7 +63,8 @@ async def login_for_access_token(form_data: LoginRequest, db: AsyncSession = Dep
         )
 
     # 3. Create Token
-    access_token_expires = timedelta(minutes=float(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30)))
+    # 3. Create Token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.Username, "role": user.Role, "tenantId": user.TenantId},
         expires_delta=access_token_expires

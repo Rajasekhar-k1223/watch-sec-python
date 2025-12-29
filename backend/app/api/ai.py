@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from ..services.ai_service import ai_service
+from .deps import get_current_user
+from ..db.models import User
 
 router = APIRouter()
 
@@ -12,12 +14,18 @@ class TrainingRequest(BaseModel):
     category: str
 
 @router.post("/analyze")
-async def analyze_medical_text(req: AnalysisRequest):
+async def analyze_medical_text(
+    req: AnalysisRequest,
+    current_user: User = Depends(get_current_user)
+):
     result = ai_service.predict(req.text)
     return {"result": result}
 
 @router.post("/train")
-async def train_medical_model(req: TrainingRequest):
+async def train_medical_model(
+    req: TrainingRequest,
+    current_user: User = Depends(get_current_user)
+):
     success = ai_service.learn(req.text, req.category)
     return {"status": "Learned", "message": "Model updated with new case."}
 
@@ -25,7 +33,10 @@ class SecurityAnalysisRequest(BaseModel):
     logs: str # Raw log text
 
 @router.post("/security/analyze")
-async def analyze_security_event(req: SecurityAnalysisRequest):
+async def analyze_security_event(
+    req: SecurityAnalysisRequest,
+    current_user: User = Depends(get_current_user)
+):
     # Generic Anomaly Detection Logic
     # 1. Keyword Heuristics
     risk_score = 0

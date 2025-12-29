@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from ..tasks.general import analyze_risk_background
 from typing import List
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -69,6 +70,27 @@ async def get_activity_logs(
     logs = await cursor.to_list(length=500)
     return logs
 
+def analyze_risk(title: str, process: str, url: str):
+    score = 0
+    level = "Normal"
+    
+    # Text to scan
+    text = (f"{title} {process} {url}").lower()
+    
+    # High Risk Keywords
+    high_risk = ["terminal", "powershell", "cmd", "nmap", "wireshark", "tor browser", "metasploit"]
+    if any(k in text for k in high_risk):
+        score = 80
+        level = "High"
+    
+    # Productivity Analysis (Simplified)
+    unproductive = ["youtube", "facebook", "netflix", "instagram", "tiktok", "steam"]
+    if any(k in text for k in unproductive):
+        score = 10
+        level = "Unproductive" # We can map this to Low Risk or specific label
+        
+    return score, level
+
 @router.post("/activity")
 async def log_activity(
     dto: ActivityLogDto,
@@ -96,10 +118,17 @@ async def log_activity(
         "Timestamp": dto.Timestamp
     }
 
-    # AI Sentiment Analysis (Placeholder for future hook)
-    # ...
-
-    await collection.insert_one(log_entry)
+    # Perform Analysis (Sync - for immediate UI feedback)
+    risk_score, risk_level = analyze_risk(dto.WindowTitle, dto.ProcessName, dto.Url or "")
+    log_entry["RiskScore"] = risk_score
+    log_entry["RiskLevel"] = risk_level
+    
+    # Insert Primary Record
+    result = await collection.insert_one(log_entry)
+    
+    # Offload Deep Analysis / Archival to Celery (Async)
+    # This demonstrates the capability to offload work without blocking response
+    analyze_risk_background.delay(str(result.inserted_id), dto.WindowTitle, dto.ProcessName, dto.Url or "")
 
     # Broadcast via Socket.IO
     await sio.emit('ReceiveEvent', {
