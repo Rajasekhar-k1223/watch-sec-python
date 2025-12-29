@@ -91,15 +91,44 @@ async def get_dashboard_status(
 
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(
-    hours: int = 24, 
+    hours: int = 24,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     tenantId: Optional[int] = None, 
     db: AsyncSession = Depends(get_db),
     mongo: AsyncIOMotorClient = Depends(get_mongo_db),
     current_user: "User" = Depends(get_current_user)
 ):
-    # 1. Agent Stats (Online/Offline)
-    # Re-use the logic from /status essentially, or optimize count
-    # Let's do a quick calculation based on distinct agents in reports last 5 mins
+    # 0. Time Range Logic
+    now_utc = datetime.utcnow()
+    
+    if from_date:
+        try:
+            start_dt = datetime.fromisoformat(from_date.replace('Z', '+00:00'))
+        except:
+            start_dt = now_utc - timedelta(hours=hours) # Fallback
+    else:
+        start_dt = now_utc - timedelta(hours=hours)
+
+    if to_date:
+        try:
+            end_dt = datetime.fromisoformat(to_date.replace('Z', '+00:00'))
+        except:
+            end_dt = now_utc
+    else:
+        end_dt = now_utc
+
+    # Ensure naive datetimes are treated as UTC if ISO parsing didn't set tz
+    if start_dt.tzinfo is not None: start_dt = start_dt.replace(tzinfo=None)
+    if end_dt.tzinfo is not None: end_dt = end_dt.replace(tzinfo=None)
+
+    total_hours = (end_dt - start_dt).total_seconds() / 3600
+    
+    # 1. Agent Stats (Online/Offline) - Snapshot (Always 'Now' for status, or could use range if supported)
+    # Status is typically "Current", so we keep the standard "Last 2 mins" check for Online/Offline counts
+    # regardless of history range, OR we can show "Active in range".
+    # Let's stick to CURRENT status for the gauge, but Trends for the range.
+    
     try:
         total_agents = 0
         online_agents = 0
@@ -111,7 +140,7 @@ async def get_dashboard_stats(
         total_agents = total_res.scalar() or 0
         
         # Get Online Count (Active in last 2 mins)
-        threshold_online = datetime.utcnow() - timedelta(minutes=2)
+        threshold_online = now_utc - timedelta(minutes=2)
         q_online = select(func.count(func.distinct(AgentReportEntity.AgentId))).where(AgentReportEntity.Timestamp >= threshold_online)
         if tenantId: q_online = q_online.where(AgentReportEntity.TenantId == tenantId)
         online_res = await db.execute(q_online)
@@ -119,13 +148,11 @@ async def get_dashboard_stats(
         
         offline_agents = max(0, total_agents - online_agents)
 
-        # 2. Resources (Current Avg)
-        # Average of the very last report for each online agent
-        # Approximate with avg of all reports in last 2 mins
+        # 2. Resources (Avg over RANGE)
         q_res = select(
             func.avg(AgentReportEntity.CpuUsage),
             func.avg(AgentReportEntity.MemoryUsage)
-        ).where(AgentReportEntity.Timestamp >= threshold_online)
+        ).where(AgentReportEntity.Timestamp >= start_dt).where(AgentReportEntity.Timestamp <= end_dt)
         if tenantId: q_res = q_res.where(AgentReportEntity.TenantId == tenantId)
         
         res_avg = await db.execute(q_res)
@@ -133,79 +160,51 @@ async def get_dashboard_stats(
         avg_cpu = float(avg_cpu or 0)
         avg_mem = float(avg_mem or 0)
 
-        # 3. Resource Trend (Last 24h, grouped by hour) -- REAL DATA
-        # Using SQL Date Truncation/Extraction
-        # SQLite/Postgres syntax differs. Assuming generic extract ('hour') works or standard SQL
-        # If SQLite: strftime('%Y-%m-%d %H:00:00', Timestamp) 
-        # Let's try to do it in python to be DB-agnostic safe for now, or fetch raw buckets
-        
-        threshold_trend = datetime.utcnow() - timedelta(hours=hours)
+        # 3. Resource Trend
         q_trend = select(AgentReportEntity.Timestamp, AgentReportEntity.CpuUsage, AgentReportEntity.MemoryUsage)\
-            .where(AgentReportEntity.Timestamp >= threshold_trend)\
+            .where(AgentReportEntity.Timestamp >= start_dt)\
+            .where(AgentReportEntity.Timestamp <= end_dt)\
             .order_by(AgentReportEntity.Timestamp)
         
         if tenantId: q_trend = q_trend.where(AgentReportEntity.TenantId == tenantId)
         
-        # Optimization: If millions of rows, this is bad. But for <100 agents it's fine.
-        # ideally use: SELECT date_trunc('hour', timestamp), avg(cpu)...
-        trend_res = await db.execute(q_trend)
+        # Limit rows to prevent massive fetch
+        trend_res = await db.execute(q_trend.limit(5000)) 
         items = trend_res.all()
         
-        # Dynamic Grouping: If Range > 48 Hours, Group by Day. Else Group by Hour.
-        group_by_day = hours > 48
+        # Dynamic Grouping
+        # If range < 48h -> Group by Hour
+        # If range > 48h -> Group by Day
+        group_by_day = total_hours > 48
         
-        # Aggregating in Python (Safe for SQLite/Postgres differences)
-        hourly_buckets = {}
+        buckets = {}
         for ts, cpu, mem in items:
-            # bucket key: "YYYY-MM-DD" or "HH:00" depending on range
-            # Use full date-sortable key for logic, format later for UI
-            if group_by_day:
-                key = ts.strftime("%Y-%m-%d") # Daily
-            else:
-                key = ts.strftime("%Y-%m-%d %H:00") # Hourly, with date to prevent overlap
-                
-            if key not in hourly_buckets: hourly_buckets[key] = {"cpu_sum": 0, "mem_sum": 0, "count": 0, "dt": ts}
-            hourly_buckets[key]["cpu_sum"] += (cpu or 0)
-            hourly_buckets[key]["mem_sum"] += (mem or 0)
-            hourly_buckets[key]["count"] += 1
+            key = ts.strftime("%Y-%m-%d") if group_by_day else ts.strftime("%Y-%m-%d %H:00")
+            if key not in buckets: buckets[key] = {"cpu": 0, "mem": 0, "c": 0, "dt": ts}
+            buckets[key]["cpu"] += (cpu or 0)
+            buckets[key]["mem"] += (mem or 0)
+            buckets[key]["c"] += 1
             
         trends = []
-        sorted_keys = sorted(hourly_buckets.keys())
-        
-        for k in sorted_keys:
-            b = hourly_buckets[k]
-            # Format label for Chart
-            if group_by_day:
-                label = b["dt"].strftime("%b %d") # "Dec 28"
-            else:
-                label = b["dt"].strftime("%H:00") # "14:00" (Frontend might want day too if spanning 24h+ boundary, but 24h view implies relative)
-                
+        for k in sorted(buckets.keys()):
+            b = buckets[k]
+            label = b["dt"].strftime("%b %d") if group_by_day else b["dt"].strftime("%H:00")
             trends.append({
                 "time": label,
-                "cpu": round(b["cpu_sum"] / b["count"], 1),
-                "mem": round(b["mem_sum"] / b["count"], 1)
+                "cpu": round(b["cpu"] / b["c"], 1),
+                "mem": round(b["mem"] / b["c"], 1),
+                "full_date": k
             })
 
-        # If empty (no data), show empty graph or 0
-        if not trends:
-            now = datetime.utcnow()
-            if group_by_day:
-                 trends = [{"time": (now - timedelta(days=i)).strftime("%b %d"), "cpu": 0, "mem": 0} for i in range(int(hours/24), 0, -1)]
-            else:
-                 trends = [{"time": (now - timedelta(hours=i)).strftime("%H:00"), "cpu": 0, "mem": 0} for i in range(hours, 0, -1)]
-
-
         # 4. Threats (MongoDB) -- Resilient
-        threats = {"total24h": 0, "byType": [], "trend": []}
+        threats = {"total": 0, "byType": [], "trend": []}
         try:
             db_mongo = mongo["watchsec"]
             events_collection = db_mongo["events"]
             
-            mongo_threshold = datetime.utcnow() - timedelta(hours=hours)
-            
             # Aggregation: Count by Type
             pipeline_type = [
-                {"$match": {"Timestamp": {"$gte": mongo_threshold}}},
+                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}},
                 {"$group": {"_id": "$Type", "count": {"$sum": 1}}}
             ]
             cursor = events_collection.aggregate(pipeline_type)
@@ -214,33 +213,42 @@ async def get_dashboard_stats(
             total_threats = sum(doc["count"] for doc in type_counts)
             by_type = [{"type": doc["_id"], "count": doc["count"]} for doc in type_counts]
             
-            # Aggregation: Trend by Hour
+            # Aggregation: Trend
+            # Mongo group by date operators
+            format_str = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H"
             pipeline_trend = [
-                {"$match": {"Timestamp": {"$gte": mongo_threshold}}},
+                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}},
                 {"$group": {
-                    "_id": {"$hour": "$Timestamp"},
+                    "_id": {"$dateToString": {"format": format_str, "date": "$Timestamp"}},
                     "count": {"$sum": 1}
                 }},
                 {"$sort": {"_id": 1}}
             ]
             cursor_trend = events_collection.aggregate(pipeline_trend)
-            trend_docs = await cursor_trend.to_list(length=24)
-            threat_trend = [{"hour": doc["_id"], "count": doc["count"]} for doc in trend_docs]
+            trend_docs = await cursor_trend.to_list(length=100)
+            
+            # Format nicely
+            threat_trend = []
+            for doc in trend_docs:
+                # Basic formatting, could be improved
+                lbl = doc["_id"]
+                if not group_by_day and " " in lbl: lbl = lbl.split(" ")[1] + ":00"
+                threat_trend.append({"time": lbl, "count": doc["count"]})
 
             threats = {
-                "total24h": total_threats,
+                "total": total_threats,
                 "byType": by_type,
                 "trend": threat_trend
             }
         except Exception as e:
             print(f"[Dashboard] MongoDB Threats Error: {e}")
 
-        # 5. Recent Logs (Real) -- Resilient
+        # 5. Recent Logs
         recent_logs = []
         try:
-            cursor_logs = events_collection.find().sort("Timestamp", -1).limit(10)
+             # Basic find in range
+            cursor_logs = events_collection.find({"Timestamp": {"$gte": start_dt, "$lte": end_dt}}).sort("Timestamp", -1).limit(10)
             recent_docs = await cursor_logs.to_list(length=10)
-            
             for doc in recent_docs:
                 recent_logs.append({
                     "type": doc.get("Type", "Unknown"),
@@ -248,42 +256,35 @@ async def get_dashboard_stats(
                     "timestamp": doc.get("Timestamp").isoformat() if isinstance(doc.get("Timestamp"), datetime) else str(doc.get("Timestamp")),
                     "agentId": doc.get("AgentId", "Unknown")
                 })
-        except Exception as e:
-            print(f"[Dashboard] MongoDB Logs Error: {e}")
+        except: pass
 
-        # 6. Risky Assets (MongoDB) -- Resilient
+        # 6. Risky Assets
         risky_assets_data = []
         try:
-             # Group by AgentId, sum count where RiskLevel is High/Critical
             pipeline_risky = [
-                {"$match": {"Timestamp": {"$gte": mongo_threshold}}}, 
+                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}}, 
                 {"$group": {"_id": "$AgentId", "threatCount": {"$sum": 1}}},
                 {"$sort": {"threatCount": -1}},
                 {"$limit": 5}
             ]
             cursor_risky = events_collection.aggregate(pipeline_risky)
             risky_docs = await cursor_risky.to_list(length=5)
-            
             for doc in risky_docs:
-                if doc["_id"]:
-                     risky_assets_data.append({"agentId": doc["_id"], "threatCount": doc["threatCount"]})
-        except Exception as e:
-            print(f"[Dashboard] MongoDB Risky Assets Error: {e}")
+                 if doc["_id"]: risky_assets_data.append({"agentId": doc["_id"], "threatCount": doc["threatCount"]})
+        except: pass
 
-        # 7. Productivity Score (Calculated) -- DYNAMIC
-        # Base 100, penalties for threats/offline
-        # Formula: 100 - (Offline% * 0.5) - (ThreatsLast24h * 1)
-        # Capped at 0-100
+        # 7. Productivity (Approx)
         offline_ratio = (offline_agents / total_agents) if total_agents > 0 else 0
         penalty_offline = offline_ratio * 100 * 0.5
-        penalty_threats = min(50, total_threats * 2)
+        # Scale threats by time window to avoid "0 score" just because we looked at a year of data
+        # Normalize threats per day
+        days = max(1, total_hours / 24)
+        threats_per_day = total_threats / days
+        penalty_threats = min(50, threats_per_day * 2) 
         score = max(0, min(100, 100 - penalty_offline - penalty_threats))
 
-        # 8. Network (Estimates based on Agent Reports if available, else 0)
-        # Need to check standard AgentReportEntity for NetSent/NetRecv columns
-        # Assuming they don't exist yet in the base model provided previously. 
-        # We will return 0 or very basic "Active * 0.1 Mbps" to show vitality
-        net_in = round(online_agents * 0.5, 1) # 0.5 Mbps idle per agent
+        # 8. Network (Stub)
+        net_in = round(online_agents * 0.5, 1)
         net_out = round(online_agents * 0.2, 1) 
 
         return {

@@ -21,3 +21,4 @@ aiosmtplib==3.0.1
 greenlet
 celery==5.3.6
 redis==5.0.1
+alembic==1.13.1

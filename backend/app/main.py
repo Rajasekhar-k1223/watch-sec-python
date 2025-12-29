@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from .socket_instance import sio
-from .api import reports, auth, dashboard, ai, tenants, users, agents, install, downloads, commands, events, mail, audit, screenshots, policies, productivity, billing, uploads
+from .api import reports, auth, dashboard, ai, tenants, users, agents, install, downloads, commands, events, mail, audit, screenshots, policies, productivity, billing, uploads, system
 
 # Initialize App
 app = FastAPI(title="WatchSec Backend", version="2.0.0")
@@ -160,6 +160,7 @@ app.include_router(uploads.router, prefix="/api/uploads", tags=["Uploads"])
 app.include_router(reports.router, prefix="/api", tags=["Reports"])
 app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 app.include_router(ai.router, prefix="/api/ai", tags=["Artificial Intelligence"])
+app.include_router(system.router, prefix="/api", tags=["System"])
 
 @app.get("/")
 async def root():

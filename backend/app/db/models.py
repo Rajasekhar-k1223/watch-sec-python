@@ -79,3 +79,12 @@ class Policy(Base):
     BlockedAppsJson = Column(Text, default="[]")
     BlockedWebsitesJson = Column(Text, default="[]")
     CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class SystemSetting(Base):
+    __tablename__ = "SystemSettings"
+
+    Key = Column(String(255), primary_key=True, index=True)
+    Value = Column(Text, default="")
+    Category = Column(String(50), default="General")
+    Description = Column(String(255), nullable=True)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

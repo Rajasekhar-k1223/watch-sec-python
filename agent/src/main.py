@@ -47,7 +47,31 @@ except Exception as e:
 
 BACKEND_URL = config.get("BackendUrl", "http://192.168.1.2:8000")
 API_KEY = config.get("TenantApiKey", "")
-AGENT_ID = config.get("AgentId", "PYTHON-AGENT-01")
+AGENT_ID = config.get("AgentId", "")
+
+# Dynamic Agent ID Logic
+# Always verify if the loaded ID matches the current system
+import getpass
+current_hostname = platform.node()
+current_user = getpass.getuser()
+expected_prefix = f"{current_hostname}-{current_user}"
+
+# If ID is missing OR doesn't match the current system (e.g. config copied from another machine)
+if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
+    unique_suffix = str(uuid.uuid4())[:8].upper()
+    AGENT_ID = f"{expected_prefix}-{unique_suffix}"
+    print(f"[Init] ID Mismatch or Missing. Generated New Agent ID: {AGENT_ID}")
+    
+    # Update Config with new ID to persist it
+    config["AgentId"] = AGENT_ID
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=4)
+        print(f"[Init] Saved new Agent ID to config.json")
+    except Exception as e:
+        print(f"[Init] Failed to save config: {e}")
+else:
+    print(f"[Init] Using Configured Agent ID: {AGENT_ID}")
 
 # Socket.IO Client
 sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False)
@@ -70,8 +94,8 @@ webrtc_manager = WebRTCManager(sio, AGENT_ID)
 @sio.event
 async def connect():
     print(f"[STREAM_DEBUG] Agent Connected to Backend. Joining Room: {AGENT_ID}")
-    # Explicitly join room as fail-safe - REMOVED as Backend handles it via Auth
-    # await sio.emit('join_room', {'room': AGENT_ID})
+    # Explicitly join room as fail-safe
+    await sio.emit('join_room', {'room': AGENT_ID})
 
 @sio.on('start_stream')
 async def on_start_stream(data):

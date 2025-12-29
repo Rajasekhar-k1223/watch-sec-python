@@ -1,4 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+import csv
+import io
+from motor.motor_asyncio import AsyncIOMotorClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -6,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 import json
 
-from ..db.session import get_db
+from ..db.session import get_db, get_mongo_db
 from ..db.models import Agent, AgentReportEntity, Tenant, User # Added User
 from ..socket_instance import sio # Import Socket.IO server instance
 from .deps import get_current_user
@@ -110,3 +114,53 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         "ScreenshotResolution": agent.ScreenshotResolution or "Original",
         "MaxScreenshotSize": agent.MaxScreenshotSize or 0
     }
+
+# --- Export Activity Logs ---
+@router.get("/export/activity/{agent_id}")
+async def export_activity_logs(
+    agent_id: str,
+    mongo: AsyncIOMotorClient = Depends(get_mongo_db),
+    current_user: "User" = Depends(get_current_user)
+):
+    # 1. Fetch Logs
+    db = mongo["watchsec"]
+    collection = db["activity"]
+    
+    # Optional: Accept 'days' query param, defaulting to 30 or all
+    cursor = collection.find({"AgentId": agent_id}).sort("Timestamp", -1).limit(1000)
+    logs = await cursor.to_list(length=1000)
+
+    # 2. Generate CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow(["Timestamp", "Activity Type", "Process Name", "Window Title", "URL", "Duration (s)", "Risk Level", "Risk Score"])
+    
+    for log in logs:
+        writer.writerow([
+            log.get("Timestamp", ""),
+            log.get("ActivityType", ""),
+            log.get("ProcessName", ""),
+            log.get("WindowTitle", ""),
+            log.get("Url", ""),
+            log.get("DurationSeconds", 0),
+            log.get("RiskLevel", "Normal"),
+            log.get("RiskScore", 0)
+        ])
+    
+    output.seek(0)
+    
+    # 3. Stream Response
+    filename = f"ActivityReport_{agent_id}_{datetime.now().strftime('%Y%m%d')}.csv"
+    
+    # Note: StreamingResponse takes a generator or iterator of bytes/strings. 
+    # Since StringIO is in-memory, we can yield it.
+    def iterfile():
+        yield output.getvalue()
+        
+    return StreamingResponse(
+        iterfile(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
