@@ -5,4 +5,4 @@ nixPkgs = ["python310", "gcc", "mysql-client"]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "python -m app.scripts.seed && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+cmd = "sh start.sh"
