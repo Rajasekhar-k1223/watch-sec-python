@@ -5,10 +5,9 @@ from sqlalchemy import desc, func, case
 from typing import List, Optional
 from datetime import datetime, timedelta
 
-from ..db.session import get_db, get_mongo_db
-from ..db.models import AgentReportEntity, Agent, User
+from ..db.session import get_db
+from ..db.models import AgentReportEntity, Agent, User, EventLog, ActivityLog as ActivityLogModel
 from .deps import get_current_user
-from motor.motor_asyncio import AsyncIOMotorClient
 
 router = APIRouter()
 
@@ -96,7 +95,6 @@ async def get_dashboard_stats(
     to_date: Optional[str] = None,
     tenantId: Optional[int] = None, 
     db: AsyncSession = Depends(get_db),
-    mongo: AsyncIOMotorClient = Depends(get_mongo_db),
     current_user: "User" = Depends(get_current_user)
 ):
     # 0. Time Range Logic
@@ -196,44 +194,38 @@ async def get_dashboard_stats(
                 "full_date": k
             })
 
-        # 4. Threats (MongoDB) -- Resilient
+    # 4. Threats (SQL)
         threats = {"total": 0, "byType": [], "trend": []}
         try:
-            db_mongo = mongo["watchsec"]
-            events_collection = db_mongo["events"]
+            # Count by Type
+            q_type = select(EventLog.Type, func.count(EventLog.Id)).where(
+                (EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)
+            ).group_by(EventLog.Type)
             
-            # Aggregation: Count by Type
-            pipeline_type = [
-                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}},
-                {"$group": {"_id": "$Type", "count": {"$sum": 1}}}
-            ]
-            cursor = events_collection.aggregate(pipeline_type)
-            type_counts = await cursor.to_list(length=100)
+            res_type = await db.execute(q_type)
+            type_counts = res_type.all() # [(Type, Count), ...]
             
-            total_threats = sum(doc["count"] for doc in type_counts)
-            by_type = [{"type": doc["_id"], "count": doc["count"]} for doc in type_counts]
+            total_threats = sum(c for _, c in type_counts)
+            by_type = [{"type": t, "count": c} for t, c in type_counts]
             
-            # Aggregation: Trend
-            # Mongo group by date operators
-            format_str = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H"
-            pipeline_trend = [
-                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}},
-                {"$group": {
-                    "_id": {"$dateToString": {"format": format_str, "date": "$Timestamp"}},
-                    "count": {"$sum": 1}
-                }},
-                {"$sort": {"_id": 1}}
-            ]
-            cursor_trend = events_collection.aggregate(pipeline_trend)
-            trend_docs = await cursor_trend.to_list(length=100)
+            # Trend (Complex to do purely in SQL agnostic way without specific date functions)
+            # For now, fetch generic list and aggregate in python if volume is low, or skip
+            # Let's do simple python aggregation for trend
+            q_trend = select(EventLog.Timestamp).where(
+                (EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)
+            ).order_by(EventLog.Timestamp)
             
-            # Format nicely
-            threat_trend = []
-            for doc in trend_docs:
-                # Basic formatting, could be improved
-                lbl = doc["_id"]
-                if not group_by_day and " " in lbl: lbl = lbl.split(" ")[1] + ":00"
-                threat_trend.append({"time": lbl, "count": doc["count"]})
+            res_trend = await db.execute(q_trend)
+            trend_items = res_trend.scalars().all()
+            
+            format_str = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H:00"
+            trend_buckets = {}
+            
+            for ts in trend_items:
+                key = ts.strftime(format_str)
+                trend_buckets[key] = trend_buckets.get(key, 0) + 1
+                
+            threat_trend = [{"time": k, "count": v} for k, v in sorted(trend_buckets.items())]
 
             threats = {
                 "total": total_threats,
@@ -241,43 +233,54 @@ async def get_dashboard_stats(
                 "trend": threat_trend
             }
         except Exception as e:
-            print(f"[Dashboard] MongoDB Threats Error: {e}")
+            print(f"[Dashboard] Threats Error: {e}")
 
-        # 5. Recent Logs
+        # 5. Recent Logs (SQL ActivityLogs)
         recent_logs = []
         try:
-             # Basic find in range
-            cursor_logs = events_collection.find({"Timestamp": {"$gte": start_dt, "$lte": end_dt}}).sort("Timestamp", -1).limit(10)
-            recent_docs = await cursor_logs.to_list(length=10)
-            for doc in recent_docs:
+            q_logs = select(ActivityLogModel).where(
+                (ActivityLogModel.Timestamp >= start_dt) & (ActivityLogModel.Timestamp <= end_dt)
+            ).order_by(ActivityLogModel.Timestamp.desc()).limit(10)
+            
+            if tenantId:
+                q_logs = q_logs.where(ActivityLogModel.TenantId == tenantId)
+                
+            res_logs = await db.execute(q_logs)
+            log_docs = res_logs.scalars().all()
+            
+            for doc in log_docs:
                 recent_logs.append({
-                    "type": doc.get("Type", "Unknown"),
-                    "details": doc.get("Details", ""),
-                    "timestamp": doc.get("Timestamp").isoformat() if isinstance(doc.get("Timestamp"), datetime) else str(doc.get("Timestamp")),
-                    "agentId": doc.get("AgentId", "Unknown")
+                    "type": doc.ActivityType,
+                    "details": f"{doc.ProcessName or ''} {doc.WindowTitle or ''}",
+                    "timestamp": doc.Timestamp.isoformat(),
+                    "agentId": doc.AgentId
                 })
-        except: pass
+        except Exception as e: 
+             print(f"[Dashboard] Recent Logs Error: {e}")
 
-        # 6. Risky Assets
+        # 6. Risky Assets (SQL)
         risky_assets_data = []
         try:
-            pipeline_risky = [
-                {"$match": {"Timestamp": {"$gte": start_dt, "$lte": end_dt}}}, 
-                {"$group": {"_id": "$AgentId", "threatCount": {"$sum": 1}}},
-                {"$sort": {"threatCount": -1}},
-                {"$limit": 5}
-            ]
-            cursor_risky = events_collection.aggregate(pipeline_risky)
-            risky_docs = await cursor_risky.to_list(length=5)
-            for doc in risky_docs:
-                 if doc["_id"]: risky_assets_data.append({"agentId": doc["_id"], "threatCount": doc["threatCount"]})
-        except: pass
+            # Count High Risk logs per agent
+            q_risk = select(ActivityLogModel.AgentId, func.count(ActivityLogModel.Id).label("count"))\
+                .where((ActivityLogModel.Timestamp >= start_dt) & (ActivityLogModel.Timestamp <= end_dt))\
+                .where(ActivityLogModel.RiskLevel == "High")\
+                .group_by(ActivityLogModel.AgentId)\
+                .order_by(desc("count"))\
+                .limit(5)
+                
+            if tenantId:
+                q_risk = q_risk.where(ActivityLogModel.TenantId == tenantId)
+
+            res_risk = await db.execute(q_risk)
+            for agent_id, count in res_risk.all():
+                 risky_assets_data.append({"agentId": agent_id, "threatCount": count})
+        except Exception as e:
+            print(f"[Dashboard] Risky Assets Error: {e}")
 
         # 7. Productivity (Approx)
         offline_ratio = (offline_agents / total_agents) if total_agents > 0 else 0
         penalty_offline = offline_ratio * 100 * 0.5
-        # Scale threats by time window to avoid "0 score" just because we looked at a year of data
-        # Normalize threats per day
         days = max(1, total_hours / 24)
         threats_per_day = total_threats / days
         penalty_threats = min(50, threats_per_day * 2) 

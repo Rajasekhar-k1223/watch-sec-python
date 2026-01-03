@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from .socket_instance import sio
-from .api import reports, auth, dashboard, ai, tenants, users, agents, install, downloads, commands, events, mail, audit, screenshots, policies, productivity, billing, uploads, system
+from .api import reports, auth, dashboard, ai, tenants, users, agents, install, downloads, commands, events, mail, audit, screenshots, policies, productivity, billing, uploads, system, ocr, thesaurus, speech, hashbank, fingerprints, searches, remote
 
 # Initialize App
 app = FastAPI(title="WatchSec Backend", version="2.0.0")
@@ -11,8 +11,8 @@ app = FastAPI(title="WatchSec Backend", version="2.0.0")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://192.168.1.2:5173", "http://192.168.1.2:3000", "http://localhost:5173"], 
-    allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+",
+    allow_origins=["http://192.168.1.2:5173", "http://192.168.1.2:3000", "http://localhost:5173", "http://localhost:5174"], 
+    allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+|chrome-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,6 +161,13 @@ app.include_router(reports.router, prefix="/api", tags=["Reports"])
 app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 app.include_router(ai.router, prefix="/api/ai", tags=["Artificial Intelligence"])
 app.include_router(system.router, prefix="/api", tags=["System"])
+app.include_router(ocr.router, prefix="/api", tags=["OCR"])
+app.include_router(thesaurus.router, prefix="/api", tags=["Thesaurus"])
+app.include_router(speech.router, prefix="/api", tags=["Speech"])
+app.include_router(hashbank.router, prefix="/api", tags=["HashBanks"])
+app.include_router(fingerprints.router, prefix="/api", tags=["Fingerprints"])
+app.include_router(searches.router, prefix="/api", tags=["Searches"])
+app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
 
 @app.get("/")
 async def root():
@@ -174,3 +181,5 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+
+# Force Reload Trigger 3

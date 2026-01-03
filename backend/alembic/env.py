@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Add app path
 sys.path.append(os.getcwd())
 
-load_dotenv()
+load_dotenv(".env.dev")
 
 # Import Base
 from app.db.models import Base
@@ -39,6 +39,8 @@ def get_url():
         # Fallback or error
         return "mysql+pymysql://user:pass@localhost/db"
     # Replace async driver with sync driver for Alembic if needed
+    if "sqlite+aiosqlite" in url:
+        return url.replace("sqlite+aiosqlite", "sqlite")
     return url.replace("mysql+aiomysql", "mysql+pymysql")
 
 def run_migrations_offline() -> None:
@@ -83,8 +85,13 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection, 
+            target_metadata=target_metadata,
+            render_as_batch=True
         )
+
+        with context.begin_transaction():
+            context.run_migrations()
 
         with context.begin_transaction():
             context.run_migrations()

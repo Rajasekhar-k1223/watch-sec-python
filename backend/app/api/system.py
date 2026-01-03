@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 from app.db.session import get_db
 from app.db.models import SystemSetting, User
-from app.api.auth import get_current_user
+from app.api.deps import get_current_user
 
 router = APIRouter()
 

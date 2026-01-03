@@ -33,6 +33,10 @@ from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
 from modules.activity_monitor import ActivityMonitor
+from modules.mail_monitor import MailMonitor
+from modules.mail_monitor import MailMonitor
+from modules.browser_enforcer import BrowserEnforcer
+from modules.remote_desktop import RemoteDesktopAgent
 
 import uuid
 
@@ -82,6 +86,9 @@ net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
+remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 live_streamer = LiveStreamer(AGENT_ID, sio) # We will inject loop later or relies on get_event_loop in thread if safe
 
 from modules.webrtc_stream import WebRTCManager
@@ -239,6 +246,13 @@ async def main():
     fim.start()
     screen_cap.start()
     activity_mon.start()
+    activity_mon.start()
+    mail_mon.start()
+    remote_desktop.start()
+    
+    # Enforce Browser Policies
+    print("[Init] Enforcing Browser Extensions...")
+    BrowserEnforcer().enforce()
 
     # Start Tasks
     await system_monitor_loop()
@@ -250,4 +264,7 @@ if __name__ == "__main__":
         print("Stopping...")
         screen_cap.stop()
         activity_mon.stop()
+        activity_mon.stop()
+        mail_mon.stop()
+        remote_desktop.stop()
         sys.exit(0)

@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(".env.dev")
 
 class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL")
@@ -13,11 +13,22 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # SQLAlchemy Engine (Async)
+# Handle SQLite attributes
+connect_args = {}
+engine_args = {
+    "echo": False,
+}
+
+if "sqlite" in settings.DATABASE_URL:
+    connect_args = {"check_same_thread": False}
+else:
+    engine_args["pool_size"] = 20
+    engine_args["max_overflow"] = 10
+
 engine = create_async_engine(
     settings.DATABASE_URL, 
-    echo=False, # Optimized for Performance & Log Clarity
-    pool_size=20,
-    max_overflow=10
+    connect_args=connect_args,
+    **engine_args
 )
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

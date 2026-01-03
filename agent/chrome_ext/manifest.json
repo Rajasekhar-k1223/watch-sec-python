@@ -1,0 +1,30 @@
+{
+    "manifest_version": 3,
+    "name": "Watch-Sec Mail Interceptor",
+    "version": "1.0",
+    "description": "Enterprise Policy: Logs outgoing webmail to Watch-Sec Agent.",
+    "permissions": [
+        "scripting",
+        "activeTab",
+        "storage"
+    ],
+    "host_permissions": [
+        "https://mail.google.com/*",
+        "https://outlook.office.com/*",
+        "https://outlook.live.com/*",
+        "http://localhost:8000/*"
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "https://mail.google.com/*",
+                "https://outlook.office.com/*",
+                "https://outlook.live.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_end"
+        }
+    ]
+}
