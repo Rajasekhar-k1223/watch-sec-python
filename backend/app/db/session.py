@@ -8,8 +8,9 @@ load_dotenv(".env")
 load_dotenv(".env.dev")
 
 class Settings(BaseSettings):
-    DATABASE_URL: str
-    MONGO_URL: str
+    # Fallback to known Railway credentials if env vars are missing
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "mysql+aiomysql://root:nBhlxqOuzWwFQkraCcNrVIoDVFqFbWEA@trolley.proxy.rlwy.net:34465/railway")
+    MONGO_URL: str = os.getenv("MONGO_URL", "mongodb://mongo:taOtHmJnOLgnMorrtJpDZLmozClPXmOq@crossover.proxy.rlwy.net:30926")
 
 settings = Settings()
 
