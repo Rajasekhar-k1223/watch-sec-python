@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 load_dotenv(".env.dev")
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = os.getenv("DATABASE_URL")
-    MONGO_URL: str = os.getenv("MONGO_URL")
+    DATABASE_URL: str
+    MONGO_URL: str
 
 settings = Settings()
 
