@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 import os
 from dotenv import load_dotenv
 
+load_dotenv(".env")
 load_dotenv(".env.dev")
 
 class Settings(BaseSettings):

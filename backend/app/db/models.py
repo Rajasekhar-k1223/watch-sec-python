@@ -12,8 +12,8 @@ class Tenant(Base):
     Plan = Column(String(50), default="Starter")
     AgentLimit = Column(Integer, default=5)
     NextBillingDate = Column(DateTime, default=datetime.utcnow)
-    # TrustedDomainsJson = Column(Text, default="[]") 
-    # TrustedIPsJson = Column(Text, default="[]")
+    TrustedDomainsJson = Column(Text, default="[]") 
+    TrustedIPsJson = Column(Text, default="[]")
 
 class User(Base):
     __tablename__ = "Users"
