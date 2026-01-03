@@ -14,12 +14,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
+# Copy application code
 COPY app ./app
 COPY storage ./storage
-COPY .env .
+COPY start.sh .
 
-# Create start script
-RUN echo "#!/bin/bash\npython -m app.scripts.seed\nuvicorn app.main:app --host 0.0.0.0 --port 8000" > start.sh
+# Permissions
 RUN chmod +x start.sh
 
 # Expose port
