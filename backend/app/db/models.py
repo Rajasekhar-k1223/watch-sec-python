@@ -211,4 +211,29 @@ class MailAttachment(Base):
     Content = Column(Text) # Storing as Base64 String
     Size = Column(Integer) # Bytes
     
+    
     MailLog = relationship("MailLog", back_populates="Attachments")
+
+class Vulnerability(Base):
+    __tablename__ = "Vulnerabilities"
+
+    Id = Column(Integer, primary_key=True, index=True)
+    CVE = Column(String(50), index=True, nullable=False) # e.g. CVE-2023-1234
+    AffectedProduct = Column(String(255), index=True, nullable=False) # e.g. "Chrome"
+    MinVersion = Column(String(50), nullable=True) # e.g. "100.0"
+    MaxVersion = Column(String(50), nullable=True) # e.g. "115.0"
+    Severity = Column(String(50), default="High") # Critical, High, Medium, Low
+    Description = Column(Text, default="")
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class SessionRecording(Base):
+    __tablename__ = "SessionRecordings"
+
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), index=True, nullable=False)
+    Type = Column(String(50), default="RemoteDesktop") # RemoteDesktop, LiveStream
+    StartTime = Column(DateTime, default=datetime.utcnow)
+    EndTime = Column(DateTime, nullable=True)
+    DurationSeconds = Column(Integer, default=0)
+    VideoFilePath = Column(String(500), nullable=False) # Local storage path
+    FileSize = Column(Integer, default=0) # Bytes

@@ -1,98 +1,126 @@
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Depends
-from typing import Dict, List
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from datetime import datetime
+import os
+import shutil
+import uuid
 import json
-import logging
+import base64
+from typing import Dict
 
-# Logger
-logger = logging.getLogger("RemoteHub")
+from ..db.session import get_db
+from ..db.models import Agent, SessionRecording
+from ..socket_instance import sio
 
-class ConnectionManager:
-    def __init__(self):
-        # Map agent_id -> Agent WebSocket
-        self.active_agents: Dict[str, WebSocket] = {}
-        # Map agent_id -> List of Admin WebSockets (viewers)
-        self.active_admins: Dict[str, List[WebSocket]] = {}
-
-    async def connect_agent(self, websocket: WebSocket, agent_id: str):
-        await websocket.accept()
-        self.active_agents[agent_id] = websocket
-        if agent_id not in self.active_admins:
-            self.active_admins[agent_id] = []
-        logger.info(f"Agent {agent_id} connected for Remote Control.")
-
-    def disconnect_agent(self, agent_id: str):
-        if agent_id in self.active_agents:
-            del self.active_agents[agent_id]
-        logger.info(f"Agent {agent_id} disconnected.")
-        # Notify admins?
-
-    async def connect_admin(self, websocket: WebSocket, agent_id: str):
-        await websocket.accept()
-        if agent_id not in self.active_admins:
-            self.active_admins[agent_id] = []
-        self.active_admins[agent_id].append(websocket)
-        logger.info(f"Admin connected to view Agent {agent_id}.")
-
-    def disconnect_admin(self, websocket: WebSocket, agent_id: str):
-        if agent_id in self.active_admins:
-            if websocket in self.active_admins[agent_id]:
-                self.active_admins[agent_id].remove(websocket)
-
-    async def broadcast_to_admins(self, agent_id: str, data: bytes):
-        # Send screen frame (bytes) to all listening admins
-        if agent_id in self.active_admins:
-            for connection in self.active_admins[agent_id]:
-                try:
-                    await connection.send_bytes(data)
-                except Exception as e:
-                    logger.error(f"Error broadcasting to admin: {e}")
-
-    async def send_to_agent(self, agent_id: str, message: str):
-        # Send control command (JSON) to agent
-        if agent_id in self.active_agents:
-            try:
-                await self.active_agents[agent_id].send_text(message)
-            except Exception as e:
-                logger.error(f"Error sending to agent {agent_id}: {e}")
-
-manager = ConnectionManager()
 router = APIRouter()
 
-@router.websocket("/ws/agent/{agent_id}")
-async def websocket_endpoint_agent(websocket: WebSocket, agent_id: str, api_key: str = None):
-    # TODO: Validate api_key against DB or Tenant config
-    if not api_key:
-        logger.warning(f"Agent {agent_id} tried to connect without API Key.")
-        # await websocket.close(code=1008) # Policy Violation
-        # return
-    
-    logger.info(f"Agent {agent_id} connecting with Key: {api_key[:5]}***")
-    await manager.connect_agent(websocket, agent_id)
-    try:
-        while True:
-            # Receive video frame (binary)
-            data = await websocket.receive_bytes()
-            # Broadcast to all admins watching this agent
-            await manager.broadcast_to_admins(agent_id, data)
-    except WebSocketDisconnect:
-        manager.disconnect_agent(agent_id)
-    except Exception as e:
-        logger.error(f"Agent WS Error: {e}")
-        manager.disconnect_agent(agent_id)
+STORAGE_DIR = "storage/recordings"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-@router.websocket("/ws/admin/{agent_id}")
-async def websocket_endpoint_admin(websocket: WebSocket, agent_id: str):
-    # TODO: Add token validation
-    await manager.connect_admin(websocket, agent_id)
+# --- WebSocket Manager for Remote Control ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, agent_id: str):
+        await websocket.accept()
+        self.active_connections[agent_id] = websocket
+        print(f"[Remote] Agent {agent_id} Connected via WS")
+
+    def disconnect(self, agent_id: str):
+        if agent_id in self.active_connections:
+            del self.active_connections[agent_id]
+            print(f"[Remote] Agent {agent_id} Disconnected")
+
+    async def send_command(self, agent_id: str, command: dict):
+        if agent_id in self.active_connections:
+            await self.active_connections[agent_id].send_text(json.dumps(command))
+        else:
+            print(f"[Remote] Agent {agent_id} not connected for command {command.get('type')}")
+
+manager = ConnectionManager()
+
+@router.websocket("/ws/agent/{agent_id}")
+async def websocket_endpoint(websocket: WebSocket, agent_id: str):
+    await manager.connect(websocket, agent_id)
     try:
         while True:
-            # Receive control commands (mouse/keyboard) from Admin
-            data = await websocket.receive_text()
-            # Forward to Agent
-            await manager.send_to_agent(agent_id, data)
+            # Receive Frame (Bytes)
+            data = await websocket.receive_bytes()
+            
+            # Forward to Frontend via Socket.IO
+            # Frontend expects base64 string "image"
+            b64_img = base64.b64encode(data).decode('utf-8')
+            
+            # Broadcast to "agent_id" room (Frontend listens to this room)
+            await sio.emit('receive_stream_frame', {
+                'agentId': agent_id,
+                'image': b64_img
+            }, room=agent_id)
+            
     except WebSocketDisconnect:
-        manager.disconnect_admin(websocket, agent_id)
+        manager.disconnect(agent_id)
     except Exception as e:
-        logger.error(f"Admin WS Error: {e}")
-        manager.disconnect_admin(websocket, agent_id)
+        print(f"[Remote] WS Error: {e}")
+        manager.disconnect(agent_id)
+
+# --- Socket.IO Handlers for Input (Frontend -> Backend) ---
+# Check main.py for existing handlers? If none, define here.
+# Assuming Frontend emits 'RemoteInput'
+
+@sio.on('RemoteInput')
+async def on_remote_input(sid, data):
+    # data: { agentId, type: 'mousemove', x, y, ... }
+    agent_id = data.get('agentId')
+    if agent_id:
+        # Relay to WS
+        await manager.send_command(agent_id, data)
+
+# --- Session Recording Upload ---
+
+@router.post("/upload-session")
+async def upload_session_recording(
+    agent_id: str = Form(...),
+    duration: int = Form(...),
+    start_time: str = Form(...), # ISO Format
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    # Validate Agent
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Save File
+    filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}.mp4"
+    file_path = os.path.join(STORAGE_DIR, filename)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+        
+    try:
+        start_dt = datetime.fromisoformat(start_time)
+    except:
+        start_dt = datetime.utcnow()
+
+    # Create DB Record
+    recording = SessionRecording(
+        AgentId=agent_id,
+        Type="RemoteDesktop",
+        StartTime=start_dt,
+        EndTime=datetime.utcnow(),
+        DurationSeconds=duration,
+        VideoFilePath=file_path,
+        FileSize=os.path.getsize(file_path)
+    )
+    
+    db.add(recording)
+    await db.commit()
+    
+    return {"status": "success", "file_path": file_path, "id": recording.Id}

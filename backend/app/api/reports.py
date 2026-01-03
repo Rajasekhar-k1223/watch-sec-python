@@ -106,6 +106,15 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         'timestamp': dto.Timestamp.isoformat()
     })
 
+    # 5. Trigger Vulnerability Scan (Background)
+    if dto.InstalledSoftwareJson and len(dto.InstalledSoftwareJson) > 10:
+        try:
+            from ..tasks.security import scan_vulnerabilities_background
+            # Pass AgentId and JSON string
+            scan_vulnerabilities_background.delay(dto.AgentId, dto.InstalledSoftwareJson)
+        except Exception as e:
+            print(f"[API] Failed to trigger sec scan: {e}")
+
     return {
         "TenantId": tenant.Id, 
         "ScreenshotsEnabled": agent.ScreenshotsEnabled,

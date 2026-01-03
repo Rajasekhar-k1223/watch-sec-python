@@ -12,7 +12,14 @@ from PIL import Image
 try:
     import pyautogui
 except ImportError:
-    pyautogui = None # Handle missing dependency gracefully usually
+except ImportError:
+    pyautogui = None 
+from datetime import datetime
+import os
+import requests
+import shutil
+from datetime import datetime
+import os
 
 class RemoteDesktopAgent:
     def __init__(self, api_url, agent_id, api_key):
@@ -27,6 +34,10 @@ class RemoteDesktopAgent:
         self.quality = 60 # JPEG Quality
         self.resolution_scale = 0.6 # Scaling factor (0.5 = 50% size)
         self.fps_target = 10
+        self.recording = False
+        self.writer = None
+        self.current_recording_path = None
+        self.recording_start_time = None
 
     def start(self):
         if not pyautogui:
@@ -81,40 +92,84 @@ class RemoteDesktopAgent:
 
     async def _stream_screen(self, websocket):
         with mss.mss() as sct:
-            # Select first monitor
             monitor = sct.monitors[1] 
             
             while self.running:
                 start_time = time.time()
-                
                 try:
-                    # Capture
                     sct_img = sct.grab(monitor)
-                    
-                    # Convert to PIL
                     img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
                     
-                    # Resize
                     if self.resolution_scale < 1.0:
                         new_size = (int(img.width * self.resolution_scale), int(img.height * self.resolution_scale))
                         img = img.resize(new_size, Image.Resampling.LANCZOS)
                         
-                    # Save to Bytes (JPEG)
+                    # Recording Logic
+                    if self.recording:
+                        # Init Writer if needed
+                        if not self.writer:
+                            self._init_writer(img.width, img.height)
+                        
+                        # Write Frame (Convert to BGR for OpenCV)
+                        if self.writer:
+                            import cv2
+                            import numpy as np
+                            # Convert PIL RGB to OpenCV BGR
+                            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                            self.writer.write(frame)
+
+                    # Save to Bytes (JPEG) for Stream
                     buffer = io.BytesIO()
                     img.save(buffer, format="JPEG", quality=self.quality, optimize=True)
                     data = buffer.getvalue()
-                    
-                    # Send Binary
                     await websocket.send(data)
-                    
+
                 except Exception as e:
                     self.logger.error(f"Stream Error: {e}")
                     break
 
-                # FPS Control
                 elapsed = time.time() - start_time
                 delay = max(0, (1.0 / self.fps_target) - elapsed)
                 await asyncio.sleep(delay)
+
+    def _init_writer(self, width, height):
+        try:
+            import cv2
+            filename = f"session_{int(time.time())}.mp4"
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.writer = cv2.VideoWriter(filename, fourcc, self.fps_target, (width, height))
+            self.current_recording_path = filename
+            self.recording_start_time = datetime.now()
+            self.logger.info(f"Initialized Video Writer: {filename}")
+        except Exception as e:
+            self.logger.error(f"Writer Init Failed: {e}")
+            self.recording = False
+
+    def _upload_recording(self, file_path, duration, start_time):
+        if not file_path or not os.path.exists(file_path):
+            return
+        
+        # Upload in a separate thread to avoid blocking loop? 
+        # For simplicity, we do it here but it blocks the input loop briefly.
+        # Ideally use asyncio.to_thread
+        try:
+            url = f"{self.api_url.replace('ws', 'http')}/api/remote/upload-session"
+            self.logger.info(f"Uploading recording to {url}...")
+            
+            with open(file_path, 'rb') as f:
+                files = {'file': (os.path.basename(file_path), f, 'video/mp4')}
+                data = {
+                    'agent_id': self.agent_id,
+                    'duration': int(duration),
+                    'start_time': start_time.isoformat()
+                }
+                requests.post(url, files=files, data=data, verify=False)
+            
+            self.logger.info("Upload Complete. Deleting local file.")
+            os.remove(file_path)
+            
+        except Exception as e:
+            self.logger.error(f"Upload Failed: {e}")
 
     async def _handle_input(self, websocket):
         width, height = pyautogui.size()
@@ -127,7 +182,6 @@ class RemoteDesktopAgent:
                 cmd_type = command.get("type")
                 
                 if cmd_type == "mousemove":
-                    # Coords are normalized 0.0-1.0
                     x = int(command["x"] * width)
                     y = int(command["y"] * height)
                     pyautogui.moveTo(x, y)
@@ -153,6 +207,22 @@ class RemoteDesktopAgent:
                         self.logger.info("Executed Lock Workstation command.")
                     except Exception as e:
                         self.logger.error(f"Failed to lock workstation: {e}")
+
+                elif cmd_type == "start_recording":
+                    self.recording = True
+                    self.logger.info("Recording Started")
+
+                elif cmd_type == "stop_recording":
+                    self.recording = False
+                    self.logger.info("Recording Stopped")
+                    if self.writer:
+                        self.writer.release()
+                        self.writer = None
+                        # Convert duration
+                        if self.recording_start_time:
+                            duration = (datetime.now() - self.recording_start_time).seconds
+                            await asyncio.to_thread(self._upload_recording, self.current_recording_path, duration, self.recording_start_time)
+                        self.current_recording_path = None
 
             except Exception as e:
                 self.logger.error(f"Input Error: {e}")

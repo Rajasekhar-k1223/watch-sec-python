@@ -1,5 +1,5 @@
 {
-    "BackendUrl": "http://localhost:8000",
+    "BackendUrl": "https://your-app-name.up.railway.app",
     "TenantApiKey": "e7cdae55-2e7e-467a-bdc5-3cbf5d321368",
-    "AgentId": "Rajasekhars-Mac-mini.local-27629F40"
+    "AgentId": "Hostname-Username-UniqueId"
 }

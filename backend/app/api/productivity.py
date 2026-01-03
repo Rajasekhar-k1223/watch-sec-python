@@ -10,6 +10,7 @@ from ..db.models import User
 router = APIRouter()
 
 @router.get("/summary/{agent_id}")
+@router.get("/summary/{agent_id}")
 async def get_productivity_summary(
     agent_id: str,
     days: int = 1,
@@ -36,7 +37,6 @@ async def get_productivity_summary(
     neutral_seconds = 0.0
     
     # Basic Classification Logic (Mock)
-    # Ideally, this should query a 'Classifications' collection
     productive_apps = ["code", "visual studio", "chrome", "teams", "slack", "outlook"]
     unproductive_apps = ["netflix", "facebook", "youtube", "steam", "spotify"]
     

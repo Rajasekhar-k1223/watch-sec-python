@@ -39,3 +39,31 @@ To deploy the agent, you must first build the executable.
 ## Notes
 - The default `seed.py` creates a "Default Tenant" and "admin" user.
 - If you need to reset the DB, delete `docker-compose` volumes or run `docker-compose down -v`.
+
+## Deployment (Railway)
+
+### Backend Deployment
+1.  **Push Code**: Push this repository to GitHub.
+2.  **Create Project**: In Railway, create a new project from your GitHub repo.
+3.  **Add Database**: Add a PostgreSQL database service (and Redis if needed for Celery).
+4.  **Environment Variables**:
+    - `DATABASE_URL`: Set automatically by Railway (or set manually).
+    - `SECRET_KEY`: Generate a random string.
+    - `CELERY_BROKER_URL`: `redis://...` (if keeping Celery separate).
+5.  **Build**: Railway should auto-detect `nixpacks.toml` and build the Python app.
+6.  **Verify**: The `Procfile` will start the `web` (Uvicorn) and `worker` (Celery) processes.
+
+### Agent Connection
+After deployment:
+1.  Get your **Railway App URL** (e.g., `https://web-production-xxxx.up.railway.app`).
+2.  Update `agent/config.json` locally:
+    ```json
+    "BackendUrl": "https://your-app-url.up.railway.app"
+    ```
+3.  Rebuild/Run the agent.
+
+### Data Migration
+To sync your offline SQLite data to Production:
+1.  Ensure `watch-sec.db` is present locally.
+2.  Set `DATABASE_URL` env var to your Production URL.
+3.  Run `python backend/app/scripts/sync_db.py`.
