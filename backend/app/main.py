@@ -12,7 +12,7 @@ app = FastAPI(title="WatchSec Backend", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://192.168.1.2:5173", "http://192.168.1.2:3000", "http://localhost:5173", "http://localhost:5174"], 
-    allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+|chrome-extension://.*",
+    allow_origin_regex=r"https://.*\.railway\.app|https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+|chrome-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
