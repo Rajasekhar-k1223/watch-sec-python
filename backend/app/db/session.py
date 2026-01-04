@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Railway will inject these automatically if services are linked, or you set them in "Variables"
-    DATABASE_URL: str
-    MONGO_URL: str
+    DATABASE_URL: str = "sqlite+aiosqlite:///./watch-sec.db"
+    MONGO_URL: str = "mongodb://localhost:27017"
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.dev"),
