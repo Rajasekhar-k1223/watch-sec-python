@@ -10,10 +10,11 @@ from dotenv import load_dotenv
 # Add app path
 sys.path.append(os.getcwd())
 
-load_dotenv(".env.dev")
-
 # Import Base
 from app.db.models import Base
+
+# Import Settings
+from app.db.session import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -34,14 +35,17 @@ target_metadata = Base.metadata
 # ... etc.
 
 def get_url():
-    url = os.getenv("DATABASE_URL")
+    url = settings.DATABASE_URL
     if not url:
-        # Fallback or error
-        return "mysql+pymysql://user:pass@localhost/db"
-    # Replace async driver with sync driver for Alembic if needed
+        return "sqlite:///./watch-sec.db" # Fail-safe
+        
+    # Replace async driver with sync driver for Alembic
+    # Alembic requires a synchronous driver (e.g. pymysql, standard sqlite)
     if "sqlite+aiosqlite" in url:
         return url.replace("sqlite+aiosqlite", "sqlite")
-    return url.replace("mysql+aiomysql", "mysql+pymysql")
+    if "mysql+aiomysql" in url:
+        return url.replace("mysql+aiomysql", "mysql+pymysql")
+    return url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
