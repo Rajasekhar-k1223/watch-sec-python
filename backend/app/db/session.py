@@ -7,6 +7,13 @@ class Settings(BaseSettings):
     # Railway will inject these automatically if services are linked, or you set them in "Variables"
     DATABASE_URL: str = "sqlite+aiosqlite:///./watch-sec.db"
     MONGO_URL: str = "mongodb://localhost:27017"
+    
+    BACKEND_CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "https://watch-sec-frontend-production.up.railway.app"
+    ]
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.dev"),

@@ -2,16 +2,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from .socket_instance import sio
+from .db.session import settings
 from .api import reports, auth, dashboard, ai, tenants, users, agents, install, downloads, commands, events, mail, audit, screenshots, policies, productivity, billing, uploads, system, ocr, thesaurus, speech, hashbank, fingerprints, searches, remote
 
 # Initialize App
 app = FastAPI(title="WatchSec Backend", version="2.0.0")
 
 # CORS
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://watch-sec-frontend-production.up.railway.app", "http://192.168.1.2:5173", "http://192.168.1.2:3000", "http://localhost:5173", "http://localhost:5174"], 
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_origin_regex=r"https://.*\.railway\.app|https://.*\.ngrok-free\.app|https://.*\.trycloudflare\.com|http://192\.168\.\d+\.\d+:\d+|http://localhost:\d+|http://127\.0\.0\.1:\d+|chrome-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
