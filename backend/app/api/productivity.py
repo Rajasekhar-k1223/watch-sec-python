@@ -10,7 +10,6 @@ from ..db.models import User
 router = APIRouter()
 
 @router.get("/summary/{agent_id}")
-@router.get("/summary/{agent_id}")
 async def get_productivity_summary(
     agent_id: str,
     days: int = 1,

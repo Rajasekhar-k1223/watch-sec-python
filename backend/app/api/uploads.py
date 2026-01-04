@@ -50,7 +50,6 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail="Upload failed")
 
 @router.post("/shadow")
-@router.post("/shadow")
 async def upload_shadow(
     file: UploadFile = File(...),
     agent_id: str = "Unknown",

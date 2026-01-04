@@ -5,8 +5,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Railway will inject these automatically if services are linked, or you set them in "Variables"
-    DATABASE_URL: str = "mysql+aiomysql://root:nBhlxqOuzWwFQkraCcNrVIoDVFqFbWEA@mysql.railway.internal:3306/railway"
-    MONGO_URL: str = "mongodb://mongo:taOtHmJnOLgnMorrtJpDZLmozClPXmOq@mongodb.railway.internal:27017"
+    # Defaults to Local/SQLite for development.
+    # For Railway Production, these are overridden by Environment Variables.
+    DATABASE_URL: str = "sqlite+aiosqlite:///./watch-sec.db"
+    MONGO_URL: str = "mongodb://localhost:27017"
     
     BACKEND_CORS_ORIGINS: list[str] = [
         "http://localhost:5173",
