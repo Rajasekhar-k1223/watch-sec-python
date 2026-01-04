@@ -1,16 +1,18 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from pydantic_settings import BaseSettings
-import os
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-load_dotenv(".env")
-load_dotenv(".env.dev")
 
 class Settings(BaseSettings):
     # Railway will inject these automatically if services are linked, or you set them in "Variables"
-    DATABASE_URL: str = os.getenv("DATABASE_URL")
-    MONGO_URL: str = os.getenv("MONGO_URL")
+    DATABASE_URL: str
+    MONGO_URL: str
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".env.dev"),
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 settings = Settings()
 
