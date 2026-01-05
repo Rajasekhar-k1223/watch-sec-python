@@ -125,7 +125,7 @@ echo "Done. Run ./watch-sec-agent/agent to start."
                          new_f.write(delimiter)
                          new_f.write(payload)
                 
-                return FileResponse(final_exe_path, media_type="application/vnd.microsoft.portable-executable", filename="watch-sec-installer.exe")
+                return FileResponse(final_exe_path, media_type="application/vnd.microsoft.portable-executable", filename="watch-sec-installer-v2.exe")
             else:
                  # Debugging: Why is EXE missing?
                  files = os.listdir(agent_folder)
