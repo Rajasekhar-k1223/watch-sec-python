@@ -56,6 +56,9 @@ async def create_policy(
     if not current_user.TenantId:
          raise HTTPException(status_code=403, detail="User must belong to a tenant")
 
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
     new_policy = Policy(
         TenantId=current_user.TenantId,
         Name=dto.Name,
@@ -89,6 +92,9 @@ async def update_policy(
     if current_user.Role != "SuperAdmin" and policy.TenantId != current_user.TenantId:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+        raise HTTPException(status_code=403, detail="Not authorized (ReadOnly)")
+
     policy.Name = dto.Name
     policy.RulesJson = dto.RulesJson
     policy.Actions = dto.Actions
@@ -113,6 +119,9 @@ async def delete_policy(
         
     if current_user.Role != "SuperAdmin" and policy.TenantId != current_user.TenantId:
         raise HTTPException(status_code=403, detail="Not authorized")
+
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+        raise HTTPException(status_code=403, detail="Not authorized (ReadOnly)")
         
     await db.delete(policy)
     await db.commit()

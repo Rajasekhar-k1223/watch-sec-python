@@ -107,7 +107,7 @@ async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = D
     new_user = User(
         Username=form_data.adminUsername,
         PasswordHash=get_password_hash(form_data.password),
-        Role="SuperAdmin",
+        Role="TenantAdmin",
         TenantId=new_tenant.Id
     )
     db.add(new_user)

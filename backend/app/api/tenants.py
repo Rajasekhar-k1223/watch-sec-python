@@ -20,10 +20,14 @@ async def get_tenants(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
 ):
+    query = select(Tenant)
+    
     if current_user.Role != "SuperAdmin":
-        raise HTTPException(status_code=403, detail="Not authorized")
+        if not current_user.TenantId:
+            return []
+        query = query.where(Tenant.Id == current_user.TenantId)
         
-    result = await db.execute(select(Tenant))
+    result = await db.execute(query)
     tenants = result.scalars().all()
     return tenants
 

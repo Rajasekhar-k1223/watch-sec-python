@@ -18,6 +18,66 @@ class UserDto(BaseModel):
     TenantId: Optional[int]
     TenantName: Optional[str]
 
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "Analyst"
+
+@router.post("/", response_model=UserDto)
+async def create_user(
+    req: CreateUserRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Authorization
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # 2. Determine TenantId
+    target_tenant_id = current_user.TenantId
+    if current_user.Role == "SuperAdmin":
+        # In a real app, SuperAdmin might specify TenantId in request. 
+        # For now, simplistic: Create in own tenant (if any) or error?
+        # Let's assume SuperAdmin creates global admins or admins for their own tenant context.
+        pass
+    
+    if not target_tenant_id:
+        # If SuperAdmin has no tenant (unlikely), they can't create scoped users without specifying tenant.
+        # Allowing creation for now, but strictly checking username.
+        pass
+
+    # 3. Check Username Uniqueness
+    result = await db.execute(select(User).where(User.Username == req.username))
+    if result.scalars().first():
+         raise HTTPException(status_code=400, detail="Username already exists")
+
+    # 4. Create
+    new_user = User(
+        Username=req.username,
+        PasswordHash=get_password_hash(req.password),
+        Role=req.role,
+        TenantId=target_tenant_id
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    # 5. Return DTO
+    # Fetch Tenant Name
+    tenant_name = "N/A"
+    if new_user.TenantId:
+        t_result = await db.execute(select(Tenant).where(Tenant.Id == new_user.TenantId))
+        t = t_result.scalars().first()
+        if t: tenant_name = t.Name
+
+    return UserDto(
+        Id=new_user.Id,
+        Username=new_user.Username,
+        Role=new_user.Role,
+        TenantId=new_user.TenantId,
+        TenantName=tenant_name
+    )
+
 class ChangePasswordRequest(BaseModel):
     OldPassword: str
     NewPassword: str
