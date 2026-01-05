@@ -25,11 +25,26 @@ app = FastAPI(
     version="2.0.0",
 )
 
+from fastapi.responses import JSONResponse
+
 @app.middleware("http")
 async def debug_cors_middleware(request, call_next):
     origin = request.headers.get("origin")
     print(f"[CORS_DEBUG] Request Method: {request.method} | URL: {request.url} | Origin: {origin}")
-    response = await call_next(request)
+    
+    # MANUAL CORS HANDLING - THE NUCLEAR OPTION
+    if request.method == "OPTIONS":
+        response = JSONResponse(content={"message": "CORS Preflight OK"})
+    else:
+        response = await call_next(request)
+
+    # Force headers on everything
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        
     return response
 
 

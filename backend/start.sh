@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # 1. Automatic Migrations (Required for new Production DB)
 echo "Running Database Migrations..."
