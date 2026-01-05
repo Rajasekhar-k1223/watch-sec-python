@@ -1,60 +1,93 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from motor.motor_asyncio import AsyncIOMotorClient
 
 
 class Settings(BaseSettings):
-    # Railway will inject these automatically if services are linked, or you set them in "Variables"
-    # Railway Internal Defaults (Production)
-    # NOTE: These URLs are only reachable from within the Railway network.
-    DATABASE_URL: str = "mysql+aiomysql://root:nBhlxqOuzWwFQkraCcNrVIoDVFqFbWEA@mysql.railway.internal:3306/railway"
-    MONGO_URL: str = "mongodb://mongo:taOtHmJnOLgnMorrtJpDZLmozClPXmOq@mongodb.railway.internal:27017"
-    
+    """
+    Railway best practice:
+    - NEVER hardcode internal hostnames
+    - NEVER hardcode passwords
+    - Railway injects env vars automatically
+    """
+
+    # =========================
+    # Database URLs (Injected by Railway)
+    # =========================
+    DATABASE_URL: str
+    MONGO_URL: str
+
+    # =========================
+    # CORS
+    # =========================
     BACKEND_CORS_ORIGINS: list[str] = [
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
-        "https://watch-sec-frontend-production.up.railway.app"
+        "https://watch-sec-frontend-production.up.railway.app",
     ]
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.dev"),
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
+
 
 settings = Settings()
 
-# SQLAlchemy Engine (Async)
-# Handle SQLite attributes
-connect_args = {}
+# =========================
+# SQLAlchemy (Async Engine)
+# =========================
 engine_args = {
     "echo": False,
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
 }
 
-if "sqlite" in settings.DATABASE_URL:
+connect_args = {}
+
+# SQLite handling (local dev)
+if settings.DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 else:
-    engine_args["pool_size"] = 20
-    engine_args["max_overflow"] = 10
+    engine_args.update(
+        {
+            "pool_size": 20,
+            "max_overflow": 10,
+        }
+    )
 
 engine = create_async_engine(
-    settings.DATABASE_URL, 
+    settings.DATABASE_URL,
     connect_args=connect_args,
-    **engine_args
+    **engine_args,
 )
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+AsyncSessionLocal = sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 
-# MongoDB Client (Async)
-from motor.motor_asyncio import AsyncIOMotorClient
-mongo_client = AsyncIOMotorClient(settings.MONGO_URL)
+# =========================
+# MongoDB (Async)
+# =========================
+mongo_client = AsyncIOMotorClient(
+    settings.MONGO_URL,
+    serverSelectionTimeoutMS=5000,
+)
 
-# Dependency Injection for Routes
+# =========================
+# Dependencies
+# =========================
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
+
 
 async def get_mongo_db():
     yield mongo_client
