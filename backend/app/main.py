@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 
@@ -13,11 +13,6 @@ from .api import (
 )
 
 # ======================================================
-# Load Settings (Lazy + Cached – Railway Safe)
-# ======================================================
-# settings = settings()
-
-# ======================================================
 # FastAPI App
 # ======================================================
 app = FastAPI(
@@ -25,55 +20,34 @@ app = FastAPI(
     version="2.0.0",
 )
 
-from fastapi.responses import JSONResponse
-
-@app.middleware("http")
-async def debug_cors_middleware(request, call_next):
-    origin = request.headers.get("origin")
-    print(f"[CORS_DEBUG] Request Method: {request.method} | URL: {request.url} | Origin: {origin}")
-    
-    # MANUAL CORS HANDLING - THE NUCLEAR OPTION
-    if request.method == "OPTIONS":
-        response = JSONResponse(content={"message": "CORS Preflight OK"})
-    else:
-        response = await call_next(request)
-
-    # Force headers on everything
-    if origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        
-    return response
-
-
 # ======================================================
-# CORS Middleware (MUST be before Socket.IO)
+# CORS (SINGLE SOURCE OF TRUTH)
 # ======================================================
-# Combine settings and local definitions
-# Combine settings and local definitions
-# Combine settings and local definitions
-allow_origins = list(set(settings.BACKEND_CORS_ORIGINS + [
+ALLOWED_ORIGINS = [
     "https://watch-sec-frontend-production.up.railway.app",
     "http://localhost:3000",
     "http://localhost:5173",
-]))
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ======================================================
+# GLOBAL OPTIONS HANDLER (CRITICAL FOR BROWSER)
+# ======================================================
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    return Response(status_code=204)
+
+# ======================================================
 # Socket.IO Mount
 # ======================================================
 app.mount("/socket.io", socketio.ASGIApp(sio))
-
 
 # ======================================================
 # Socket.IO Events
@@ -83,7 +57,6 @@ async def connect(sid, environ, auth=None):
     print(f"[SOCKET] Connected: {sid}, Auth: {auth}")
     if auth and "room" in auth:
         await sio.enter_room(sid, auth["room"])
-        print(f"[SOCKET] {sid} joined room {auth['room']}")
 
 @sio.event
 async def disconnect(sid):
@@ -94,26 +67,19 @@ async def catch_all(event, sid, data):
     print(f"[SOCKET] Unhandled Event '{event}' from {sid}")
 
 # ======================================================
-# Streaming Events
+# Streaming
 # ======================================================
 @sio.on("start_stream")
 async def start_stream(sid, data):
-    agent_id = data.get("agentId")
-    print(f"[STREAM] start_stream -> {agent_id}")
-    await sio.emit("start_stream", data, room=agent_id)
+    await sio.emit("start_stream", data, room=data.get("agentId"))
 
 @sio.on("stop_stream")
 async def stop_stream(sid, data):
-    agent_id = data.get("agentId")
-    print(f"[STREAM] stop_stream -> {agent_id}")
-    await sio.emit("stop_stream", data, room=agent_id)
+    await sio.emit("stop_stream", data, room=data.get("agentId"))
 
 @sio.on("stream_frame")
 async def stream_frame(sid, data):
-    agent_id = data.get("agentId")
-    img_len = len(data.get("image", ""))
-    print(f"[STREAM] frame from {agent_id} ({img_len} bytes)")
-    await sio.emit("receive_stream_frame", data, room=agent_id)
+    await sio.emit("receive_stream_frame", data, room=data.get("agentId"))
 
 # ======================================================
 # WebRTC Signaling
@@ -161,25 +127,19 @@ app.include_router(searches.router, prefix="/api", tags=["Searches"])
 app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
 
 # ======================================================
-# Health Endpoints
+# Health
 # ======================================================
 @app.get("/")
 async def root():
-    return {
-        "service": "WatchSec Backend",
-        "status": "online",
-    }
+    return {"service": "WatchSec Backend", "status": "online"}
 
 @app.get("/api/health")
 async def health():
-    return {
-        "status": "healthy",
-        "version": "2.0.0",
-    }
+    return {"status": "healthy", "version": "2.0.0"}
 
-# Main Entry Point for Debugging
+# ======================================================
+# Local Debug
+# ======================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
-
-# Force Reload Trigger 3
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8080)
