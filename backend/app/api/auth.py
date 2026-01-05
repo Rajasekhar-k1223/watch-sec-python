@@ -95,9 +95,19 @@ async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = D
 
     # 2. Create Tenant
     import uuid
+    
+    # Determine Limit
+    limit_map = {
+        "Starter": 5,
+        "Professional": 20,
+        "Enterprise": 100
+    }
+    agent_limit = limit_map.get(form_data.plan, 5) # Default to 5
+
     new_tenant = Tenant(
         Name=form_data.tenantName,
         Plan=form_data.plan,
+        AgentLimit=agent_limit,
         ApiKey=str(uuid.uuid4())
     )
     db.add(new_tenant)

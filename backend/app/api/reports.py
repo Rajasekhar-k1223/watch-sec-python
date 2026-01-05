@@ -70,6 +70,15 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
     agent = result.scalars().first()
 
     if not agent:
+        # Check Agent Limit (Plan Enforcement)
+        from sqlalchemy import func
+        limit_res = await db.execute(select(func.count()).select_from(Agent).where(Agent.TenantId == tenant.Id))
+        current_count = limit_res.scalar()
+        
+        if current_count >= tenant.AgentLimit:
+            print(f"[API] Agent Limit Reached for Tenant {tenant.Name} ({current_count}/{tenant.AgentLimit})")
+            raise HTTPException(status_code=403, detail=f"Agent Limit Reached ({tenant.AgentLimit}). Upgrade your plan.")
+
         # New Agent
         agent = Agent(
             AgentId=dto.AgentId,
