@@ -25,6 +25,13 @@ app = FastAPI(
     version="2.0.0",
 )
 
+@app.middleware("http")
+async def debug_cors_middleware(request, call_next):
+    origin = request.headers.get("origin")
+    print(f"[CORS_DEBUG] Request Method: {request.method} | URL: {request.url} | Origin: {origin}")
+    response = await call_next(request)
+    return response
+
 
 # ======================================================
 # CORS Middleware (MUST be before Socket.IO)
@@ -40,9 +47,8 @@ allow_origins = list(set(settings.BACKEND_CORS_ORIGINS + [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://watch-sec-frontend-production.up.railway.app",
-    ],
+    allow_origins=allow_origins,
+    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
