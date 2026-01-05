@@ -96,13 +96,41 @@ echo "[1/4] Creating Directory..."
 mkdir -p ./monitorix-agent
 dir_name="./monitorix-agent"
 
+# Bear Animation Function
+show_bear_progress() {{
+    local pid=$1
+    local delay=0.2
+    local spin='(^-.-^) (o-o) (>.<) (^-^)'
+    local frames=($spin)
+    local i=0
+    
+    # Hide Cursor
+    tput civis
+
+    while ps -p $pid > /dev/null; do
+        local frame=${{frames[$i]}}
+        printf "\\r\\033[1;36m%s\\033[0m Downloading... " "$frame"
+        i=$(( (i+1) % 4 ))
+        sleep $delay
+    done
+    
+    # Restore Cursor
+    tput cnorm
+    printf "\\r\\033[1;32m(^-^) Download Complete!   \\033[0m\\n"
+}}
+
 echo "[2/4] Downloading Agent Payload..."
 if command -v curl &> /dev/null; then
-    # Use --progress-bar for a nice visual
-    curl -L "$PAYLOAD_URL" -o agent.zip --progress-bar
+    # Background curl, show animation
+    curl -L "$PAYLOAD_URL" -o agent.zip -s &
+    PID=$!
+    show_bear_progress $PID
+    wait $PID
 elif command -v wget &> /dev/null; then
-    # Use --show-progress
-    wget -q --show-progress "$PAYLOAD_URL" -O agent.zip
+    wget -q "$PAYLOAD_URL" -O agent.zip &
+    PID=$!
+    show_bear_progress $PID
+    wait $PID
 else
     echo "Error: curl or wget is required."
     exit 1
@@ -264,9 +292,15 @@ $Dest = "$env:TEMP\\monitorix-installer.exe"
 Write-Host "Using Backend: {backend_url}" -ForegroundColor Yellow
 Write-Host "Downloading Agent..."
 
+# --- Animation Frames (Running Bear) ---
+$BearFrames = @(
+    " (^-.-^)  ", 
+    " ( o-o )  ", 
+    " ( >.< )  ", 
+    " ( ^-^ )  "
+)
 
-
-# Custom Fast Downloader with Detailed Text Progress
+# Custom Fast Downloader with Animated Progress
 try {{
     $request = [System.Net.HttpWebRequest]::Create($Url)
     $request.Method = "GET"
@@ -285,16 +319,20 @@ try {{
     
     # Force Console to show progress
     $ProgressPreference = 'Continue'
+    $frameIdx = 0
     
-    Write-Host "Downloading: Starting..." -NoNewline
+    # Hide Cursor
+    try {{ [Console]::CursorVisible = $false }} catch {{}}
+
+    Write-Host "Initializing Download..." -NoNewline
     
     while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
         $targetStream.Write($buffer, 0, $bytesRead)
         $totalRead += $bytesRead
         $speedBytes += $bytesRead
         
-        # Update every 500ms
-        if ($lastUpdate.ElapsedMilliseconds -gt 500) {{
+        # Update every 200ms for smoother animation
+        if ($lastUpdate.ElapsedMilliseconds -gt 200) {{
             # Calculate Speed
             $seconds = $speedWatch.Elapsed.TotalSeconds
             $speed = 0
@@ -309,35 +347,37 @@ try {{
             $mbTotal = "{{0:N2}}" -f ($totalBytes / 1MB)
             $speedStr = "{{0:N2}} MB/s" -f $speed
             
+            # Get Current Frame
+            $frame = $BearFrames[$frameIdx % $BearFrames.Count]
+            $frameIdx++
+
+            # Progress Bar Visual
+            $percent = 0
             if ($totalBytes -gt 0) {{
                 $percent = [math]::Round(($totalRead / $totalBytes) * 100)
-                $msg = "Downloaded: $mbRead MB / $mbTotal MB ($percent%) @ $speedStr    "
-                
-                # Write-Progress (UI Bar)
-                Write-Progress -Activity "Downloading Monitorix Agent" -Status $msg -PercentComplete $percent
-                
-                # Console Text Bar (Fallback)
-                try {{
-                    if ([Console]::CursorLeft -gt 0) {{ [Console]::CursorLeft = 0 }}
-                    Write-Host $msg -NoNewline
-                }} catch {{
-                    # If console manipulation fails, print new line
-                    Write-Host $msg
-                }}
-            }} else {{
-                $msg = "Downloaded: $mbRead MB @ $speedStr    "
-                Write-Progress -Activity "Downloading Monitorix Agent" -Status $msg
-                 try {{
-                    if ([Console]::CursorLeft -gt 0) {{ [Console]::CursorLeft = 0 }}
-                    Write-Host $msg -NoNewline
-                }} catch {{
-                    Write-Host $msg
-                }}
+            }}
+            
+            # Create Bar [====>...]
+            $barWidth = 30
+            $filled = [math]::Round(($percent / 100) * $barWidth)
+            $empty = $barWidth - $filled
+            $bar = "[" + ("=" * $filled) + ">" + (" " * $empty) + "]"
+
+            # Construct Message
+            $msg = "$frame $bar $percent% | $mbRead / $mbTotal MB @ $speedStr    "
+            
+            # Print (Carriage Return)
+            try {{
+                [Console]::CursorLeft = 0
+                Write-Host $msg -NoNewline -ForegroundColor Cyan
+            }} catch {{
+                Write-Host $msg
             }}
         }}
     }}
     
     # Final
+    try {{ [Console]::CursorVisible = $true }} catch {{}}
     Write-Host ""
     Write-Host "Download Complete!" -ForegroundColor Green
     

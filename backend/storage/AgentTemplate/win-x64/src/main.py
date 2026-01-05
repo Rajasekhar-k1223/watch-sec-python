@@ -105,7 +105,20 @@ async def on_isolate(data):
     # 2. Add Firewall Rule (netsh advfirewall firewall add rule...)
     # For Checkpoint parity: We simulate the action
     print(f"[Security] Isolating Host... Allowing only {BACKEND_URL}")
+    print(f"[Security] Isolating Host... Allowing only {BACKEND_URL}")
     await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': "Host Isolated", 'Success': True})
+
+@sio.on('UpdateConfig')
+async def on_update_config(data):
+    print(f"[Config] Update Received: {data}")
+    # Update Runtime Config
+    if 'ScreenshotsEnabled' in data:
+        should_enable = data['ScreenshotsEnabled']
+        config['ScreenshotsEnabled'] = should_enable 
+        if should_enable:
+            screen_cap.start()
+        else:
+            screen_cap.stop()
 
 async def system_monitor_loop():
     print(f"[Agent] Starting Monitor for {AGENT_ID} -> {BACKEND_URL}")
@@ -172,7 +185,13 @@ async def main():
 
     # Start Security Modules
     fim.start()
-    screen_cap.start()
+    
+    # Conditional Screenshot Start
+    if config.get("ScreenshotsEnabled", False):
+        print("[Screens] Enabled by config")
+        screen_cap.start()
+    else:
+        print("[Screens] Disabled by default (waiting for command)")
 
     # Start Tasks
     await system_monitor_loop()

@@ -75,6 +75,9 @@ async def toggle_screenshots(
     agent.ScreenshotsEnabled = enabled
     await db.commit()
     
+    # Notify Agent
+    await sio.emit('UpdateConfig', {'ScreenshotsEnabled': enabled}, room=agent_string_id)
+    
     return {"AgentId": agent.AgentId, "ScreenshotsEnabled": agent.ScreenshotsEnabled}
 
 @router.post("/{agent_string_id}/take-screenshot")
