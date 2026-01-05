@@ -22,6 +22,11 @@ def build():
         "pyinstaller",
         "--noconsole",
         "--onefile",
+        "--hidden-import=jaraco.text",
+        "--hidden-import=jaraco.classes",
+        "--hidden-import=jaraco.context",
+        "--hidden-import=jaraco.functools",
+        "--hidden-import=pkg_resources",
         "--name", "watch-sec-agent",
         "src/main.py"
     ]

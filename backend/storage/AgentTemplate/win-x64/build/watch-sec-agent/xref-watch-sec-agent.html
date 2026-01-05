@@ -154,6 +154,10 @@ imports:
  &#8226;   <a href="#genericpath">genericpath</a>
  &#8226;   <a href="#heapq">heapq</a>
  &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#jaraco.classes">jaraco.classes</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#keyword">keyword</a>
  &#8226;   <a href="#linecache">linecache</a>
@@ -165,6 +169,7 @@ imports:
  &#8226;   <a href="#ntpath">ntpath</a>
  &#8226;   <a href="#operator">operator</a>
  &#8226;   <a href="#os">os</a>
+ &#8226;   <a href="#pkg_resources">pkg_resources</a>
  &#8226;   <a href="#platform">platform</a>
  &#8226;   <a href="#posixpath">posixpath</a>
  &#8226;   <a href="#psutil">psutil</a>
@@ -490,20 +495,6 @@ imported by:
 </div>
 
 <div class="node">
-  <a name="'jaraco.functools'"></a>
-  <a target="code" href="" type="text/plain"><tt>'jaraco.functools'</tt></a>
-<span class="moduletype">MissingModule</span>  <div class="import">
-imported by:
-    <a href="#setuptools._distutils._modified">setuptools._distutils._modified</a>
- &#8226;   <a href="#setuptools._distutils.sysconfig">setuptools._distutils.sysconfig</a>
- &#8226;   <a href="#setuptools._distutils.util">setuptools._distutils.util</a>
- &#8226;   <a href="#setuptools._entry_points">setuptools._entry_points</a>
-
-  </div>
-
-</div>
-
-<div class="node">
   <a name="'jaraco.path'"></a>
   <a target="code" href="" type="text/plain"><tt>'jaraco.path'</tt></a>
 <span class="moduletype">MissingModule</span>  <div class="import">
@@ -517,20 +508,6 @@ imported by:
  &#8226;   <a href="#setuptools._distutils.tests.test_filelist">setuptools._distutils.tests.test_filelist</a>
  &#8226;   <a href="#setuptools._distutils.tests.test_sdist">setuptools._distutils.tests.test_sdist</a>
  &#8226;   <a href="#setuptools._distutils.tests.test_text_file">setuptools._distutils.tests.test_text_file</a>
-
-  </div>
-
-</div>
-
-<div class="node">
-  <a name="'jaraco.text'"></a>
-  <a target="code" href="" type="text/plain"><tt>'jaraco.text'</tt></a>
-<span class="moduletype">MissingModule</span>  <div class="import">
-imported by:
-    <a href="#pkg_resources">pkg_resources</a>
- &#8226;   <a href="#setuptools._distutils.tests.test_sysconfig">setuptools._distutils.tests.test_sysconfig</a>
- &#8226;   <a href="#setuptools._entry_points">setuptools._entry_points</a>
- &#8226;   <a href="#setuptools.command._requirestxt">setuptools.command._requirestxt</a>
 
   </div>
 
@@ -962,6 +939,8 @@ imported by:
  &#8226;   <a href="#cryptography.x509.ocsp">cryptography.x509.ocsp</a>
  &#8226;   <a href="#cryptography.x509.oid">cryptography.x509.oid</a>
  &#8226;   <a href="#cryptography.x509.verification">cryptography.x509.verification</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu">kombu</a>
  &#8226;   <a href="#kombu.abstract">kombu.abstract</a>
  &#8226;   <a href="#kombu.asynchronous">kombu.asynchronous</a>
@@ -4488,6 +4467,8 @@ imports:
 imported by:
     <a href="#aiohttp.web">aiohttp.web</a>
  &#8226;   <a href="#ast">ast</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#calendar">calendar</a>
  &#8226;   <a href="#dis">dis</a>
  &#8226;   <a href="#gzip">gzip</a>
@@ -4689,6 +4670,7 @@ imported by:
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
+ &#8226;   <a href="#autocommand.autoasync">autocommand.autoasync</a>
  &#8226;   <a href="#engineio.async_client">engineio.async_client</a>
  &#8226;   <a href="#engineio.async_drivers.asgi">engineio.async_drivers.asgi</a>
  &#8226;   <a href="#engineio.async_drivers.tornado">engineio.async_drivers.tornado</a>
@@ -5923,10 +5905,123 @@ imported by:
 
 <div class="node">
   <a name="autocommand"></a>
-  <a target="code" href="" type="text/plain"><tt>autocommand</tt></a>
-<span class="moduletype">MissingModule</span>  <div class="import">
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/__init__.py" type="text/plain"><tt>autocommand</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#autocommand.autoasync">autocommand.autoasync</a>
+ &#8226;   <a href="#autocommand.autocommand">autocommand.autocommand</a>
+ &#8226;   <a href="#autocommand.automain">autocommand.automain</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+
+  </div>
+  <div class="import">
 imported by:
-    <a href="#setuptools._vendor.autocommand.autoparse">setuptools._vendor.autocommand.autoparse</a>
+    <a href="#autocommand.autoasync">autocommand.autoasync</a>
+ &#8226;   <a href="#autocommand.autocommand">autocommand.autocommand</a>
+ &#8226;   <a href="#autocommand.automain">autocommand.automain</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#autocommand.errors">autocommand.errors</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="autocommand.autoasync"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/autoasync.py" type="text/plain"><tt>autocommand.autoasync</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#asyncio">asyncio</a>
+ &#8226;   <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#inspect">inspect</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.autocommand">autocommand.autocommand</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="autocommand.autocommand"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/autocommand.py" type="text/plain"><tt>autocommand.autocommand</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.autoasync">autocommand.autoasync</a>
+ &#8226;   <a href="#autocommand.automain">autocommand.automain</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#autocommand">autocommand</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="autocommand.automain"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/automain.py" type="text/plain"><tt>autocommand.automain</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.errors">autocommand.errors</a>
+ &#8226;   <a href="#sys">sys</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.autocommand">autocommand.autocommand</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="autocommand.autoparse"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/autoparse.py" type="text/plain"><tt>autocommand.autoparse</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#argparse">argparse</a>
+ &#8226;   <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.errors">autocommand.errors</a>
+ &#8226;   <a href="#contextlib">contextlib</a>
+ &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#sys">sys</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.autocommand">autocommand.autocommand</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="autocommand.errors"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/autocommand/errors.py" type="text/plain"><tt>autocommand.errors</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#autocommand">autocommand</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#autocommand.automain">autocommand.automain</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#setuptools._vendor.autocommand.autoparse">setuptools._vendor.autocommand.autoparse</a>
 
   </div>
 
@@ -5934,10 +6029,102 @@ imported by:
 
 <div class="node">
   <a name="backports"></a>
-  <a target="code" href="" type="text/plain"><tt>backports</tt></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/backports/__init__.py" type="text/plain"><tt>backports</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#backports.zstd">backports.zstd</a>
+ &#8226;   <a href="#pkgutil">pkgutil</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#urllib3.response">urllib3.response</a>
+ &#8226;   <a href="#urllib3.util.request">urllib3.util.request</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="backports.tarfile"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/backports/tarfile/__init__.py" type="text/plain"><tt>backports.tarfile</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#argparse">argparse</a>
+ &#8226;   <a href="#backports">backports</a>
+ &#8226;   <a href="#backports.tarfile.compat.py38">backports.tarfile.compat.py38</a>
+ &#8226;   <a href="#builtins">builtins</a>
+ &#8226;   <a href="#bz2">bz2</a>
+ &#8226;   <a href="#copy">copy</a>
+ &#8226;   <a href="#grp">grp</a>
+ &#8226;   <a href="#gzip">gzip</a>
+ &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#lzma">lzma</a>
+ &#8226;   <a href="#os">os</a>
+ &#8226;   <a href="#pwd">pwd</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#shutil">shutil</a>
+ &#8226;   <a href="#stat">stat</a>
+ &#8226;   <a href="#struct">struct</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#time">time</a>
+ &#8226;   <a href="#warnings">warnings</a>
+ &#8226;   <a href="#zlib">zlib</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#backports">backports</a>
+ &#8226;   <a href="#backports.tarfile.compat">backports.tarfile.compat</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="backports.tarfile.compat"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/backports/tarfile/compat/__init__.py" type="text/plain"><tt>backports.tarfile.compat</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#backports.tarfile">backports.tarfile</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#backports.tarfile.compat.py38">backports.tarfile.compat.py38</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="backports.tarfile.compat.py38"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/backports/tarfile/compat/py38.py" type="text/plain"><tt>backports.tarfile.compat.py38</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#backports.tarfile.compat">backports.tarfile.compat</a>
+ &#8226;   <a href="#sys">sys</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#backports.tarfile">backports.tarfile</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="backports.zstd"></a>
+  <a target="code" href="" type="text/plain"><tt>backports.zstd</tt></a>
 <span class="moduletype">MissingModule</span>  <div class="import">
 imported by:
-    <a href="#urllib3.response">urllib3.response</a>
+    <a href="#backports">backports</a>
+ &#8226;   <a href="#urllib3.response">urllib3.response</a>
  &#8226;   <a href="#urllib3.util.request">urllib3.util.request</a>
 
   </div>
@@ -7338,7 +7525,8 @@ imported by:
   <a name="builtins"></a>
   <tt>builtins</tt> <span class="moduletype"><i>(builtin module)</i></span>  <div class="import">
 imported by:
-    <a href="#bz2">bz2</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#bz2">bz2</a>
  &#8226;   <a href="#codecs">codecs</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
  &#8226;   <a href="#enum">enum</a>
@@ -7380,7 +7568,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#encodings.bz2_codec">encodings.bz2_codec</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#encodings.bz2_codec">encodings.bz2_codec</a>
  &#8226;   <a href="#kombu.compression">kombu.compression</a>
  &#8226;   <a href="#setuptools._vendor.backports.tarfile">setuptools._vendor.backports.tarfile</a>
  &#8226;   <a href="#shutil">shutil</a>
@@ -9457,6 +9646,8 @@ imported by:
  &#8226;   <a href="#frozenlist">frozenlist</a>
  &#8226;   <a href="#http.client">http.client</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu.utils.functional">kombu.utils.functional</a>
  &#8226;   <a href="#kombu.utils.url">kombu.utils.url</a>
  &#8226;   <a href="#logging">logging</a>
@@ -9723,6 +9914,7 @@ imported by:
  &#8226;   <a href="#asyncio.staggered">asyncio.staggered</a>
  &#8226;   <a href="#attr._make">attr._make</a>
  &#8226;   <a href="#attr.validators">attr.validators</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
  &#8226;   <a href="#bidict">bidict</a>
  &#8226;   <a href="#distutils.command.build_ext">distutils.command.build_ext</a>
  &#8226;   <a href="#getpass">getpass</a>
@@ -9732,6 +9924,7 @@ imported by:
  &#8226;   <a href="#importlib.resources._adapters">importlib.resources._adapters</a>
  &#8226;   <a href="#importlib.resources._common">importlib.resources._common</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#kombu.asynchronous.hub">kombu.asynchronous.hub</a>
  &#8226;   <a href="#kombu.common">kombu.common</a>
  &#8226;   <a href="#kombu.connection">kombu.connection</a>
@@ -9836,6 +10029,7 @@ imported by:
  &#8226;   <a href="#argparse">argparse</a>
  &#8226;   <a href="#attr._funcs">attr._funcs</a>
  &#8226;   <a href="#attr._make">attr._make</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#billiard.pool">billiard.pool</a>
  &#8226;   <a href="#collections">collections</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
@@ -16800,6 +16994,7 @@ imported by:
  &#8226;   <a href="#gettext">gettext</a>
  &#8226;   <a href="#gzip">gzip</a>
  &#8226;   <a href="#http.client">http.client</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#kombu.asynchronous.hub">kombu.asynchronous.hub</a>
  &#8226;   <a href="#kombu.transport.base">kombu.transport.base</a>
  &#8226;   <a href="#kombu.utils.eventio">kombu.utils.eventio</a>
@@ -17013,6 +17208,8 @@ imported by:
  &#8226;   <a href="#attr._make">attr._make</a>
  &#8226;   <a href="#attr._next_gen">attr._next_gen</a>
  &#8226;   <a href="#attr._version_info">attr._version_info</a>
+ &#8226;   <a href="#autocommand.autoasync">autocommand.autoasync</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
  &#8226;   <a href="#billiard.pool">billiard.pool</a>
  &#8226;   <a href="#billiard.reduction">billiard.reduction</a>
  &#8226;   <a href="#billiard.util">billiard.util</a>
@@ -17037,6 +17234,9 @@ imported by:
  &#8226;   <a href="#importlib.util">importlib.util</a>
  &#8226;   <a href="#inspect">inspect</a>
  &#8226;   <a href="#ipaddress">ipaddress</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#kombu.asynchronous.http.curl">kombu.asynchronous.http.curl</a>
  &#8226;   <a href="#kombu.asynchronous.timer">kombu.asynchronous.timer</a>
  &#8226;   <a href="#kombu.common">kombu.common</a>
@@ -17307,7 +17507,8 @@ imported by:
   <a target="code" href="" type="text/plain"><tt>grp</tt></a>
 <span class="moduletype">MissingModule</span>  <div class="import">
 imported by:
-    <a href="#distutils.archive_util">distutils.archive_util</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#distutils.archive_util">distutils.archive_util</a>
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#setuptools._distutils.archive_util">setuptools._distutils.archive_util</a>
  &#8226;   <a href="#setuptools._distutils.tests.unix_compat">setuptools._distutils.tests.unix_compat</a>
@@ -17362,7 +17563,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#engineio.base_server">engineio.base_server</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#engineio.base_server">engineio.base_server</a>
  &#8226;   <a href="#setuptools._vendor.backports.tarfile">setuptools._vendor.backports.tarfile</a>
  &#8226;   <a href="#tarfile">tarfile</a>
  &#8226;   <a href="#test.support">test.support</a>
@@ -18232,6 +18434,7 @@ imported by:
  &#8226;   <a href="#importlib.resources._legacy">importlib.resources._legacy</a>
  &#8226;   <a href="#importlib.resources.abc">importlib.resources.abc</a>
  &#8226;   <a href="#importlib.resources.readers">importlib.resources.readers</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#setuptools._importlib">setuptools._importlib</a>
  &#8226;   <a href="#urllib3.contrib.emscripten.fetch">urllib3.contrib.emscripten.fetch</a>
  &#8226;   <a href="#zoneinfo._common">zoneinfo._common</a>
@@ -18433,6 +18636,17 @@ imported by:
 </div>
 
 <div class="node">
+  <a name="importlib_resources"></a>
+  <a target="code" href="" type="text/plain"><tt>importlib_resources</tt></a>
+<span class="moduletype">MissingModule</span>  <div class="import">
+imported by:
+    <a href="#jaraco.text">jaraco.text</a>
+
+  </div>
+
+</div>
+
+<div class="node">
   <a name="inspect"></a>
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/inspect.py" type="text/plain"><tt>inspect</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
@@ -18470,7 +18684,10 @@ imported by:
  &#8226;   <a href="#asyncio.tasks">asyncio.tasks</a>
  &#8226;   <a href="#attr._compat">attr._compat</a>
  &#8226;   <a href="#attr._make">attr._make</a>
+ &#8226;   <a href="#autocommand.autoasync">autocommand.autoasync</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
  &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu.utils.functional">kombu.utils.functional</a>
  &#8226;   <a href="#pkg_resources">pkg_resources</a>
  &#8226;   <a href="#pkgutil">pkgutil</a>
@@ -18528,6 +18745,8 @@ imported by:
  &#8226;   <a href="#amqp.serialization">amqp.serialization</a>
  &#8226;   <a href="#asyncio.proactor_events">asyncio.proactor_events</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#billiard.common">billiard.common</a>
  &#8226;   <a href="#billiard.compat">billiard.compat</a>
  &#8226;   <a href="#billiard.connection">billiard.connection</a>
@@ -18691,6 +18910,8 @@ imported by:
  &#8226;   <a href="#importlib.metadata._itertools">importlib.metadata._itertools</a>
  &#8226;   <a href="#importlib.resources._itertools">importlib.resources._itertools</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#kombu.common">kombu.common</a>
  &#8226;   <a href="#kombu.connection">kombu.connection</a>
  &#8226;   <a href="#kombu.messaging">kombu.messaging</a>
@@ -18761,10 +18982,125 @@ imported by:
 
 <div class="node">
   <a name="jaraco"></a>
-  <a target="code" href="" type="text/plain"><tt>jaraco</tt></a>
-<span class="moduletype">MissingModule</span>  <div class="import">
+  <a target="code" href="-" type="text/plain"><tt>jaraco</tt></a>
+<span class="moduletype">NamespacePackage</span>  <div class="import">
 imported by:
-    <a href="#setuptools._reqs">setuptools._reqs</a>
+    <a href="#jaraco.classes">jaraco.classes</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="jaraco.classes"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/jaraco/classes/__init__.py" type="text/plain"><tt>jaraco.classes</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#jaraco">jaraco</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="jaraco.context"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/jaraco/context/__init__.py" type="text/plain"><tt>jaraco.context</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#backports">backports</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#collections.abc">collections.abc</a>
+ &#8226;   <a href="#contextlib">contextlib</a>
+ &#8226;   <a href="#errno">errno</a>
+ &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#jaraco">jaraco</a>
+ &#8226;   <a href="#operator">operator</a>
+ &#8226;   <a href="#os">os</a>
+ &#8226;   <a href="#platform">platform</a>
+ &#8226;   <a href="#shutil">shutil</a>
+ &#8226;   <a href="#stat">stat</a>
+ &#8226;   <a href="#subprocess">subprocess</a>
+ &#8226;   <a href="#sys">sys</a>
+ &#8226;   <a href="#tarfile">tarfile</a>
+ &#8226;   <a href="#tempfile">tempfile</a>
+ &#8226;   <a href="#urllib.request">urllib.request</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#jaraco.text">jaraco.text</a>
+ &#8226;   <a href="#main.py">main.py</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="jaraco.functools"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/jaraco/functools/__init__.py" type="text/plain"><tt>jaraco.functools</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#collections.abc">collections.abc</a>
+ &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#itertools">itertools</a>
+ &#8226;   <a href="#jaraco">jaraco</a>
+ &#8226;   <a href="#more_itertools">more_itertools</a>
+ &#8226;   <a href="#operator">operator</a>
+ &#8226;   <a href="#time">time</a>
+ &#8226;   <a href="#types">types</a>
+ &#8226;   <a href="#typing">typing</a>
+ &#8226;   <a href="#warnings">warnings</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#jaraco.text">jaraco.text</a>
+ &#8226;   <a href="#main.py">main.py</a>
+ &#8226;   <a href="#setuptools._distutils._modified">setuptools._distutils._modified</a>
+ &#8226;   <a href="#setuptools._distutils.sysconfig">setuptools._distutils.sysconfig</a>
+ &#8226;   <a href="#setuptools._distutils.util">setuptools._distutils.util</a>
+ &#8226;   <a href="#setuptools._entry_points">setuptools._entry_points</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="jaraco.text"></a>
+  <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/jaraco/text/__init__.py" type="text/plain"><tt>jaraco.text</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#functools">functools</a>
+ &#8226;   <a href="#importlib.resources">importlib.resources</a>
+ &#8226;   <a href="#importlib_resources">importlib_resources</a>
+ &#8226;   <a href="#itertools">itertools</a>
+ &#8226;   <a href="#jaraco">jaraco</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#re">re</a>
+ &#8226;   <a href="#textwrap">textwrap</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#pkg_resources">pkg_resources</a>
+ &#8226;   <a href="#setuptools._distutils.tests.test_sysconfig">setuptools._distutils.tests.test_sysconfig</a>
+ &#8226;   <a href="#setuptools._entry_points">setuptools._entry_points</a>
+ &#8226;   <a href="#setuptools._reqs">setuptools._reqs</a>
+ &#8226;   <a href="#setuptools.command._requirestxt">setuptools.command._requirestxt</a>
 
   </div>
 
@@ -20299,7 +20635,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#kombu.compression">kombu.compression</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#kombu.compression">kombu.compression</a>
  &#8226;   <a href="#setuptools._vendor.backports.tarfile">setuptools._vendor.backports.tarfile</a>
  &#8226;   <a href="#shutil">shutil</a>
  &#8226;   <a href="#tarfile">tarfile</a>
@@ -20498,7 +20835,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#more_itertools.more">more_itertools.more</a>
+    <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#more_itertools.more">more_itertools.more</a>
  &#8226;   <a href="#more_itertools.recipes">more_itertools.recipes</a>
  &#8226;   <a href="#setuptools._distutils.compilers.C.base">setuptools._distutils.compilers.C.base</a>
  &#8226;   <a href="#setuptools._distutils.tests.support">setuptools._distutils.tests.support</a>
@@ -21990,6 +22328,8 @@ imported by:
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
  &#8226;   <a href="#importlib.resources.readers">importlib.resources.readers</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu.connection">kombu.connection</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#more_itertools.more">more_itertools.more</a>
@@ -22073,6 +22413,7 @@ imported by:
  &#8226;   <a href="#asyncio.proactor_events">asyncio.proactor_events</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#bcrypt">bcrypt</a>
  &#8226;   <a href="#billiard._win">billiard._win</a>
  &#8226;   <a href="#billiard.common">billiard.common</a>
@@ -22168,6 +22509,7 @@ imported by:
  &#8226;   <a href="#importlib.resources._legacy">importlib.resources._legacy</a>
  &#8226;   <a href="#importlib.resources.abc">importlib.resources.abc</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#kombu">kombu</a>
  &#8226;   <a href="#kombu.common">kombu.common</a>
  &#8226;   <a href="#kombu.connection">kombu.connection</a>
@@ -22976,7 +23318,6 @@ imported by:
 <span class="moduletype">Package</span>  <div class="import">
 imports:
     <a href="#'_typeshed.importlib'">'_typeshed.importlib'</a>
- &#8226;   <a href="#'jaraco.text'">'jaraco.text'</a>
  &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#_imp">_imp</a>
  &#8226;   <a href="#_typeshed">_typeshed</a>
@@ -22990,6 +23331,7 @@ imports:
  &#8226;   <a href="#importlib.machinery">importlib.machinery</a>
  &#8226;   <a href="#inspect">inspect</a>
  &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#linecache">linecache</a>
  &#8226;   <a href="#ntpath">ntpath</a>
  &#8226;   <a href="#ntpath">ntpath</a>
@@ -23033,7 +23375,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#packaging">packaging</a>
+    <a href="#main.py">main.py</a>
+ &#8226;   <a href="#packaging">packaging</a>
  &#8226;   <a href="#pyi_rth_pkgres.py">pyi_rth_pkgres.py</a>
 
   </div>
@@ -23063,7 +23406,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#pkg_resources">pkg_resources</a>
+    <a href="#backports">backports</a>
+ &#8226;   <a href="#pkg_resources">pkg_resources</a>
  &#8226;   <a href="#pydoc">pydoc</a>
  &#8226;   <a href="#pyi_rth_pkgutil.py">pyi_rth_pkgutil.py</a>
  &#8226;   <a href="#runpy">runpy</a>
@@ -23100,6 +23444,7 @@ imported by:
  &#8226;   <a href="#amqp.platform">amqp.platform</a>
  &#8226;   <a href="#attr._compat">attr._compat</a>
  &#8226;   <a href="#billiard.pool">billiard.pool</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#mss.darwin">mss.darwin</a>
  &#8226;   <a href="#mss.factory">mss.factory</a>
@@ -23500,7 +23845,8 @@ imported by:
   <a target="code" href="" type="text/plain"><tt>pwd</tt></a>
 <span class="moduletype">MissingModule</span>  <div class="import">
 imported by:
-    <a href="#distutils.archive_util">distutils.archive_util</a>
+    <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#distutils.archive_util">distutils.archive_util</a>
  &#8226;   <a href="#distutils.util">distutils.util</a>
  &#8226;   <a href="#getpass">getpass</a>
  &#8226;   <a href="#http.server">http.server</a>
@@ -24112,6 +24458,8 @@ imported by:
  &#8226;   <a href="#amqp.transport">amqp.transport</a>
  &#8226;   <a href="#argparse">argparse</a>
  &#8226;   <a href="#attr.validators">attr.validators</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#base64">base64</a>
  &#8226;   <a href="#cffi.api">cffi.api</a>
  &#8226;   <a href="#cffi.cparser">cffi.cparser</a>
@@ -24172,6 +24520,7 @@ imported by:
  &#8226;   <a href="#importlib.metadata._text">importlib.metadata._text</a>
  &#8226;   <a href="#inspect">inspect</a>
  &#8226;   <a href="#ipaddress">ipaddress</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#json.decoder">json.decoder</a>
  &#8226;   <a href="#json.encoder">json.encoder</a>
  &#8226;   <a href="#json.scanner">json.scanner</a>
@@ -27146,10 +27495,10 @@ imported by:
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/setuptools/_distutils/_modified.py" type="text/plain"><tt>setuptools._distutils._modified</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#'jaraco.functools'">'jaraco.functools'</a>
- &#8226;   <a href="#__future__">__future__</a>
+    <a href="#__future__">__future__</a>
  &#8226;   <a href="#collections.abc">collections.abc</a>
  &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#ntpath">ntpath</a>
  &#8226;   <a href="#setuptools._distutils">setuptools._distutils</a>
  &#8226;   <a href="#setuptools._distutils.compat.py39">setuptools._distutils.compat.py39</a>
@@ -28488,10 +28837,10 @@ imported by:
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/setuptools/_distutils/sysconfig.py" type="text/plain"><tt>setuptools._distutils.sysconfig</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#'jaraco.functools'">'jaraco.functools'</a>
- &#8226;   <a href="#__future__">__future__</a>
+    <a href="#__future__">__future__</a>
  &#8226;   <a href="#distutils.text_file">distutils.text_file</a>
  &#8226;   <a href="#functools">functools</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#os">os</a>
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#re">re</a>
@@ -29391,12 +29740,12 @@ imported by:
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#'jaraco.envs'">'jaraco.envs'</a>
- &#8226;   <a href="#'jaraco.text'">'jaraco.text'</a>
  &#8226;   <a href="#contextlib">contextlib</a>
  &#8226;   <a href="#distutils">distutils</a>
  &#8226;   <a href="#distutils.ccompiler">distutils.ccompiler</a>
  &#8226;   <a href="#distutils.sysconfig">distutils.sysconfig</a>
  &#8226;   <a href="#distutils.unixccompiler">distutils.unixccompiler</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#os">os</a>
  &#8226;   <a href="#path">path</a>
  &#8226;   <a href="#pathlib">pathlib</a>
@@ -29568,13 +29917,13 @@ imported by:
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/setuptools/_distutils/util.py" type="text/plain"><tt>setuptools._distutils.util</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#'jaraco.functools'">'jaraco.functools'</a>
- &#8226;   <a href="#__future__">__future__</a>
+    <a href="#__future__">__future__</a>
  &#8226;   <a href="#collections.abc">collections.abc</a>
  &#8226;   <a href="#distutils">distutils</a>
  &#8226;   <a href="#distutils.sysconfig">distutils.sysconfig</a>
  &#8226;   <a href="#functools">functools</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#os">os</a>
  &#8226;   <a href="#pathlib">pathlib</a>
  &#8226;   <a href="#pwd">pwd</a>
@@ -29683,10 +30032,10 @@ imported by:
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/setuptools/_entry_points.py" type="text/plain"><tt>setuptools._entry_points</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#'jaraco.functools'">'jaraco.functools'</a>
- &#8226;   <a href="#'jaraco.text'">'jaraco.text'</a>
- &#8226;   <a href="#functools">functools</a>
+    <a href="#functools">functools</a>
  &#8226;   <a href="#itertools">itertools</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#more_itertools">more_itertools</a>
  &#8226;   <a href="#operator">operator</a>
  &#8226;   <a href="#setuptools">setuptools</a>
@@ -29833,7 +30182,7 @@ imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#collections.abc">collections.abc</a>
  &#8226;   <a href="#functools">functools</a>
- &#8226;   <a href="#jaraco">jaraco</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#packaging.requirements">packaging.requirements</a>
  &#8226;   <a href="#setuptools">setuptools</a>
  &#8226;   <a href="#typing">typing</a>
@@ -30020,7 +30369,7 @@ imported by:
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#argparse">argparse</a>
- &#8226;   <a href="#autocommand">autocommand</a>
+ &#8226;   <a href="#autocommand.errors">autocommand.errors</a>
  &#8226;   <a href="#contextlib">contextlib</a>
  &#8226;   <a href="#functools">functools</a>
  &#8226;   <a href="#inspect">inspect</a>
@@ -32517,12 +32866,12 @@ imported by:
   <a target="code" href="///C:/Users/k.rajasekhar/AppData/Local/Programs/Python/Python311/Lib/site-packages/setuptools/command/_requirestxt.py" type="text/plain"><tt>setuptools.command._requirestxt</tt></a>
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
-    <a href="#'jaraco.text'">'jaraco.text'</a>
- &#8226;   <a href="#__future__">__future__</a>
+    <a href="#__future__">__future__</a>
  &#8226;   <a href="#collections">collections</a>
  &#8226;   <a href="#collections.abc">collections.abc</a>
  &#8226;   <a href="#io">io</a>
  &#8226;   <a href="#itertools">itertools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#packaging.requirements">packaging.requirements</a>
  &#8226;   <a href="#setuptools">setuptools</a>
  &#8226;   <a href="#setuptools._reqs">setuptools._reqs</a>
@@ -33632,10 +33981,12 @@ imports:
   <div class="import">
 imported by:
     <a href="#argparse">argparse</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#cffi.verifier">cffi.verifier</a>
  &#8226;   <a href="#ctypes.util">ctypes.util</a>
  &#8226;   <a href="#distutils.tests.support">distutils.tests.support</a>
  &#8226;   <a href="#http.server">http.server</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#multiprocessing.util">multiprocessing.util</a>
  &#8226;   <a href="#psutil._compat">psutil._compat</a>
  &#8226;   <a href="#setuptools._distutils.spawn">setuptools._distutils.spawn</a>
@@ -34777,12 +35128,14 @@ imports:
 imported by:
     <a href="#asyncio.base_events">asyncio.base_events</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#distutils.command.build_scripts">distutils.command.build_scripts</a>
  &#8226;   <a href="#distutils.command.install_scripts">distutils.command.install_scripts</a>
  &#8226;   <a href="#distutils.dep_util">distutils.dep_util</a>
  &#8226;   <a href="#distutils.file_util">distutils.file_util</a>
  &#8226;   <a href="#genericpath">genericpath</a>
  &#8226;   <a href="#glob">glob</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#logging.handlers">logging.handlers</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#netrc">netrc</a>
@@ -34912,6 +35265,7 @@ imported by:
  &#8226;   <a href="#amqp.serialization">amqp.serialization</a>
  &#8226;   <a href="#amqp.transport">amqp.transport</a>
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#base64">base64</a>
  &#8226;   <a href="#billiard.connection">billiard.connection</a>
  &#8226;   <a href="#billiard.forkserver">billiard.forkserver</a>
@@ -34999,6 +35353,7 @@ imported by:
  &#8226;   <a href="#distutils.spawn">distutils.spawn</a>
  &#8226;   <a href="#distutils.util">distutils.util</a>
  &#8226;   <a href="#http.server">http.server</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#modules.security">modules.security</a>
  &#8226;   <a href="#multiprocessing.util">multiprocessing.util</a>
  &#8226;   <a href="#os">os</a>
@@ -35075,6 +35430,10 @@ imported by:
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
  &#8226;   <a href="#attr._compat">attr._compat</a>
  &#8226;   <a href="#attr._make">attr._make</a>
+ &#8226;   <a href="#autocommand.automain">autocommand.automain</a>
+ &#8226;   <a href="#autocommand.autoparse">autocommand.autoparse</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
+ &#8226;   <a href="#backports.tarfile.compat.py38">backports.tarfile.compat.py38</a>
  &#8226;   <a href="#base64">base64</a>
  &#8226;   <a href="#billiard">billiard</a>
  &#8226;   <a href="#billiard._ext">billiard._ext</a>
@@ -35180,6 +35539,7 @@ imported by:
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#kombu">kombu</a>
  &#8226;   <a href="#kombu.asynchronous.http.base">kombu.asynchronous.http.base</a>
  &#8226;   <a href="#kombu.asynchronous.timer">kombu.asynchronous.timer</a>
@@ -35513,6 +35873,7 @@ imports:
   <div class="import">
 imported by:
     <a href="#distutils.archive_util">distutils.archive_util</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#setuptools._distutils.archive_util">setuptools._distutils.archive_util</a>
  &#8226;   <a href="#setuptools._distutils.tests.test_archive_util">setuptools._distutils.tests.test_archive_util</a>
  &#8226;   <a href="#setuptools._distutils.tests.test_sdist">setuptools._distutils.tests.test_sdist</a>
@@ -35556,6 +35917,7 @@ imported by:
  &#8226;   <a href="#distutils.tests.support">distutils.tests.support</a>
  &#8226;   <a href="#distutils.util">distutils.util</a>
  &#8226;   <a href="#importlib.resources._common">importlib.resources._common</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#kombu.utils.div">kombu.utils.div</a>
  &#8226;   <a href="#multiprocessing.connection">multiprocessing.connection</a>
  &#8226;   <a href="#multiprocessing.heap">multiprocessing.heap</a>
@@ -35892,6 +36254,7 @@ imported by:
  &#8226;   <a href="#distutils.tests.test_dist">distutils.tests.test_dist</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
  &#8226;   <a href="#importlib.metadata._adapters">importlib.metadata._adapters</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#pkg_resources">pkg_resources</a>
  &#8226;   <a href="#pydoc">pydoc</a>
  &#8226;   <a href="#setuptools._core_metadata">setuptools._core_metadata</a>
@@ -36061,6 +36424,7 @@ imported by:
  &#8226;   <a href="#amqp.connection">amqp.connection</a>
  &#8226;   <a href="#asyncio.base_events">asyncio.base_events</a>
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#billiard.common">billiard.common</a>
  &#8226;   <a href="#billiard.connection">billiard.connection</a>
  &#8226;   <a href="#billiard.managers">billiard.managers</a>
@@ -36081,6 +36445,7 @@ imported by:
  &#8226;   <a href="#http.cookiejar">http.cookiejar</a>
  &#8226;   <a href="#http.cookies">http.cookies</a>
  &#8226;   <a href="#http.server">http.server</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu.asynchronous.http.curl">kombu.asynchronous.http.curl</a>
  &#8226;   <a href="#kombu.asynchronous.hub">kombu.asynchronous.hub</a>
  &#8226;   <a href="#kombu.asynchronous.timer">kombu.asynchronous.timer</a>
@@ -36515,6 +36880,7 @@ imported by:
  &#8226;   <a href="#importlib.resources._legacy">importlib.resources._legacy</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
  &#8226;   <a href="#inspect">inspect</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu">kombu</a>
  &#8226;   <a href="#kombu.asynchronous.http.base">kombu.asynchronous.http.base</a>
  &#8226;   <a href="#kombu.asynchronous.hub">kombu.asynchronous.hub</a>
@@ -36731,6 +37097,8 @@ imported by:
  &#8226;   <a href="#importlib.resources._itertools">importlib.resources._itertools</a>
  &#8226;   <a href="#importlib.resources._legacy">importlib.resources._legacy</a>
  &#8226;   <a href="#importlib.resources.abc">importlib.resources.abc</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
+ &#8226;   <a href="#jaraco.text">jaraco.text</a>
  &#8226;   <a href="#kombu">kombu</a>
  &#8226;   <a href="#kombu.abstract">kombu.abstract</a>
  &#8226;   <a href="#kombu.asynchronous.http">kombu.asynchronous.http</a>
@@ -37922,6 +38290,7 @@ imports:
 imported by:
     <a href="#aiohttp.helpers">aiohttp.helpers</a>
  &#8226;   <a href="#http.cookiejar">http.cookiejar</a>
+ &#8226;   <a href="#jaraco.context">jaraco.context</a>
  &#8226;   <a href="#requests.compat">requests.compat</a>
  &#8226;   <a href="#setuptools.config._validate_pyproject.formats">setuptools.config._validate_pyproject.formats</a>
  &#8226;   <a href="#test.support">test.support</a>
@@ -38634,6 +39003,7 @@ imported by:
 imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#backports">backports</a>
+ &#8226;   <a href="#backports.zstd">backports.zstd</a>
  &#8226;   <a href="#brotli">brotli</a>
  &#8226;   <a href="#brotlicffi">brotlicffi</a>
  &#8226;   <a href="#collections">collections</a>
@@ -38775,6 +39145,7 @@ imported by:
 imports:
     <a href="#__future__">__future__</a>
  &#8226;   <a href="#backports">backports</a>
+ &#8226;   <a href="#backports.zstd">backports.zstd</a>
  &#8226;   <a href="#base64">base64</a>
  &#8226;   <a href="#brotli">brotli</a>
  &#8226;   <a href="#brotlicffi">brotlicffi</a>
@@ -39294,6 +39665,7 @@ imported by:
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
  &#8226;   <a href="#attr._make">attr._make</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#bcrypt">bcrypt</a>
  &#8226;   <a href="#billiard.context">billiard.context</a>
  &#8226;   <a href="#billiard.pool">billiard.pool</a>
@@ -39335,6 +39707,7 @@ imported by:
  &#8226;   <a href="#importlib.resources._legacy">importlib.resources._legacy</a>
  &#8226;   <a href="#importlib.util">importlib.util</a>
  &#8226;   <a href="#io">io</a>
+ &#8226;   <a href="#jaraco.functools">jaraco.functools</a>
  &#8226;   <a href="#kombu.transport.virtual.base">kombu.transport.virtual.base</a>
  &#8226;   <a href="#locale">locale</a>
  &#8226;   <a href="#logging">logging</a>
@@ -41363,6 +41736,7 @@ imported by:
  &#8226;   <a href="#aiohttp.http_websocket">aiohttp.http_websocket</a>
  &#8226;   <a href="#aiohttp.http_writer">aiohttp.http_writer</a>
  &#8226;   <a href="#aiohttp.multipart">aiohttp.multipart</a>
+ &#8226;   <a href="#backports.tarfile">backports.tarfile</a>
  &#8226;   <a href="#encodings.zlib_codec">encodings.zlib_codec</a>
  &#8226;   <a href="#engineio.base_server">engineio.base_server</a>
  &#8226;   <a href="#gzip">gzip</a>
