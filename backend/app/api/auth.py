@@ -78,3 +78,58 @@ async def login_for_access_token(form_data: LoginRequest, db: AsyncSession = Dep
             "tenantId": user.TenantId
         }
     }
+
+class RegisterTenantRequest(BaseModel):
+    tenantName: str
+    adminUsername: str
+    password: str
+    plan: str = "Starter"
+
+@router.post("/register-tenant", response_model=LoginResponse)
+async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = Depends(get_db)):
+    # 1. Check if user already exists (globally unique username enforcement)
+    result = await db.execute(select(User).where(User.Username == form_data.adminUsername))
+    existing_user = result.scalars().first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already taken")
+
+    # 2. Create Tenant
+    from ..db.models import Tenant
+    import uuid
+    new_tenant = Tenant(
+        Name=form_data.tenantName,
+        Plan=form_data.plan,
+        ApiKey=str(uuid.uuid4())
+    )
+    db.add(new_tenant)
+    await db.flush() # flush to get ID
+
+    # 3. Create Admin User
+    from ..core.security import get_password_hash
+    from ..db.models import User
+    
+    new_user = User(
+        Username=form_data.adminUsername,
+        PasswordHash=get_password_hash(form_data.password),
+        Role="SuperAdmin",
+        TenantId=new_tenant.Id
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    # 4. Generate Token (Auto Login)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": new_user.Username, "role": new_user.Role, "tenantId": new_user.TenantId},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "token": access_token, 
+        "user": {
+            "username": new_user.Username,
+            "role": new_user.Role,
+            "tenantId": new_user.TenantId
+        }
+    }
