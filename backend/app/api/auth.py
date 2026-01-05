@@ -6,8 +6,8 @@ from datetime import timedelta
 import os
 
 from ..db.session import get_db
-from ..db.models import User
-from ..core.security import verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from ..db.models import User, Tenant
+from ..core.security import verify_password, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES
 
 router = APIRouter()
 
@@ -94,7 +94,6 @@ async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = D
         raise HTTPException(status_code=400, detail="Username already taken")
 
     # 2. Create Tenant
-    from ..db.models import Tenant
     import uuid
     new_tenant = Tenant(
         Name=form_data.tenantName,
@@ -105,9 +104,6 @@ async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = D
     await db.flush() # flush to get ID
 
     # 3. Create Admin User
-    from ..core.security import get_password_hash
-    from ..db.models import User
-    
     new_user = User(
         Username=form_data.adminUsername,
         PasswordHash=get_password_hash(form_data.password),
