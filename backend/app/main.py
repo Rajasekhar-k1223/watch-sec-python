@@ -34,23 +34,11 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "X-Requested-With",
-    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
-# ======================================================
-# GLOBAL OPTIONS HANDLER (CRITICAL)
-# ======================================================
-@app.options("/{path:path}")
-async def preflight_handler(path: str):
-    return Response(status_code=204)
 
 # ======================================================
 # API ROUTERS (MUST be before Socket.IO)
