@@ -17,7 +17,7 @@ router = APIRouter()
 
 from fastapi import Request
 
-@router.get("/agent")
+@router.get("/agent/install")
 async def download_agent(
     request: Request,
     os_type: str = "windows",
