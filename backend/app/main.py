@@ -32,13 +32,16 @@ app = FastAPI(
 # Combine settings and local definitions
 # Combine settings and local definitions
 # Combine settings and local definitions
-# DEBUG: Allowing ALL origins temporarily to resolve persistent CORS error.
-allow_origins = ["*"]
+allow_origins = list(set(settings.BACKEND_CORS_ORIGINS + [
+    "https://watch-sec-frontend-production.up.railway.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+]))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_origin_regex=None,
+    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
