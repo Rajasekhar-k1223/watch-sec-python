@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 
-from .db.session import get_settings
+from .db.session import settings
 from .socket_instance import sio
 
 from .api import (
@@ -15,7 +15,7 @@ from .api import (
 # ======================================================
 # Load Settings (Lazy + Cached – Railway Safe)
 # ======================================================
-settings = get_settings()
+# settings = settings()
 
 # ======================================================
 # FastAPI App
