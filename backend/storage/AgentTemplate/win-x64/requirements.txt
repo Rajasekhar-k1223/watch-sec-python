@@ -5,4 +5,9 @@ emoji==2.10.0
 watchdog==3.0.0
 mss==9.0.1
 pyinstaller==6.3.0
+jaraco.text==4.0.0
+jaraco.classes==3.4.0
+jaraco.context
+jaraco.functools
+platformdirs==4.5.1
 

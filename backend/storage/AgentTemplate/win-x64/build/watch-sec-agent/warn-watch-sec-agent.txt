@@ -14,9 +14,9 @@ Types if import:
 IMPORTANT: Do NOT post this list to the issue-tracker. Use it as a basis for
             tracking down the missing module yourself. Thanks!
 
-missing module named pwd - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), posixpath (delayed, conditional, optional), psutil (optional), netrc (delayed, conditional), getpass (delayed), distutils.util (delayed, conditional, optional), backports.tarfile (optional), distutils.archive_util (optional), http.server (delayed, optional), webbrowser (delayed), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.util (delayed, conditional, optional), setuptools._distutils.archive_util (optional), setuptools._distutils.tests.unix_compat (optional), setuptools._distutils.tests.test_util (delayed)
+missing module named pwd - imported by posixpath (delayed, conditional, optional), shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), psutil (optional), netrc (delayed, conditional), getpass (delayed), distutils.util (delayed, conditional, optional), backports.tarfile (optional), distutils.archive_util (optional), http.server (delayed, optional), webbrowser (delayed), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.util (delayed, conditional, optional), setuptools._distutils.archive_util (optional), setuptools._distutils.tests.unix_compat (optional), setuptools._distutils.tests.test_util (delayed)
 missing module named grp - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), backports.tarfile (optional), distutils.archive_util (optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional), setuptools._distutils.tests.unix_compat (optional)
-missing module named posix - imported by shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional), posixpath (optional)
+missing module named posix - imported by os (conditional, optional), posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional)
 missing module named resource - imported by posix (top-level), billiard.compat (conditional, optional), test.support (delayed, conditional, optional)
 missing module named 'org.python' - imported by copy (optional), xml.sax (delayed, conditional)
 missing module named org - imported by pickle (optional)
@@ -68,13 +68,8 @@ missing module named 'typeguard._importhook' - imported by setuptools._vendor.ty
 missing module named 'typeguard._exceptions' - imported by setuptools._vendor.typeguard._pytest_plugin (top-level)
 missing module named 'typeguard._config' - imported by setuptools._vendor.typeguard._memo (top-level), setuptools._vendor.typeguard._pytest_plugin (top-level)
 missing module named typeshed - imported by setuptools._vendor.typeguard._decorators (conditional)
-missing module named jnius - imported by setuptools._vendor.platformdirs.android (delayed, conditional, optional)
-missing module named android - imported by setuptools._vendor.platformdirs.android (delayed, conditional, optional)
-missing module named platformdirs - imported by pkg_resources (top-level), setuptools._vendor.platformdirs.__main__ (top-level)
-missing module named 'platformdirs.android' - imported by setuptools._vendor.platformdirs (delayed, conditional)
-missing module named 'platformdirs.unix' - imported by setuptools._vendor.platformdirs (delayed, conditional)
-missing module named 'platformdirs.macos' - imported by setuptools._vendor.platformdirs (delayed, conditional)
-missing module named 'platformdirs.windows' - imported by setuptools._vendor.platformdirs (delayed, conditional)
+missing module named jnius - imported by platformdirs.android (delayed, conditional, optional), setuptools._vendor.platformdirs.android (delayed, conditional, optional)
+missing module named android - imported by platformdirs.android (delayed, conditional, optional), setuptools._vendor.platformdirs.android (delayed, conditional, optional)
 missing module named typeguard - imported by setuptools._vendor.inflect (top-level)
 missing module named zipp - imported by setuptools._vendor.importlib_metadata (top-level)
 missing module named trove_classifiers - imported by setuptools.config._validate_pyproject.formats (optional)
