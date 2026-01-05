@@ -40,8 +40,9 @@ allow_origins = list(set(settings.BACKEND_CORS_ORIGINS + [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
-    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
+    allow_origins=[
+        "https://watch-sec-frontend-production.up.railway.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
