@@ -20,56 +20,80 @@ from fastapi import Request
 @router.get("/agent")
 async def download_agent(
     request: Request,
-    os_type: str = "windows", # renamed from 'os' to avoid conflict with module
+    os_type: str = "windows",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # ... (Lines 24-73 omitted, assuming context match works or I need to span larger) ...
-    # Wait, I need to match valid context block.
-    # Let's target the function def and then the assignment.
-    # REPLACE FUNCTION SIG
+    # 1. Identify Tenant
+    if not current_user.TenantId:
+        raise HTTPException(status_code=400, detail="User has no TenantId")
+        
+    tenant_result = await db.execute(select(Tenant).where(Tenant.Id == current_user.TenantId))
+    tenant = tenant_result.scalars().first()
     
-    # ...
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Tenant not found")
+
+    # 2. Locate Template
+    template_folder_map = {
+        "linux": "linux-x64",
+        "mac": "osx-x64",
+        "windows": "win-x64"
+    }
+    folder_name = template_folder_map.get(os_type.lower(), "win-x64")
     
-        # Inject Values
+    base_path = "storage"
+    template_path = os.path.join(base_path, "AgentTemplate", folder_name)
+    
+    if not os.path.exists(template_path):
+        raise HTTPException(status_code=404, detail=f"Agent Template for {os_type} not found.")
+
+    # 3. Prepare Temp Directory
+    temp_id = str(uuid.uuid4())
+    temp_path = os.path.join(base_path, "temp", temp_id)
+    agent_folder = os.path.join(temp_path, "watch-sec-agent")
+    
+    try:
+        os.makedirs(temp_path, exist_ok=True)
+        shutil.copytree(template_path, agent_folder)
+        
+        # 4. Inject Configuration
+        config_path = os.path.join(agent_folder, "config.json")
+        config_data = {}
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                try:
+                    config_data = json.load(f)
+                except:
+                    config_data = {}
+            
         config_data["TenantApiKey"] = tenant.ApiKey
         
-        # Inject configured Backend URL
-        # Priority: 1. ENV, 2. Railway Public Domain, 3. Request Host
+        # Dynamic Backend URL
         env_url = os.getenv("APP_BACKEND_URL")
         railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
-        
         if env_url:
             backend_url = env_url
         elif railway_url:
              backend_url = f"https://{railway_url}"
         else:
              backend_url = str(request.base_url).rstrip("/")
-             
         config_data["BackendUrl"] = backend_url 
             
         with open(config_path, "w") as f:
             json.dump(config_data, f, indent=2)
-                
+            
         # 5. OS Specific Packaging
         if os_type.lower() in ["linux", "mac"]:
-            # Generate Shell Script Installer
             install_script = f"""#!/bin/bash
 # WatchSec Installer
 API_KEY="{tenant.ApiKey}"
-BACKEND_URL="{config_data["BackendUrl"]}"
+BACKEND_URL="{backend_url}"
 
-echo "Downloading Agent..."
-# Logic to download the actual payload (zip) using a separate endpoint or just embedding logic
-# For this prototype, we'll assume this script bootstraps the agent.
-# Ideally, we return a script that curl's the binary.
-
-# Creating config locally
+echo "Configuring Agent..."
 mkdir -p ./watch-sec-agent
 echo '{json.dumps(config_data)}' > ./watch-sec-agent/config.json
 
-echo "Installing binary..."
-# (In real scenario, download binary here)
 echo "Done. Run ./watch-sec-agent/agent to start."
 """
             script_path = os.path.join(base_path, "temp", f"install_{temp_id}.sh")
@@ -79,30 +103,20 @@ echo "Done. Run ./watch-sec-agent/agent to start."
             return FileResponse(script_path, media_type="application/x-sh", filename="watch-sec-install.sh")
 
         else:
-            # Windows: Single EXE with injected config (Overlay)
-            # Find the executable in the template
-            exe_name = "watch-sec-agent.exe" # Default
+            # Windows: EXE Overlay
+            exe_name = "watch-sec-agent.exe"
             exe_path = os.path.join(agent_folder, exe_name)
             
-            # If default name doesn't exist, try to find any .exe
             if not os.path.exists(exe_path):
+                # Fallback search
                 for f in os.listdir(agent_folder):
                     if f.endswith(".exe"):
                         exe_path = os.path.join(agent_folder, f)
                         break
             
-            # If still not found (e.g. mock template is empty), fallback to Zip creation logic implies file didn't exist
-            # But here we must try to serve an EXE. 
-            # If we can't find it, we'll error or create a dummy one for the prototype?
-            # Let's assume it exists or fallback gracefully to ZIP with a warning? 
-            # User demanded .exe, so we should try hard.
-            
             if os.path.exists(exe_path):
-                # Config Payload
                 payload = json.dumps(config_data).encode("utf-8")
                 delimiter = b"\n<<<<WATCHSEC_CONFIG>>>>\n"
-                
-                # Create Output Path
                 final_exe_path = os.path.join(base_path, "temp", f"watch-sec-installer_{temp_id}.exe")
                 
                 with open(exe_path, "rb") as orig_f:
@@ -113,7 +127,7 @@ echo "Done. Run ./watch-sec-agent/agent to start."
                 
                 return FileResponse(final_exe_path, media_type="application/vnd.microsoft.portable-executable", filename="watch-sec-installer.exe")
             else:
-                # Fallback to Zip if binary missing in template
+                 # Fallback to Zip
                 zip_path = os.path.join(base_path, "temp", f"payload_{temp_id}") 
                 shutil.make_archive(zip_path, 'zip', agent_folder)
                 final_zip = zip_path + ".zip"
@@ -122,6 +136,4 @@ echo "Done. Run ./watch-sec-agent/agent to start."
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"Error creating agent download: {e}")
-        # Return exact error for debugging (remove in prod)
         raise HTTPException(status_code=500, detail=f"Failed: {str(e)}")
