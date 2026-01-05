@@ -2,14 +2,16 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 
-from .db.session import settings
 from .socket_instance import sio
+from .db.session import settings
 
 from .api import (
-    reports, auth, dashboard, ai, tenants, users, agents, install,
-    downloads, commands, events, mail, audit, screenshots, policies,
-    productivity, billing, uploads, system, ocr, thesaurus, speech,
-    hashbank, fingerprints, searches, remote
+    auth, tenants, users, agents, install,
+    downloads, commands, events, mail, audit,
+    screenshots, policies, productivity, billing,
+    uploads, reports, dashboard, ai, system,
+    ocr, thesaurus, speech, hashbank, fingerprints,
+    searches, remote
 )
 
 # ======================================================
@@ -21,7 +23,7 @@ app = FastAPI(
 )
 
 # ======================================================
-# CORS (SINGLE SOURCE OF TRUTH)
+# CORS — SINGLE SOURCE OF TRUTH
 # ======================================================
 ALLOWED_ORIGINS = [
     "https://watch-sec-frontend-production.up.railway.app",
@@ -33,71 +35,25 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+    ],
 )
 
 # ======================================================
-# GLOBAL OPTIONS HANDLER (CRITICAL FOR BROWSER)
+# GLOBAL OPTIONS HANDLER (CRITICAL)
 # ======================================================
 @app.options("/{path:path}")
-async def options_handler(path: str):
+async def preflight_handler(path: str):
     return Response(status_code=204)
 
 # ======================================================
-# Socket.IO Mount
-# ======================================================
-app.mount("/socket.io", socketio.ASGIApp(sio))
-
-# ======================================================
-# Socket.IO Events
-# ======================================================
-@sio.event
-async def connect(sid, environ, auth=None):
-    print(f"[SOCKET] Connected: {sid}, Auth: {auth}")
-    if auth and "room" in auth:
-        await sio.enter_room(sid, auth["room"])
-
-@sio.event
-async def disconnect(sid):
-    print(f"[SOCKET] Disconnected: {sid}")
-
-@sio.on("*")
-async def catch_all(event, sid, data):
-    print(f"[SOCKET] Unhandled Event '{event}' from {sid}")
-
-# ======================================================
-# Streaming
-# ======================================================
-@sio.on("start_stream")
-async def start_stream(sid, data):
-    await sio.emit("start_stream", data, room=data.get("agentId"))
-
-@sio.on("stop_stream")
-async def stop_stream(sid, data):
-    await sio.emit("stop_stream", data, room=data.get("agentId"))
-
-@sio.on("stream_frame")
-async def stream_frame(sid, data):
-    await sio.emit("receive_stream_frame", data, room=data.get("agentId"))
-
-# ======================================================
-# WebRTC Signaling
-# ======================================================
-@sio.on("webrtc_offer")
-async def webrtc_offer(sid, data):
-    await sio.emit("webrtc_offer", data, room=data.get("target"), skip_sid=sid)
-
-@sio.on("webrtc_answer")
-async def webrtc_answer(sid, data):
-    await sio.emit("webrtc_answer", data, room=data.get("target"), skip_sid=sid)
-
-@sio.on("ice_candidate")
-async def ice_candidate(sid, data):
-    await sio.emit("ice_candidate", data, room=data.get("target"), skip_sid=sid)
-
-# ======================================================
-# API Routers
+# API ROUTERS (MUST be before Socket.IO)
 # ======================================================
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(tenants.router, prefix="/api/tenants", tags=["Tenants"])
@@ -127,19 +83,17 @@ app.include_router(searches.router, prefix="/api", tags=["Searches"])
 app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
 
 # ======================================================
+# Socket.IO (MOUNT LAST)
+# ======================================================
+app.mount("/socket.io", socketio.ASGIApp(sio))
+
+# ======================================================
 # Health
 # ======================================================
 @app.get("/")
 async def root():
-    return {"service": "WatchSec Backend", "status": "online"}
+    return {"status": "online"}
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "version": "2.0.0"}
-
-# ======================================================
-# Local Debug
-# ======================================================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8080)
+    return {"status": "healthy"}
