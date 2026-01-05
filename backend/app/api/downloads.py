@@ -127,11 +127,9 @@ echo "Done. Run ./watch-sec-agent/agent to start."
                 
                 return FileResponse(final_exe_path, media_type="application/vnd.microsoft.portable-executable", filename="watch-sec-installer.exe")
             else:
-                 # Fallback to Zip
-                zip_path = os.path.join(base_path, "temp", f"payload_{temp_id}") 
-                shutil.make_archive(zip_path, 'zip', agent_folder)
-                final_zip = zip_path + ".zip"
-                return FileResponse(final_zip, media_type="application/zip", filename="watch-sec-agent-win.zip")
+                 # Debugging: Why is EXE missing?
+                 files = os.listdir(agent_folder)
+                 raise HTTPException(status_code=500, detail=f"Server Error: Could not find .exe in template. Scanned: {agent_folder}. Files found: {files}")
 
     except Exception as e:
         import traceback
