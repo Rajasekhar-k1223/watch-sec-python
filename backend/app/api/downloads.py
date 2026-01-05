@@ -82,7 +82,7 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
     if os_type.lower() in ["linux", "mac"]:
         # Bash Script Generation
         # Construct payload URL to download the zip we defined above
-        payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os={os_type.lower()}&payload=true"
+        payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type={os_type.lower()}&payload=true"
 
         install_script = f"""#!/bin/bash
 # Monitorix Installer
@@ -220,7 +220,7 @@ async def get_install_script(request: Request, key: str):
     
     backend_url = _get_backend_url(request)
     # The script uses the PUBLIC endpoint to download the binary
-    download_url = f"{backend_url}/api/downloads/public/agent?key={key}&os_type=windows"
+    download_url = f"{backend_url}/api/downloads/public/agent?key={key}&os_type=windows&payload=false"
     
     ps_script = f"""
 $ErrorActionPreference = 'Stop'
@@ -231,26 +231,51 @@ $Dest = "$env:TEMP\\monitorix-installer.exe"
 Write-Host "Using Backend: {backend_url}" -ForegroundColor Yellow
 Write-Host "Downloading Agent..."
 
-# 1. Try Native Curl (Fast + Progress Bar)
-if (Get-Command curl.exe -ErrorAction SilentlyContinue) {{
-    Write-Host "Using Curl..." -ForegroundColor Cyan
-    & curl.exe -L -o $Dest $Url --progress-bar
-}}
-# 2. Try BITS (Progress Bar)
-elseif (Get-Module -ListAvailable BitsTransfer) {{
-    Write-Host "Using BITS..." -ForegroundColor Cyan
-    try {{
-        Import-Module BitsTransfer -ErrorAction SilentlyContinue
-        Start-BitsTransfer -Source $Url -Destination $Dest
-    }} catch {{
-        Write-Warning "BITS failed, trying fallback..."
-        (New-Object System.Net.WebClient).DownloadFile($Url, $Dest)
+
+# Custom Fast Downloader with Progress Bar
+try {{
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.Method = "GET"
+    $request.UserAgent = "Monitorix-Installer"
+    $response = $request.GetResponse()
+    
+    $totalBytes = $response.ContentLength
+    $responseStream = $response.GetResponseStream()
+    $targetStream = [System.IO.File]::Create($Dest)
+    
+    $buffer = New-Object byte[] 65536 # 64KB Chunk
+    $totalRead = 0
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    
+    while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
+        $targetStream.Write($buffer, 0, $bytesRead)
+        $totalRead += $bytesRead
+        
+        # Update Progress every 100ms to avoid UI lag
+        if ($watch.ElapsedMilliseconds -gt 100) {{
+            $watch.Restart()
+            if ($totalBytes -gt 0) {{
+                $percent = [math]::Round(($totalRead / $totalBytes) * 100)
+                $mbRead = "{{0:N2}}" -f ($totalRead / 1MB)
+                $mbTotal = "{{0:N2}}" -f ($totalBytes / 1MB)
+                Write-Progress -Activity "Downloading Monitorix Agent..." -Status "$percent% ($mbRead MB / $mbTotal MB)" -PercentComplete $percent
+            }} else {{
+                $mbRead = "{{0:N2}}" -f ($totalRead / 1MB)
+                Write-Progress -Activity "Downloading Monitorix Agent..." -Status "$mbRead MB received"
+            }}
+        }}
     }}
-}}
-# 3. Fallback (Fast, No Progress)
-else {{
-    Write-Host "Using WebClient..." -ForegroundColor Cyan
-    (New-Object System.Net.WebClient).DownloadFile($Url, $Dest)
+    
+    # Final 100%
+    Write-Progress -Activity "Downloading Monitorix Agent..." -Status "Download Complete!" -Completed
+    
+    $targetStream.Close()
+    $responseStream.Close()
+    $response.Close()
+    
+}} catch {{
+    Write-Error "Download Failed: $_"
+    exit 1
 }}
 
 Write-Host "Starting Monitorix Agent..."
