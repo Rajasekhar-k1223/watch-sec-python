@@ -21,8 +21,8 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Use batch_alter_table for SQLite compatibility if needed, but safe for MySQL too
     with op.batch_alter_table('Tenants', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('TrustedDomainsJson', sa.Text(), nullable=True, server_default='[]'))
-        batch_op.add_column(sa.Column('TrustedIPsJson', sa.Text(), nullable=True, server_default='[]'))
+        batch_op.add_column(sa.Column('TrustedDomainsJson', sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column('TrustedIPsJson', sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
