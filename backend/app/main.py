@@ -30,11 +30,12 @@ app = FastAPI(
 # CORS Middleware (MUST be before Socket.IO)
 # ======================================================
 # Combine settings and local definitions
-allow_origins = settings.BACKEND_CORS_ORIGINS + [
+# Combine settings and local definitions
+allow_origins = list(set(settings.BACKEND_CORS_ORIGINS + [
     "https://watch-sec-frontend-production.up.railway.app",
     "http://localhost:3000",
     "http://localhost:5173",
-]
+]))
 
 app.add_middleware(
     CORSMiddleware,
