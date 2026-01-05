@@ -17,17 +17,54 @@ from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
 
 # Load Config
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-try:
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
-except Exception as e:
-    print(f"Error loading config: {e}")
+# Load Config Logic
+def load_config():
     config = {}
+    
+    # 1. Try Overlay (Priority for EXE)
+    if getattr(sys, 'frozen', False):
+        try:
+            with open(sys.executable, 'rb') as f:
+                content = f.read()
+                delimiter = b"\n<<<<WATCHSEC_CONFIG>>>>\n"
+                if delimiter in content:
+                    print("[Config] Found Overlay Configuration")
+                    json_bytes = content.split(delimiter)[-1]
+                    # Handle potential EOF newlines or garbage? usually it's clean json
+                    # But stripping whitespace is safe
+                    json_str = json_bytes.decode('utf-8').strip()
+                    return json.loads(json_str)
+        except Exception as e:
+            print(f"[Config] Overlay read error: {e}")
 
-BACKEND_URL = config.get("BackendUrl", "http://localhost:8000")
+    # 2. Try File (Fallback / Local Dev)
+    config_path = "config.json"
+    # Adjust for running from source vs frozen dir
+    if not os.path.exists(config_path):
+        # Look in parent if in src?
+        potential = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+        if os.path.exists(potential):
+            config_path = potential
+
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                print(f"[Config] Loading from {config_path}")
+                return json.load(f)
+        except Exception as e:
+            print(f"[Config] File read error: {e}")
+    
+    print("[Config] No configuration found. Using defaults.")
+    return {}
+
+config = load_config()
+
+BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", platform.node())
+
+print(f"[Config] Active Backend URL: {BACKEND_URL}")
+print(f"[Config] Tenant API Key: {API_KEY[:5]}...***")
 
 # Socket.IO Client
 sio = socketio.AsyncClient()
@@ -124,7 +161,7 @@ async def system_monitor_loop():
         await asyncio.sleep(5) # Report every 5 seconds
 
 async def main():
-    print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    print(f"--- Monitorix Agent v2.0 ({platform.system()}) ---")
     
     # Connect WebSocket
     try:

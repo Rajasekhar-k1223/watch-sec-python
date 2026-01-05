@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 import shutil
 import os
+import io
+import zipfile
 import json
 import uuid
 import asyncio
@@ -27,7 +29,7 @@ def _get_backend_url(request: Request) -> str:
     else:
         return str(request.base_url).rstrip("/")
 
-def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str):
+def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_payload: bool = False):
     """
     Common logic to package and serve the agent.
     - Windows: Stream modified EXE (Zero Disk Write).
@@ -53,26 +55,80 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str):
     if not os.path.exists(template_path):
         raise HTTPException(status_code=404, detail=f"Agent Template for {os_type} not found.")
 
-    # 3. Serve Package
+    # 2.5 Handle Payload Request (Zip Serving)
+    if serve_payload:
+        if os_type.lower() in ["linux", "mac"]:
+            # On-the-fly Zip Generation
+            zip_buffer = io.BytesIO()
+            # Zip everything in template_path
+            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                for root, dirs, files in os.walk(template_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, template_path)
+                        zip_file.write(file_path, arcname)
+            
+            zip_buffer.seek(0)
+            filename = f"monitorix-agent-{os_type}.zip"
+            return StreamingResponse(
+                iter([zip_buffer.getvalue()]), 
+                media_type="application/zip", 
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            )
+
+    # 3. Serve Installer (Script or EXE)
     temp_id = str(uuid.uuid4())
 
     if os_type.lower() in ["linux", "mac"]:
         # Bash Script Generation
+        # Construct payload URL to download the zip we defined above
+        payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os={os_type.lower()}&payload=true"
+
         install_script = f"""#!/bin/bash
 # Monitorix Installer
 API_KEY="{tenant.ApiKey}"
 BACKEND_URL="{backend_url}"
+PAYLOAD_URL="{payload_url}"
 
-echo "Configuring Monitorix Agent..."
+echo "--- Monitorix Agent Installer ---"
+
+echo "[1/4] Creating Directory..."
 mkdir -p ./monitorix-agent
-echo '{json.dumps(config_data)}' > ./monitorix-agent/config.json
+dir_name="./monitorix-agent"
 
-# If we are distributing source/binary, make sure it's executable
-chmod +x ./monitorix-agent/monitorix-agent 2>/dev/null || true
-chmod +x ./monitorix-agent/run.sh 2>/dev/null || true
+echo "[2/4] Downloading Agent Payload..."
+if command -v curl &> /dev/null; then
+    # Use --progress-bar for a nice visual
+    curl -L "$PAYLOAD_URL" -o agent.zip --progress-bar
+elif command -v wget &> /dev/null; then
+    # Use --show-progress
+    wget -q --show-progress "$PAYLOAD_URL" -O agent.zip
+else
+    echo "Error: curl or wget is required."
+    exit 1
+fi
 
-echo "Done. To start, run: ./monitorix-agent/monitorix-agent"
+echo "[3/4] Extracting..."
+if ! command -v unzip &> /dev/null; then
+    echo "Error: unzip is required. Please install it (apt install unzip / yum install unzip)."
+    exit 1
+fi
+unzip -o agent.zip -d "$dir_name" > /dev/null
+rm agent.zip
+
+echo "[4/4] Configuring..."
+echo '{json.dumps(config_data)}' > "$dir_name/config.json"
+
+# Make executable
+chmod +x "$dir_name/monitorix-agent" 2>/dev/null || true
+chmod +x "$dir_name/src/main.py" 2>/dev/null || true
+
+echo "Done! To start the agent:"
+echo "  cd $dir_name"
+echo "  ./monitorix-agent"
 """
+
+
         # We still write script to disk because it's tiny and simpler for FileResponse
         temp_dir = os.path.join(base_path, "temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -126,6 +182,7 @@ async def download_public_agent(
     request: Request,
     key: str,
     os_type: str = "windows",
+    payload: bool = False,
     db: AsyncSession = Depends(get_db)
 ):
     # Public Endpoint (No Auth Header)
@@ -135,12 +192,13 @@ async def download_public_agent(
         raise HTTPException(status_code=401, detail="Invalid API Key")
         
     backend_url = _get_backend_url(request)
-    return _serve_agent_package(os_type, tenant, backend_url)
+    return _serve_agent_package(os_type, tenant, backend_url, serve_payload=payload)
 
 @router.get("/agent/install")
 async def download_agent(
     request: Request,
     os_type: str = "windows",
+    payload: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -154,7 +212,7 @@ async def download_agent(
         raise HTTPException(status_code=401, detail="Tenant not found")
 
     backend_url = _get_backend_url(request)
-    return _serve_agent_package(os_type, tenant, backend_url)
+    return _serve_agent_package(os_type, tenant, backend_url, serve_payload=payload)
 
 @router.get("/script")
 async def get_install_script(request: Request, key: str):
@@ -170,13 +228,29 @@ Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
 $Url = "{download_url}"
 $Dest = "$env:TEMP\\monitorix-installer.exe"
 
+Write-Host "Using Backend: {backend_url}" -ForegroundColor Yellow
 Write-Host "Downloading Agent..."
-try {{
-    Import-Module BitsTransfer -ErrorAction SilentlyContinue
-    Start-BitsTransfer -Source $Url -Destination $Dest
-}} catch {{
-    Write-Warning "BITS failed, falling back to Invoke-WebRequest (Slow)..."
-    Invoke-WebRequest -Uri $Url -OutFile $Dest
+
+# 1. Try Native Curl (Fast + Progress Bar)
+if (Get-Command curl.exe -ErrorAction SilentlyContinue) {{
+    Write-Host "Using Curl..." -ForegroundColor Cyan
+    & curl.exe -L -o $Dest $Url --progress-bar
+}}
+# 2. Try BITS (Progress Bar)
+elseif (Get-Module -ListAvailable BitsTransfer) {{
+    Write-Host "Using BITS..." -ForegroundColor Cyan
+    try {{
+        Import-Module BitsTransfer -ErrorAction SilentlyContinue
+        Start-BitsTransfer -Source $Url -Destination $Dest
+    }} catch {{
+        Write-Warning "BITS failed, trying fallback..."
+        (New-Object System.Net.WebClient).DownloadFile($Url, $Dest)
+    }}
+}}
+# 3. Fallback (Fast, No Progress)
+else {{
+    Write-Host "Using WebClient..." -ForegroundColor Cyan
+    (New-Object System.Net.WebClient).DownloadFile($Url, $Dest)
 }}
 
 Write-Host "Starting Monitorix Agent..."
