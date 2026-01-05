@@ -15,6 +15,8 @@ from modules.fim import FileIntegrityMonitor
 from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
+from modules.streamer import ScreenStreamer
+from modules.remote import RemoteController
 
 # Load Config
 # Load Config Logic
@@ -74,6 +76,8 @@ fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
+streamer = ScreenStreamer(sio, AGENT_ID)
+remote_ctrl = RemoteController()
 
 @sio.event
 async def connect():
@@ -119,6 +123,24 @@ async def on_update_config(data):
             screen_cap.start()
         else:
             screen_cap.stop()
+
+# --- Streaming Handlers ---
+@sio.on('start_stream')
+async def on_start_stream(data):
+    print("[CMD] Start Stream Request")
+    streamer.start()
+
+@sio.on('stop_stream')
+async def on_stop_stream(data):
+    print("[CMD] Stop Stream Request")
+    streamer.stop()
+
+# --- Remote Control Handlers ---
+@sio.on('RemoteInput')
+async def on_remote_input(data):
+    # print(f"[Remote] Input: {data['type']}") # Verbose
+    remote_ctrl.handle_input(data)
+
 
 async def system_monitor_loop():
     print(f"[Agent] Starting Monitor for {AGENT_ID} -> {BACKEND_URL}")
@@ -168,6 +190,8 @@ async def system_monitor_loop():
                     print(f"[Report] Error {resp.status_code}: {resp.text}")
             except Exception as e:
                 print(f"[Report] Failed: {e}")
+            
+            # Keep Streaming Alive if active? (Streamer runs in own thread)
 
         except Exception as e:
             print(f"[Error] Loop Exception: {e}")
@@ -202,4 +226,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Stopping...")
         screen_cap.stop()
+        streamer.stop()
         sys.exit(0)
