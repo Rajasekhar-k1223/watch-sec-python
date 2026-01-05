@@ -186,6 +186,26 @@ async def system_monitor_loop():
                 resp = await asyncio.to_thread(requests.post, f"{BACKEND_URL}/api/report", json=payload, timeout=5)
                 if resp.status_code == 200:
                     print(f"[Report] Sent: CPU {cpu}% | MEM {payload['MemoryUsage']:.1f}MB")
+                    
+                    # Sync Config from Heartbeat
+                    try:
+                        resp_data = resp.json()
+                        server_config = resp_data.get('config', {})
+                        
+                        # Sync Screenshots
+                        if 'ScreenshotsEnabled' in server_config:
+                            should_enable = server_config['ScreenshotsEnabled']
+                            # Only act if state changed to avoid spamming start/stop
+                            if should_enable != config.get('ScreenshotsEnabled'):
+                                print(f"[Config] Sync: ScreenshotsEnabled -> {should_enable}")
+                                config['ScreenshotsEnabled'] = should_enable
+                                if should_enable:
+                                    screen_cap.start()
+                                else:
+                                    screen_cap.stop()
+                    except Exception as parse_err:
+                        print(f"[Config] Failed to parse heartbeat config: {parse_err}")
+
                 else:
                     print(f"[Report] Error {resp.status_code}: {resp.text}")
             except Exception as e:
