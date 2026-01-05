@@ -7,9 +7,15 @@ cd "$(dirname "$0")"
 echo "Current Directory: $(pwd)"
 ls -la
 
-# 1. Automatic Migrations (Required for new Production DB)
+# 1. Automatic Migrations (Self-Healing)
 echo "Running Database Migrations..."
-alembic upgrade head
+if ! alembic upgrade head; then
+    echo "Migration Failed! Likely Ghost Migration detected."
+    echo "Attempting Self-Healing (Resetting Database)..."
+    python -m app.scripts.reset_db_force
+    echo "Retrying Migrations..."
+    alembic upgrade head
+fi
 
 # 2. Seed Initial Data (e.g. Admin User)
 # "|| true" ensures server continues even if seed fails (e.g. duplicate user)
