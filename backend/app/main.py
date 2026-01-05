@@ -26,7 +26,7 @@ app = FastAPI(
 # CORS — SINGLE SOURCE OF TRUTH
 # ======================================================
 ALLOWED_ORIGINS = [
-    "https://watch-sec-frontend-production.up.railway.app",
+    "https://monitorix.up.railway.app",
     "http://localhost:3000",
     "http://localhost:5173",
 ]
