@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Ensure we are in the script directory
+cd "$(dirname "$0")"
+
+# Check for Python 3
+if ! command -v python3 &> /dev/null; then
+    echo "Error: Python 3 is required but not found."
+    exit 1
+fi
+
+echo "Initializing Monitorix Agent..."
+
+# Create Virtual Environment if not exists
+if [ ! -d "venv" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv venv
+fi
+
+# Install Dependencies
+echo "Installing dependencies..."
+./venv/bin/pip install -r requirements.txt --quiet
+
+# Run Agent
+echo "Starting Monitorix Agent..."
+# We run in background or foreground?
+# The installer script says "Done. Run ... to start."
+# If user runs it manually, foreground is fine.
+# If they want service, they should use systemd (out of scope for now, keeping it simple).
+./venv/bin/python3 src/main.py

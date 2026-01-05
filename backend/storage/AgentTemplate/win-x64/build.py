@@ -28,7 +28,7 @@ def build():
         "--hidden-import=jaraco.functools",
         "--hidden-import=pkg_resources",
         "--hidden-import=platformdirs",
-        "--name", "watch-sec-agent",
+        "--name", "monitorix-agent",
         "src/main.py"
     ]
     
