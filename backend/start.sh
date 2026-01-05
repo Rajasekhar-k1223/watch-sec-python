@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# Change to the directory of the script (ensure we are in /app or where files are)
+cd "$(dirname "$0")"
+
+echo "Current Directory: $(pwd)"
+ls -la
+
 # 1. Automatic Migrations (Required for new Production DB)
 echo "Running Database Migrations..."
 alembic upgrade head
