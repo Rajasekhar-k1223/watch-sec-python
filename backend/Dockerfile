@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY storage ./storage
 COPY start.sh .
+COPY alembic.ini .
+COPY alembic ./alembic
 
 # Permissions
 RUN chmod +x start.sh
