@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 from motor.motor_asyncio import AsyncIOMotorClient
 
 
@@ -21,7 +22,10 @@ class Settings(BaseSettings):
     # =========================
     # CORS
     # =========================
-    BACKEND_CORS_ORIGINS: list[str] = [
+    # =========================
+    # CORS
+    # =========================
+    BACKEND_CORS_ORIGINS: str | list[str] = [
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
@@ -33,6 +37,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+    
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        elif isinstance(v, (list, str)):
+            return v
+        raise ValueError(v)
 
 
 settings = Settings()
