@@ -54,3 +54,19 @@ async def create_tenant(
     await db.refresh(new_tenant)
     
     return new_tenant
+
+@router.get("/api-key")
+async def get_my_api_key(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if not current_user.TenantId:
+        raise HTTPException(status_code=400, detail="No Tenant")
+        
+    result = await db.execute(select(Tenant).where(Tenant.Id == current_user.TenantId))
+    tenant = result.scalars().first()
+    
+    if not tenant:
+         raise HTTPException(status_code=404, detail="Tenant not found")
+         
+    return {"apiKey": tenant.ApiKey}
