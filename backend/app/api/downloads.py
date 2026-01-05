@@ -15,65 +15,38 @@ from ..db.models import User
 
 router = APIRouter()
 
+from fastapi import Request
+
 @router.get("/agent")
 async def download_agent(
+    request: Request,
     os_type: str = "windows", # renamed from 'os' to avoid conflict with module
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # 1. Identify Tenant
-    if not current_user.TenantId:
-        raise HTTPException(status_code=400, detail="User has no TenantId")
-        
-    tenant_result = await db.execute(select(Tenant).where(Tenant.Id == current_user.TenantId))
-    tenant = tenant_result.scalars().first()
+    # ... (Lines 24-73 omitted, assuming context match works or I need to span larger) ...
+    # Wait, I need to match valid context block.
+    # Let's target the function def and then the assignment.
+    # REPLACE FUNCTION SIG
     
-    if not tenant:
-        raise HTTPException(status_code=401, detail="Tenant not found")
-
-    # 2. Locate Template
-    template_folder_map = {
-        "linux": "linux-x64",
-        "mac": "osx-x64",
-        "windows": "win-x64"
-    }
-    folder_name = template_folder_map.get(os_type.lower(), "win-x64")
+    # ...
     
-    base_path = "storage" # Relative to cwd
-    template_path = os.path.join(base_path, "AgentTemplate", folder_name)
-    
-    if not os.path.exists(template_path):
-        raise HTTPException(status_code=404, detail=f"Agent Template for {os_type} not found on server.")
-
-    # 3. Prepare Temp Directory
-    temp_id = str(uuid.uuid4())
-    temp_path = os.path.join(base_path, "temp", temp_id)
-    agent_folder = os.path.join(temp_path, "watch-sec-agent")
-    
-    try:
-        # Create Temp Dir Parent
-        os.makedirs(temp_path, exist_ok=True)
-
-        # Copy Template
-        shutil.copytree(template_path, agent_folder)
-        
-        # 4. Inject Configuration
-        config_path = os.path.join(agent_folder, "config.json")
-        
-        # Ensure file exists (it should from our mock setup)
-        # If not, create it
-        config_data = {}
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                try:
-                    config_data = json.load(f)
-                except:
-                    config_data = {}
-            
         # Inject Values
         config_data["TenantApiKey"] = tenant.ApiKey
-        # Inject configured Backend URL or fallback to local IP (not localhost)
-        config_data["BackendUrl"] = os.getenv("APP_BACKEND_URL", "http://192.168.1.9:8000") 
+        
+        # Inject configured Backend URL
+        # Priority: 1. ENV, 2. Railway Public Domain, 3. Request Host
+        env_url = os.getenv("APP_BACKEND_URL")
+        railway_url = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        
+        if env_url:
+            backend_url = env_url
+        elif railway_url:
+             backend_url = f"https://{railway_url}"
+        else:
+             backend_url = str(request.base_url).rstrip("/")
+             
+        config_data["BackendUrl"] = backend_url 
             
         with open(config_path, "w") as f:
             json.dump(config_data, f, indent=2)
