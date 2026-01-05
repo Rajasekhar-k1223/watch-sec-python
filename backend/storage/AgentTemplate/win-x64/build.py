@@ -28,7 +28,7 @@ def build():
         "--hidden-import=jaraco.functools",
         "--hidden-import=pkg_resources",
         "--hidden-import=platformdirs",
-        "--name", "monitorix-agent",
+        "--name", "monitorix",
         "src/main.py"
     ]
     
@@ -42,10 +42,18 @@ def build():
     print("Build Success!")
     
     # 3. Verify
-    output_path = os.path.join("dist", "watch-sec-agent.exe")
+    output_path = os.path.join("dist", "monitorix.exe")
     if os.path.exists(output_path):
         size = os.path.getsize(output_path)
         print(f"Artifact created: {output_path} ({size} bytes)")
+        
+        # Move to Root (for API to serve)
+        # Assuming Downloads API looks in AgentTemplate/win-x64/monitorix.exe
+        # This script runs in storage/AgentTemplate/win-x64
+        dest = "monitorix.exe"
+        shutil.copy(output_path, dest)
+        print(f"Published to: {os.path.abspath(dest)}")
+        
     else:
         print("Artifact not found!")
         exit(1)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 import csv
 import io
@@ -43,7 +43,7 @@ class AgentReportDto(BaseModel):
     Gateway: Optional[str] = None
 
 @router.post("/report")
-async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)):
+async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession = Depends(get_db)):
     print(f"[API] Received Report from {dto.AgentId}")
 
     # 1. Authenticate Tenant
@@ -69,6 +69,11 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
     result = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
     agent = result.scalars().first()
 
+    # Extract Public IP
+    client_ip = request.client.host if request.client else "Unknown"
+
+    status_msg = "Updated"
+
     if not agent:
         # Check Agent Limit (Plan Enforcement)
         from sqlalchemy import func
@@ -77,7 +82,7 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         
         if current_count >= tenant.AgentLimit:
             print(f"[API] Agent Limit Reached for Tenant {tenant.Name} ({current_count}/{tenant.AgentLimit})")
-            raise HTTPException(status_code=403, detail=f"Agent Limit Reached ({tenant.AgentLimit}). Upgrade your plan.")
+            raise HTTPException(status_code=403, detail=f"Agent Limit Reached ({tenant.AgentLimit}). Contact Admin to upgrade.")
 
         # New Agent
         agent = Agent(
@@ -87,14 +92,18 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
             LastSeen=datetime.utcnow(),
             Hostname=dto.Hostname or "Unknown",
             LocalIp=dto.LocalIp or "0.0.0.0",
+            PublicIp=client_ip,
             Gateway=dto.Gateway or "Unknown",
             InstalledSoftwareJson=dto.InstalledSoftwareJson or "[]"
         )
         db.add(agent)
+        status_msg = "Registered"
     else:
         # Update Existing
+        status_msg = "Already Registered" # Per user request "already exit and registrater", maybe imply "Updated" but acknowledge existence.
         agent.LastSeen = datetime.utcnow()
         agent.TenantId = tenant.Id
+        agent.PublicIp = client_ip
         if dto.Hostname:
             agent.Hostname = dto.Hostname
         if dto.InstalledSoftwareJson:
@@ -124,12 +133,27 @@ async def receive_report(dto: AgentReportDto, db: AsyncSession = Depends(get_db)
         except Exception as e:
             print(f"[API] Failed to trigger sec scan: {e}")
 
+    
+    # Send Real-time Update via Socket.IO
+    await sio.emit('agent_update', {
+        'AgentId': agent.AgentId,
+        'Status': dto.Status,
+        'CpuUsage': dto.CpuUsage,
+        'MemoryUsage': dto.MemoryUsage,
+        'LastSeen': agent.LastSeen.isoformat(),
+        'Hostname': agent.Hostname,
+        'PublicIp': agent.PublicIp
+    }, room=str(tenant.Id)) # Unicast to Room
+
     return {
-        "TenantId": tenant.Id, 
-        "ScreenshotsEnabled": agent.ScreenshotsEnabled,
-        "ScreenshotQuality": agent.ScreenshotQuality or 80,
-        "ScreenshotResolution": agent.ScreenshotResolution or "Original",
-        "MaxScreenshotSize": agent.MaxScreenshotSize or 0
+        "status": "success", 
+        "message": status_msg,
+        "config": {
+            "ScreenshotsEnabled": agent.ScreenshotsEnabled,
+            "ScreenshotQuality": agent.ScreenshotQuality or 80,
+            "ScreenshotResolution": agent.ScreenshotResolution or "Original",
+            "MaxScreenshotSize": agent.MaxScreenshotSize or 0
+        }
     }
 
 # --- Export Activity Logs ---

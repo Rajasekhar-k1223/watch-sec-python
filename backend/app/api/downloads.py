@@ -120,14 +120,44 @@ echo "[4/4] Configuring..."
 echo '{json.dumps(config_data)}' > "$dir_name/config.json"
 
 # Make executable
-chmod +x "$dir_name/monitorix-agent" 2>/dev/null || true
+chmod +x "$dir_name/monitorix" 2>/dev/null || true
 chmod +x "$dir_name/src/main.py" 2>/dev/null || true
 
-echo "Done! To start the agent:"
-echo "  cd $dir_name"
-echo "  ./monitorix-agent"
-"""
+# Rename wrapper if needed (we renamed it on server, but just in case)
+if [ -f "$dir_name/monitorix-agent" ]; then
+    mv "$dir_name/monitorix-agent" "$dir_name/monitorix"
+fi
 
+# Create Systemd Service
+SERVICE_FILE="/etc/systemd/system/monitorix.service"
+if [ -d "/etc/systemd/system" ]; then
+    echo "[5/4] Installing Service..."
+    cat > $SERVICE_FILE <<EOF
+[Unit]
+Description=Monitorix Security Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$dir_name
+ExecStart=$dir_name/monitorix
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable monitorix
+    systemctl restart monitorix
+    echo "Service installed and started!"
+else
+    echo "Done! To start the agent manually:"
+    echo "  cd $dir_name"
+    echo "  ./monitorix"
+fi
+"""
 
         # We still write script to disk because it's tiny and simpler for FileResponse
         temp_dir = os.path.join(base_path, "temp")
@@ -152,8 +182,11 @@ echo "  ./monitorix-agent"
                     break
         
         if not os.path.exists(exe_path):
-             files = os.listdir(template_path)
-             raise HTTPException(status_code=500, detail=f"Server Error: Could not find .exe in template.")
+             # Try specific new name
+             exe_path = os.path.join(template_path, "monitorix.exe")
+             if not os.path.exists(exe_path):
+                 files = os.listdir(template_path)
+                 raise HTTPException(status_code=500, detail=f"Server Error: Could not find monitorix.exe in template. Found: {files}")
 
         # Prepare Payload
         payload = json.dumps(config_data).encode("utf-8")
@@ -172,7 +205,7 @@ echo "  ./monitorix-agent"
         return StreamingResponse(
             iterfile(),
             media_type="application/vnd.microsoft.portable-executable",
-            headers={"Content-Disposition": f'attachment; filename="monitorix-installer-v2.exe"'}
+            headers={"Content-Disposition": f'attachment; filename="monitorix.exe"'}
         )
 
 # --- Endpoints ---
@@ -232,7 +265,8 @@ Write-Host "Using Backend: {backend_url}" -ForegroundColor Yellow
 Write-Host "Downloading Agent..."
 
 
-# Custom Fast Downloader with Progress Bar
+
+# Custom Fast Downloader with Detailed Text Progress
 try {{
     $request = [System.Net.HttpWebRequest]::Create($Url)
     $request.Method = "GET"
@@ -245,29 +279,67 @@ try {{
     
     $buffer = New-Object byte[] 65536 # 64KB Chunk
     $totalRead = 0
-    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastUpdate = [System.Diagnostics.Stopwatch]::StartNew()
+    $speedWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $speedBytes = 0
+    
+    # Force Console to show progress
+    $ProgressPreference = 'Continue'
+    
+    Write-Host "Downloading: Starting..." -NoNewline
     
     while (($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {{
         $targetStream.Write($buffer, 0, $bytesRead)
         $totalRead += $bytesRead
+        $speedBytes += $bytesRead
         
-        # Update Progress every 100ms to avoid UI lag
-        if ($watch.ElapsedMilliseconds -gt 100) {{
-            $watch.Restart()
+        # Update every 500ms
+        if ($lastUpdate.ElapsedMilliseconds -gt 500) {{
+            # Calculate Speed
+            $seconds = $speedWatch.Elapsed.TotalSeconds
+            $speed = 0
+            if ($seconds -gt 0) {{ $speed = ($speedBytes / 1MB) / $seconds }}
+            $speedWatch.Restart()
+            $speedBytes = 0
+            
+            $lastUpdate.Restart()
+            
+            # Format Strings
+            $mbRead = "{{0:N2}}" -f ($totalRead / 1MB)
+            $mbTotal = "{{0:N2}}" -f ($totalBytes / 1MB)
+            $speedStr = "{{0:N2}} MB/s" -f $speed
+            
             if ($totalBytes -gt 0) {{
                 $percent = [math]::Round(($totalRead / $totalBytes) * 100)
-                $mbRead = "{{0:N2}}" -f ($totalRead / 1MB)
-                $mbTotal = "{{0:N2}}" -f ($totalBytes / 1MB)
-                Write-Progress -Activity "Downloading Monitorix Agent..." -Status "$percent% ($mbRead MB / $mbTotal MB)" -PercentComplete $percent
+                $msg = "Downloaded: $mbRead MB / $mbTotal MB ($percent%) @ $speedStr    "
+                
+                # Write-Progress (UI Bar)
+                Write-Progress -Activity "Downloading Monitorix Agent" -Status $msg -PercentComplete $percent
+                
+                # Console Text Bar (Fallback)
+                try {{
+                    if ([Console]::CursorLeft -gt 0) {{ [Console]::CursorLeft = 0 }}
+                    Write-Host $msg -NoNewline
+                }} catch {{
+                    # If console manipulation fails, print new line
+                    Write-Host $msg
+                }}
             }} else {{
-                $mbRead = "{{0:N2}}" -f ($totalRead / 1MB)
-                Write-Progress -Activity "Downloading Monitorix Agent..." -Status "$mbRead MB received"
+                $msg = "Downloaded: $mbRead MB @ $speedStr    "
+                Write-Progress -Activity "Downloading Monitorix Agent" -Status $msg
+                 try {{
+                    if ([Console]::CursorLeft -gt 0) {{ [Console]::CursorLeft = 0 }}
+                    Write-Host $msg -NoNewline
+                }} catch {{
+                    Write-Host $msg
+                }}
             }}
         }}
     }}
     
-    # Final 100%
-    Write-Progress -Activity "Downloading Monitorix Agent..." -Status "Download Complete!" -Completed
+    # Final
+    Write-Host ""
+    Write-Host "Download Complete!" -ForegroundColor Green
     
     $targetStream.Close()
     $responseStream.Close()

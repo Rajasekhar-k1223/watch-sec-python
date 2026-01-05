@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -86,7 +86,11 @@ class RegisterTenantRequest(BaseModel):
     plan: str = "Starter"
 
 @router.post("/register-tenant", response_model=LoginResponse)
-async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = Depends(get_db)):
+async def register_tenant(
+    form_data: RegisterTenantRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
     # 1. Check if user already exists (globally unique username enforcement)
     result = await db.execute(select(User).where(User.Username == form_data.adminUsername))
     existing_user = result.scalars().first()
@@ -104,11 +108,15 @@ async def register_tenant(form_data: RegisterTenantRequest, db: AsyncSession = D
     }
     agent_limit = limit_map.get(form_data.plan, 5) # Default to 5
 
+    # Extract IP
+    client_ip = request.client.host if request.client else "Unknown"
+
     new_tenant = Tenant(
         Name=form_data.tenantName,
         Plan=form_data.plan,
         AgentLimit=agent_limit,
-        ApiKey=str(uuid.uuid4())
+        ApiKey=str(uuid.uuid4()),
+        RegistrationIp=client_ip
     )
     db.add(new_tenant)
     await db.flush() # flush to get ID

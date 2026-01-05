@@ -14,6 +14,7 @@ class Tenant(Base):
     NextBillingDate = Column(DateTime, default=datetime.utcnow)
     TrustedDomainsJson = Column(Text, default="[]") 
     TrustedIPsJson = Column(Text, default="[]")
+    RegistrationIp = Column(String(50), nullable=True)
 
 class User(Base):
     __tablename__ = "Users"
@@ -33,6 +34,7 @@ class Agent(Base):
     ScreenshotsEnabled = Column(Boolean, default=False)
     LastSeen = Column(DateTime, default=datetime.utcnow)
     Hostname = Column(String(255), default="Unknown")
+    PublicIp = Column(String(50), nullable=True)
     Latitude = Column(Float, default=0.0)
     Longitude = Column(Float, default=0.0)
     Country = Column(Text, nullable=True)
