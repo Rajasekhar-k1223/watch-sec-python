@@ -414,13 +414,13 @@ Write-Host "Initializing Secure Download..." -ForegroundColor Cyan
 $Code = @"
 using System;
 using System.Net;
-public class WebClientWithTimeout : WebClient {
-    protected override WebRequest GetWebRequest(Uri address) {
+public class WebClientWithTimeout : WebClient {{
+    protected override WebRequest GetWebRequest(Uri address) {{
         WebRequest w = base.GetWebRequest(address);
         w.Timeout = 5000;
         return w;
-    }
-}
+    }}
+}}
 "@
 Add-Type -TypeDefinition $Code -Language CSharp
 
