@@ -479,9 +479,9 @@ try {{
     if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}
     Write-Host "Starting Monitorix Agent..." -ForegroundColor Green
     # Start detached
-    if (-not (Get-Process -Name "monitorix-agent" -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Process -Name "monitorix-agent" -ErrorAction SilentlyContinue)) {{
         Start-Process -FilePath "$ExePath" -WorkingDirectory "$InstallDir"
-    }
+    }}
 
 }} catch {{
     Write-Error "Termination Error: $_"
