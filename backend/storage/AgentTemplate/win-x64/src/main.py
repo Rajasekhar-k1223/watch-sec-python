@@ -8,16 +8,17 @@ from datetime import datetime, timedelta
 import os
 import sys
 import urllib3
+import warnings
 
-# Suppress insecure request warnings for development
+# Suppress insecure request warnings & pkg_resources deprecation
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module='pkg_resources')
 
 import aiohttp
 # Monkey Patch for aiohttp 3.9+ compatibility
 if not hasattr(aiohttp, 'ClientWSTimeout'):
     class MockClientWSTimeout(aiohttp.ClientTimeout):
         def __init__(self, ws_close=None, ws_receive=None, **kwargs):
-            # Swallow legacy args
             super().__init__(**kwargs)
     try:
         aiohttp.ClientWSTimeout = MockClientWSTimeout
@@ -25,8 +26,13 @@ if not hasattr(aiohttp, 'ClientWSTimeout'):
     except: pass
 
 # Add src to path if running nicely
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    sys.path.append(BASE_DIR)
 
+# --- Import Modules ---
 from modules.live_stream import LiveStreamer
 from modules.fim import FileIntegrityMonitor
 from modules.network import NetworkScanner
@@ -34,14 +40,15 @@ from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
 from modules.activity_monitor import ActivityMonitor
 from modules.mail_monitor import MailMonitor
-from modules.mail_monitor import MailMonitor
 from modules.browser_enforcer import BrowserEnforcer
 from modules.remote_desktop import RemoteDesktopAgent
+from modules.webrtc_stream import WebRTCManager
 
 import uuid
+import getpass
 
-# Load Config
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+# --- Configuration Loading ---
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 try:
     with open(CONFIG_PATH, "r") as f:
         config = json.load(f)
@@ -49,19 +56,19 @@ except Exception as e:
     print(f"Error loading config: {e}")
     config = {}
 
+# Backend Configuration (User Defined Production URL)
 BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
 
-# Dynamic Agent ID Logic
-# Always verify if the loaded ID matches the current system
-import getpass
+# --- Dynamic Agent ID Logic ---
 current_hostname = platform.node()
 current_user = getpass.getuser()
 expected_prefix = f"{current_hostname}-{current_user}"
+
 print(f"[Init] Expected Agent ID Prefix: {expected_prefix}")
 print(f"[Init] Loaded Agent ID: {AGENT_ID}")
-print(API_KEY)
+
 # If ID is missing OR doesn't match the current system (e.g. config copied from another machine)
 if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
     unique_suffix = str(uuid.uuid4())[:8].upper()
@@ -71,121 +78,75 @@ if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
     # Update Config with new ID to persist it
     config["AgentId"] = AGENT_ID
     try:
+        # Write Config
         with open(CONFIG_PATH, "w") as f:
             json.dump(config, f, indent=4)
-        print(f"[Init] Saved new Agent ID to config.json")
+        
+        # Re-apply Hidden Attribute (Windows Security)
+        if platform.system() == "Windows":
+             import ctypes
+             FILE_ATTRIBUTE_HIDDEN = 0x02
+             ctypes.windll.kernel32.SetFileAttributesW(str(CONFIG_PATH), FILE_ATTRIBUTE_HIDDEN)
+
+        print(f"[Init] Saved new Agent ID to config.json (Secure)")
     except Exception as e:
         print(f"[Init] Failed to save config: {e}")
 else:
     print(f"[Init] Using Configured Agent ID: {AGENT_ID}")
 
-# Socket.IO Client
+# --- Socket.IO Client ---
 sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False)
 
-# Initialize Modules
+# --- Remote Commands Handlers ---
+
+@sio.on('uninstall')
+async def on_uninstall(data):
+    print("[Command] Received Remote Uninstall/Stop...")
+    try:
+        # 1. Remove Persistence (Scheduled Task)
+        if platform.system() == "Windows":
+             import subprocess
+             print("[Uninstall] Removing Scheduled Task...")
+             subprocess.run(["schtasks", "/Delete", "/TN", "MonitorixAgent", "/F"], capture_output=True)
+        
+        # 2. Stop Modules (Best Effort)
+        try:
+            screen_cap.stop()
+            activity_mon.stop()
+            mail_mon.stop()
+            remote_desktop.stop()
+        except: pass
+        
+        # 3. Exit
+        print("[Command] Agent Stopping Permanently. Goodbye.")
+        os._exit(0) # Force exit
+    except Exception as e:
+        print(f"[Command] Uninstall Failed: {e}")
+
+# --- Initialize Modules ---
 fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
-activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
-live_streamer = LiveStreamer(AGENT_ID, sio) # We will inject loop later or relies on get_event_loop in thread if safe
+# live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated in favor of WebRTC
+webrtc_manager = WebRTCManager(str(BACKEND_URL), str(AGENT_ID), sio)
 
-from modules.webrtc_stream import WebRTCManager
-
-# ...
-# Existing LiveStreamer (Keep for fallback if needed, or disable)
-# live_streamer = LiveStreamer(AGENT_ID, sio) 
-webrtc_manager = WebRTCManager(sio, AGENT_ID)
-
-@sio.event
-async def connect():
-    print(f"[STREAM_DEBUG] Agent Connected to Backend. Joining Room: {AGENT_ID}")
-    # Explicitly join room as fail-safe
-    await sio.emit('join_room', {'room': AGENT_ID})
-
-@sio.on('start_stream')
-async def on_start_stream(data):
-    print(f"[WebRTC] Received start_stream Command! Data: {data}", flush=True)
-    # loop = asyncio.get_running_loop()
-    # live_streamer.start_streaming(loop)
-    await webrtc_manager.start_stream()
-
-@sio.on('stop_stream')
-async def on_stop_stream(data):
-    print(f"[WebRTC] Received stop_stream Command!")
-    # live_streamer.stop_streaming()
-    await webrtc_manager.stop_stream()
-
-@sio.on('webrtc_answer')
-async def on_webrtc_answer(data):
-    await webrtc_manager.handle_answer(data)
-
-@sio.on('ice_candidate')
-async def on_ice_candidate(data):
-    await webrtc_manager.handle_ice_candidate(data)
-
-# ... (keep other handlers)
-
-@sio.on('RefetchPolicy')
-async def on_refetch_policy(data):
-    print("[CMD] Received Policy Refetch Command")
-
-@sio.on('KillProcess')
-async def on_kill_process(data):
-    target = data.get('target')
-    print(f"[CMD] Kill Process Request: {target}")
-    
-    if isinstance(target, int):
-        success, msg = proc_sec.kill_process_by_pid(target)
-    else:
-        success, msg = proc_sec.kill_process_by_name(str(target))
-    
-    # Ack back to server
-    await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': msg, 'Success': success})
-
-@sio.on('TakeScreenshot')
-async def on_take_screenshot(data):
-    print(f"[CMD] Taking Screenshot...")
-    success, msg = await asyncio.to_thread(screen_cap.capture_now)
-    await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': msg, 'Success': success})
-
-@sio.on('Isolate')
-async def on_isolate(data):
-    print(f"[CMD] *** ISOLATE COMMAND RECEIVED ***")
-    # Implementation: Block all traffic except Backend
-    # 1. Get Backend IP
-    # 2. Add Firewall Rule (netsh advfirewall firewall add rule...)
-    # For Checkpoint parity: We simulate the action
-    print(f"[Security] Isolating Host... Allowing only {BACKEND_URL}")
-    await sio.emit('CommandResult', {'AgentId': AGENT_ID, 'Result': "Host Isolated", 'Success': True})
 
 async def system_monitor_loop():
-    print(f"[Agent] Starting Monitor for {AGENT_ID} -> {BACKEND_URL}")
-    last_net_scan = datetime.now()
-    last_sw_scan = datetime.now() - timedelta(minutes=60) # Force start
-    software_cache = []
-    
+    print("[Loop] Starting System Monitor Loop...")
     while True:
         try:
-            # Gather Metrics
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             
-            # Subnet Scan (Every 60s)
-            scan_results = []
-            if (datetime.now() - last_net_scan).seconds > 60:
-                print("[Net] Performing Periodic Scan...")
-                scan_results = net_scanner.scan_subnet()
-                last_net_scan = datetime.now()
-                
-            # Software Scan (Every 60m)
-            if (datetime.now() - last_sw_scan).seconds > 3600 or not software_cache:
+            # Periodic Software Scan (every hour approx)
+            software_cache = []
+            if datetime.now().minute == 0:
                 print("[Sec] Scanning Installed Software...")
                 software_cache = proc_sec.get_installed_software()
-                last_sw_scan = datetime.now()
 
             payload = {
                 "AgentId": AGENT_ID,
@@ -237,7 +198,7 @@ async def run_self_test():
     # 1. HTTP Connectivity
     try:
         print(f"[Self-Test] Pinging Backend API...", end=" ", flush=True)
-        resp = await asyncio.to_thread(requests.get, f"{BACKEND_URL}/health", timeout=5, verify=False)
+        resp = await asyncio.to_thread(requests.get, f"{BACKEND_URL}/api/health", timeout=5, verify=False)
         if resp.status_code == 200:
             print("OK (HTTP 200)")
         else:
@@ -261,21 +222,22 @@ async def main():
     await run_self_test()
     
     # Connect WebSocket
-    # Connect WebSocket with Retry
     while True:
         try:
+            # IMPORTANT: Auth dict with 'room' ensures backend routes us correctly
             await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
-            print("[WS] Connected!")
+            print("[WS] Connected to Backend Socket!")
             break
         except Exception as e:
             print(f"[WS] Connection Failed (Retrying in 5s): {e}")
-            await sio.disconnect()
+            try:
+                await sio.disconnect()
+            except: pass
             await asyncio.sleep(5)
 
     # Start Security Modules
     fim.start()
     screen_cap.start()
-    activity_mon.start()
     activity_mon.start()
     mail_mon.start()
     remote_desktop.start()
@@ -289,11 +251,12 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        if platform.system() == 'Windows':
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Stopping...")
         screen_cap.stop()
-        activity_mon.stop()
         activity_mon.stop()
         mail_mon.stop()
         remote_desktop.stop()
@@ -302,7 +265,6 @@ if __name__ == "__main__":
         print(f"\n[CRITICAL ERROR] Agent crashed: {e}")
         import traceback
         traceback.print_exc()
+        input("Press Enter to Exit...") # Keep console open on crash
     finally:
         print("\n[EXIT] Process Terminated.")
-        input("Press Enter to close window...")
-        sys.exit(1)

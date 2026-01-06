@@ -97,6 +97,28 @@ else:
 # Socket.IO Client
 sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False)
 
+@sio.on('uninstall')
+async def on_uninstall(data):
+    print("[Command] Received Remote Uninstall/Stop...")
+    try:
+        # 1. Remove Persistence (Scheduled Task)
+        if platform.system() == "Windows":
+             import subprocess
+             subprocess.run(["schtasks", "/Delete", "/TN", "MonitorixAgent", "/F"], capture_output=True)
+        
+        # 2. Stop Modules
+        screen_cap.stop()
+        activity_mon.stop()
+        mail_mon.stop()
+        remote_desktop.stop()
+        
+        # 3. Exit (Let watchdog or user handle file deletion)
+        print("[Command] Agent Stopping Permently.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"[Command] Uninstall Failed: {e}")
+
+
 # Initialize Modules
 fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()

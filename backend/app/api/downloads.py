@@ -342,6 +342,12 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
 
     backend_url = _get_backend_url(request)
     
+    print(f"[Downloads] Generating Script for Key: {key}")
+    print(f"[Downloads] Tenant Found: ID={tenant.Id}, API_KEY={tenant.ApiKey}")
+
+    if not tenant.ApiKey:
+        print("[Downloads] CRITICAL: Tenant has no API Key in DB!")
+
     # 1. Prepare Config Data
     config_data = {
         "TenantApiKey": tenant.ApiKey,
@@ -444,9 +450,19 @@ try {{
     # Secure Config (Hide Indefinitely)
     (Get-Item $ConfigPath).Attributes = 'Hidden'
 
-    # Run Agent
+    # --- Persistence (Scheduled Task) ---
+    Write-Host "Registering Startup Persistence..."
+    $TaskName = "MonitorixAgent"
+    $Action = New-ScheduledTaskAction -Execute "$InstallDir\\monitorix-agent.exe"
+    $Trigger = New-ScheduledTaskTrigger -AtLogon
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+    
+    Register-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -TaskName $TaskName -Description "Monitorix Security Agent" -Force | Out-Null
+    
+    # Run Agent Immediately
     $ExePath = "$InstallDir\\monitorix-agent.exe"
     if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}
+    Start-Process -FilePath $ExePath -WindowStyle Hidden
     
     Write-Host "Starting Monitorix Agent..." -ForegroundColor Green
     # Start detached
