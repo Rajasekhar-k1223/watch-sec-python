@@ -3,10 +3,10 @@
 
 a = Analysis(
     ['src\\main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['modules.remote_desktop'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
