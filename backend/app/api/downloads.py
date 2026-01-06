@@ -335,9 +335,26 @@ async def download_agent(
     backend_url = _get_backend_url(request)
     return _serve_agent_package(os_type, tenant, backend_url, serve_payload=payload, format_type=format)
 
+@router.get("/public/payload")
+async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
+    # Serve the raw EXE (29MB) directly
+    # Validate Key (Optional but good)
+    tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
+    tenant = tenant_result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    base_path = "storage"
+    exe_path = os.path.join(base_path, "AgentTemplate", "win-x64", "monitorix-agent.exe")
+    
+    if not os.path.exists(exe_path):
+        raise HTTPException(status_code=404, detail="Agent Binary Not Found")
+        
+    return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="monitorix-agent.exe")
+
 @router.get("/script")
 async def get_install_script(request: Request, key: str, db: AsyncSession = Depends(get_db)):
-    # Helper to get the One-Liner Script (Self-Contained)
+    # Helper to get the One-Liner Script (Stager)
     
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
@@ -352,26 +369,14 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
         "BackendUrl": backend_url
     }
     config_json = json.dumps(config_data)
-    # Escape for PowerShell (Single quotes needs escaping if used, but we use Here-String or adjust)
-    # Simple replace ' with '' if strictly needed, but JSON usually uses "
     config_json_escaped = config_json.replace("'", "''")
 
-    # 2. Bundle Binary (Embed EXE as Base64)
-    import base64
-    base_path = "storage"
-    # We look for the pre-built EXE, which we committed to the repo
-    exe_path = os.path.join(base_path, "AgentTemplate", "win-x64", "monitorix-agent.exe")
+    # 2. Generate PowerShell Stager
+    payload_url = f"{backend_url}/api/downloads/public/payload?key={key}"
     
-    if not os.path.exists(exe_path):
-        return Response(content="Write-Error 'Agent Binary Not Found on Server'", media_type="text/plain")
-        
-    with open(exe_path, "rb") as f:
-        exe_b64 = base64.b64encode(f.read()).decode("ascii")
-
-    # 3. Generate PowerShell Script
     ps_script = f"""
 $ErrorActionPreference = 'Stop'
-Write-Host "--- Monitorix Installer (Standalone) ---" -ForegroundColor Cyan
+Write-Host "--- Monitorix Installer (Network Stager) ---" -ForegroundColor Cyan
 
 # --- Configuration ---
 $ConfigContent = '{config_json_escaped}'
@@ -379,25 +384,35 @@ $ExeDest = "$env:TEMP\\monitorix-agent.exe"
 $InstallDir = "$env:TEMP\\monitorix_install"
 
 # --- Cleanup ---
-Write-Host "Cleaning up..." -ForegroundColor Gray
+Write-Host "Cleaning up old processes..." -ForegroundColor Gray
 Stop-Process -Name "monitorix-agent", "monitorix", "watch-sec-agent" -Force -ErrorAction SilentlyContinue
 if (Test-Path $InstallDir) {{ Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue }}
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-# --- Payload Injection (Binary) ---
-Write-Host "Extracting Agent Binary (29MB)..."
-$PayloadB64 = "{exe_b64}"
-$PayloadBytes = [System.Convert]::FromBase64String($PayloadB64)
-$ExePath = "$InstallDir\\monitorix-agent.exe"
-[System.IO.File]::WriteAllBytes($ExePath, $PayloadBytes)
+# --- Download Payload ---
+Write-Host "Downloading Enterprise Agent (30MB)..." -ForegroundColor Yellow
+try {{
+    # Use Invoke-WebRequest for native Progress Bar
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri "{payload_url}" -OutFile $ExeDest
+    
+    Write-Host "Download Complete." -ForegroundColor Green
+}} catch {{
+    Write-Error "Download Failed: $_"
+    exit 1
+}}
 
 try {{
+    # Move to Install Dir
+    Move-Item -Path $ExeDest -Destination "$InstallDir\\monitorix-agent.exe" -Force
+    
     # Write Config
     Write-Host "Applying Configuration..."
     $ConfigPath = "$InstallDir\\config.json"
     Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding UTF8
     
     # Run Agent
+    $ExePath = "$InstallDir\\monitorix-agent.exe"
     if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}
     
     Write-Host "Starting Monitorix Agent..." -ForegroundColor Green
@@ -409,6 +424,6 @@ try {{
     exit 1
 }}
 
-Write-Host "Done. Agent is running." -ForegroundColor Green
+Write-Host "Done. Agent is running in background." -ForegroundColor Green
 """
     return Response(content=ps_script, media_type="text/plain")
