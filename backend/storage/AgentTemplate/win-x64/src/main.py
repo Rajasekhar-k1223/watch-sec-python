@@ -49,7 +49,7 @@ except Exception as e:
     print(f"Error loading config: {e}")
     config = {}
 
-BACKEND_URL = config.get("BackendUrl", "http://192.168.1.2:8000")
+BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
 
@@ -59,7 +59,9 @@ import getpass
 current_hostname = platform.node()
 current_user = getpass.getuser()
 expected_prefix = f"{current_hostname}-{current_user}"
-
+print(f"[Init] Expected Agent ID Prefix: {expected_prefix}")
+print(f"[Init] Loaded Agent ID: {AGENT_ID}")
+print(API_KEY)
 # If ID is missing OR doesn't match the current system (e.g. config copied from another machine)
 if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
     unique_suffix = str(uuid.uuid4())[:8].upper()
