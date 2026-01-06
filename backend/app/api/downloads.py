@@ -356,75 +356,59 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
     # Simple replace ' with '' if strictly needed, but JSON usually uses "
     config_json_escaped = config_json.replace("'", "''")
 
-    # 2. Bundle Source Code (Zip in Memory)
+    # 2. Bundle Binary (Embed EXE as Base64)
     import base64
     base_path = "storage"
-    template_path = os.path.join(base_path, "AgentTemplate", "win-x64")
+    # We look for the pre-built EXE, which we committed to the repo
+    exe_path = os.path.join(base_path, "AgentTemplate", "win-x64", "monitorix-agent.exe")
     
-    mem_zip = io.BytesIO()
-    with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Include Key Files
-        for item in ["bootstrap.ps1", "requirements.txt"]:
-            item_path = os.path.join(template_path, item)
-            if os.path.exists(item_path):
-                zf.write(item_path, item)
+    if not os.path.exists(exe_path):
+        return Response(content="Write-Error 'Agent Binary Not Found on Server'", media_type="text/plain")
         
-        # Include Source
-        src_path = os.path.join(template_path, "src")
-        for root, dirs, files in os.walk(src_path):
-            for file in files:
-                abs_path = os.path.join(root, file)
-                rel_path = os.path.relpath(abs_path, template_path)
-                zf.write(abs_path, rel_path)
-                
-    mem_zip.seek(0)
-    zip_b64 = base64.b64encode(mem_zip.read()).decode("ascii")
+    with open(exe_path, "rb") as f:
+        exe_b64 = base64.b64encode(f.read()).decode("ascii")
 
     # 3. Generate PowerShell Script
     ps_script = f"""
 $ErrorActionPreference = 'Stop'
-Write-Host "--- Monitorix Installer (Embedded) ---" -ForegroundColor Cyan
+Write-Host "--- Monitorix Installer (Standalone) ---" -ForegroundColor Cyan
 
 # --- Configuration ---
 $ConfigContent = '{config_json_escaped}'
-$ZipDest = "$env:TEMP\\monitorix_payload.zip"
-$ExtractPath = "$env:TEMP\\monitorix_install"
+$ExeDest = "$env:TEMP\\monitorix-agent.exe"
+$InstallDir = "$env:TEMP\\monitorix_install"
 
-# --- Cleanup Old Installs ---
-Write-Host "Cleaning up old processes..." -ForegroundColor Gray
-Stop-Process -Name "monitorix-installer", "monitorix", "monitorix-agent", "watch-sec-agent" -Force -ErrorAction SilentlyContinue
-Remove-Item -Path $ZipDest -Force -ErrorAction SilentlyContinue
-if (Test-Path $ExtractPath) {{ Remove-Item -Path $ExtractPath -Recurse -Force -ErrorAction SilentlyContinue }}
+# --- Cleanup ---
+Write-Host "Cleaning up..." -ForegroundColor Gray
+Stop-Process -Name "monitorix-agent", "monitorix", "watch-sec-agent" -Force -ErrorAction SilentlyContinue
+if (Test-Path $InstallDir) {{ Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue }}
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-# --- Payload Injection ---
-Write-Host "Extracting Embedded Payload..."
-$PayloadB64 = "{zip_b64}"
+# --- Payload Injection (Binary) ---
+Write-Host "Extracting Agent Binary (29MB)..."
+$PayloadB64 = "{exe_b64}"
 $PayloadBytes = [System.Convert]::FromBase64String($PayloadB64)
-[System.IO.File]::WriteAllBytes($ZipDest, $PayloadBytes)
+$ExePath = "$InstallDir\\monitorix-agent.exe"
+[System.IO.File]::WriteAllBytes($ExePath, $PayloadBytes)
 
 try {{
-    # Extract
-    Write-Host "Expanding Archive..." -ForegroundColor Cyan
-    Expand-Archive -Path $ZipDest -DestinationPath $ExtractPath -Force
-    
     # Write Config
     Write-Host "Applying Configuration..."
-    $ConfigPath = "$ExtractPath\\config.json"
+    $ConfigPath = "$InstallDir\\config.json"
     Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding UTF8
     
-    # Run Bootstrap
-    $BootstrapPath = "$ExtractPath\\bootstrap.ps1"
-    if (-not (Test-Path $BootstrapPath)) {{ throw "bootstrap.ps1 not found in payload!" }}
+    # Run Agent
+    if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}
     
-    Write-Host "Launching Agent Bootstrap..." -ForegroundColor Green
-    # Start detached/interactive
-    Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$BootstrapPath`"" -WorkingDirectory "$ExtractPath"
+    Write-Host "Starting Monitorix Agent..." -ForegroundColor Green
+    # Start detached
+    Start-Process -FilePath "$ExePath" -WorkingDirectory "$InstallDir"
 
 }} catch {{
     Write-Error "Termination Error: $_"
     exit 1
 }}
 
-Write-Host "Done." -ForegroundColor Green
+Write-Host "Done. Agent is running." -ForegroundColor Green
 """
     return Response(content=ps_script, media_type="text/plain")
