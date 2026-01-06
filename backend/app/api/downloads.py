@@ -437,14 +437,14 @@ $DownloadTask = $WebClient.DownloadFileTaskAsync($Uri, $ExeDest)
 
 Write-Host "Downloading Agent Package (High Performance)..." -NoNewline
 
-while (-not $DownloadTask.IsCompleted) {
+while (-not $DownloadTask.IsCompleted) {{
     # Calculate simulated progress or just animate if total size unknown
     # Since we can't easily get TotalBytes in simple AsyncTask without handler event, 
     # we'll do a smart spinner with downloaded bytes check if file exists
     
     $Downloaded = 0
-    if (Test-Path $ExeDest) { $Downloaded = (Get-Item $ExeDest).Length }
-    $MB = "{0:N2}" -f ($Downloaded / 1MB)
+    if (Test-Path $ExeDest) {{ $Downloaded = (Get-Item $ExeDest).Length }}
+    $MB = "{{0:N2}}" -f ($Downloaded / 1MB)
     
     # Update Status Line
     $Frame = $Frames[$FrameIdx % $Frames.Count]
@@ -452,14 +452,14 @@ while (-not $DownloadTask.IsCompleted) {
     
     $FrameIdx++
     Start-Sleep -Milliseconds 100
-}
+}}
 
 Write-Host "`r[v] Download Constants Verified.                   " -ForegroundColor Green
 
-if ($DownloadTask.IsFaulted) {
+if ($DownloadTask.IsFaulted) {{
     Write-Error "Download Error: $($DownloadTask.Exception.InnerException.Message)"
     exit 1
-}
+}}
 
 
 try {{
