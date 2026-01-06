@@ -450,23 +450,38 @@ try {{
     # Secure Config (Hide Indefinitely)
     (Get-Item $ConfigPath).Attributes = 'Hidden'
 
-    # --- Persistence (Scheduled Task) ---
+    # --- Persistence (Scheduled Task with User Fallback) ---
     Write-Host "Registering Startup Persistence..."
     $TaskName = "MonitorixAgent"
-    $Action = New-ScheduledTaskAction -Execute "$InstallDir\\monitorix-agent.exe"
-    $Trigger = New-ScheduledTaskTrigger -AtLogon
-    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     
-    Register-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -TaskName $TaskName -Description "Monitorix Security Agent" -Force | Out-Null
+    try {
+        # Try Admin/Scheduled Task Persistence First
+        $Action = New-ScheduledTaskAction -Execute "$InstallDir\\monitorix-agent.exe"
+        $Trigger = New-ScheduledTaskTrigger -AtLogon
+        $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+        
+        Register-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -TaskName $TaskName -Description "Monitorix Security Agent" -Force -ErrorAction Stop | Out-Null
+        Write-Host "Persistence (Scheduled Task) Installed." -ForegroundColor Green
+    } catch {
+        Write-Warning "Scheduled Task Registration Failed (Require Admin?). Falling back to Registry Persistence..."
+        try {
+            # Fallback: Registry Run Key (Current User)
+            $RegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+            Set-ItemProperty -Path $RegPath -Name "MonitorixAgent" -Value "$InstallDir\\monitorix-agent.exe" -Force
+            Write-Host "Persistence (Registry) Installed." -ForegroundColor Green
+        } catch {
+            Write-Error "Failed to install persistence: $_"
+        }
+    }
     
     # Run Agent Immediately
     $ExePath = "$InstallDir\\monitorix-agent.exe"
     if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}
-    Start-Process -FilePath $ExePath -WindowStyle Hidden
-    
     Write-Host "Starting Monitorix Agent..." -ForegroundColor Green
     # Start detached
-    Start-Process -FilePath "$ExePath" -WorkingDirectory "$InstallDir"
+    if (-not (Get-Process -Name "monitorix-agent" -ErrorAction SilentlyContinue)) {
+        Start-Process -FilePath "$ExePath" -WorkingDirectory "$InstallDir"
+    }
 
 }} catch {{
     Write-Error "Termination Error: $_"
