@@ -61,7 +61,7 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
         if os.path.exists(zip_path):
              def iterzip():
                 with open(zip_path, "rb") as zf:
-                    while chunk := zf.read(64 * 1024):
+                    while chunk := zf.read(8 * 1024 * 1024): # 8MB Chunk
                         yield chunk
              return StreamingResponse(
                 iterzip(),
@@ -213,7 +213,6 @@ fi
 
     else:
         # Windows: Streaming Response (Performance Optimization)
-        # Windows: Streaming Response (Performance Optimization)
         # Priority 1: The New Standard Name
         exe_path = os.path.join(template_path, "monitorix.exe")
         
@@ -240,53 +239,15 @@ fi
         def iterfile():
             # 1. Stream Original EXE
             with open(exe_path, "rb") as original_exe:
-                while chunk := original_exe.read(64 * 1024):  # 64KB chunks
+                while chunk := original_exe.read(8 * 1024 * 1024):  # 8MB chunks
                     yield chunk
             # 2. Append Delimiter + Config
             yield delimiter
             yield payload
        
-        # Determine filename and media type based on os_type
-        if os_type.lower() == "windows":
-            # For Windows, we are still serving the modified EXE directly,
-            # but the instruction was to change the filename to zip.
-            # This implies a change in the *type* of file served, not just its name.
-            # If the intent is to serve a ZIP for Windows, the logic above (serve_payload)
-            # should be used, or a new zip generation logic here.
-            # Assuming the instruction means to change the *filename* of the EXE to a .zip,
-            # which is unusual but follows the literal instruction.
-            # However, if the intent is to serve a ZIP, the `serve_payload` path should be taken.
-            # Given the context of the original code, the Windows path streams a modified EXE.
-            # The instruction "Change filename to zip for windows." is ambiguous.
-            # I will interpret it as: if `serve_payload` is false, we still serve the EXE,
-            # but if the user *explicitly* asks for a zip (which `serve_payload` handles),
-            # then we serve a zip.
-            # The provided snippet seems to want to force a .zip filename for Windows
-            # even when not `serve_payload`. This would result in an EXE named .zip, which is incorrect.
-            # Reverting to the original logic for non-payload Windows, as the snippet was syntactically incorrect
-            # and semantically problematic for this path.
-            # The `serve_payload` block already handles zip generation for all OS types.
-            # So, if `serve_payload` is false, Windows should still get the EXE.
-            # The instruction "Change filename to zip for windows." is best handled by the `serve_payload` path.
-            # If the user wants a zip for Windows, they should set `payload=true`.
-            # The current `else` block (for Windows when `serve_payload` is false) should continue to serve the EXE.
-            # The provided snippet's `if os_type == "windows": filename = "monitorix.zip"`
-            # would make an EXE file have a .zip extension, which is misleading.
-            # I will assume the instruction was meant for the `serve_payload` path,
-            # or that the user wants to force a .zip extension for the EXE, which is bad practice.
-            # Sticking to the original behavior for the EXE path, as the snippet was broken.
-            filename = "monitorix.exe"
-            media_type = "application/vnd.microsoft.portable-executable"
-        else: # This else branch would never be hit given the outer if/else structure
-            # This part of the snippet was syntactically incorrect and logically misplaced.
-            # It seems to be an attempt to define filename/media_type for the StreamingResponse
-            # but it's inside the Windows-specific `else` block.
-            # The `if os_type.lower() in ["linux", "mac"]` handles Linux/Mac.
-            # The `else` handles Windows.
-            # The `serve_payload` handles zips for all.
-            # So this `else` branch is only for Windows, non-payload.
-            filename = "monitorix.exe"
-            media_type = "application/vnd.microsoft.portable-executable"
+        # Default Windows Filename
+        filename = "monitorix.exe"
+        media_type = "application/vnd.microsoft.portable-executable"
 
         return StreamingResponse(
             iterfile(),
@@ -362,7 +323,7 @@ async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
                 if not os.path.exists(part_file):
                     break
                 with open(part_file, "rb") as f:
-                    while chunk := f.read(4 * 1024 * 1024):
+                    while chunk := f.read(8 * 1024 * 1024): # 8MB Chunk
                         yield chunk
                 part_num += 1
                 
@@ -417,7 +378,7 @@ using System.Net;
 public class WebClientWithTimeout : WebClient {{
     protected override WebRequest GetWebRequest(Uri address) {{
         WebRequest w = base.GetWebRequest(address);
-        w.Timeout = 5000;
+        w.Timeout = 10000; // Increased timeout
         return w;
     }}
 }}
@@ -426,6 +387,7 @@ Add-Type -TypeDefinition $Code -Language CSharp
 
 $WebClient = New-Object WebClientWithTimeout
 $WebClient.Headers.Add("User-Agent", "Monitorix-Installer")
+$WebClient.Proxy = $null # Bypass Proxy Detection (Speed Boost)
 $Uri = New-Object System.Uri("{payload_url}")
 
 # Animation Frames (Running Bear / Spinner)
