@@ -27,27 +27,9 @@ if not hasattr(aiohttp, 'ClientWSTimeout'):
 # Add src to path if running nicely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-import logging
-import sys
-
-# Configure Logging to Console
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
-# Set external libraries to warning to avoid noise
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-logging.getLogger("engineio").setLevel(logging.WARNING)
-logging.getLogger("socketio").setLevel(logging.WARNING)
-
 from modules.live_stream import LiveStreamer
-# from modules.webrtc_stream import WebRTCManager  <-- Disabled for 22MB Rollback
 from modules.fim import FileIntegrityMonitor
-from modules.fim import FileIntegrityMonitor
-# from modules.network import NetworkScanner
+from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
 from modules.activity_monitor import ActivityMonitor
@@ -55,71 +37,66 @@ from modules.mail_monitor import MailMonitor
 from modules.mail_monitor import MailMonitor
 from modules.browser_enforcer import BrowserEnforcer
 from modules.remote_desktop import RemoteDesktopAgent
-from modules.usb_monitor import USBEventMonitor
-from modules.network import NetworkMonitor
 
 import uuid
 
-# Load Config Logic
-def load_config():
+# Load Config
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+try:
+    with open(CONFIG_PATH, "r") as f:
+        config = json.load(f)
+except Exception as e:
+    print(f"Error loading config: {e}")
     config = {}
-    
-    # 1. Try Overlay (Priority for EXE)
-    if getattr(sys, 'frozen', False):
-        try:
-            with open(sys.executable, 'rb') as f:
-                content = f.read()
-                delimiter = b"\n<<<<WATCHSEC_CONFIG>>>>\n"
-                if delimiter in content:
-                    print("[Config] Found Overlay Configuration")
-                    json_bytes = content.split(delimiter)[-1]
-                    json_str = json_bytes.decode('utf-8').strip()
-                    return json.loads(json_str)
-        except Exception as e:
-            print(f"[Config] Overlay read error: {e}")
 
-    # 2. Try File (Fallback / Local Dev)
-    config_path = "config.json"
-    if not os.path.exists(config_path):
-        potential = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-        if os.path.exists(potential):
-            config_path = potential
-
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as f:
-                print(f"[Config] Loading from {config_path}")
-                return json.load(f)
-        except Exception as e:
-            print(f"[Config] File read error: {e}")
-    
-    print("[Config] No configuration found. Using defaults.")
-    return {}
-
-config = load_config()
-
-BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
+BACKEND_URL = config.get("BackendUrl", "http://192.168.1.2:8000")
 API_KEY = config.get("TenantApiKey", "")
-AGENT_ID = config.get("AgentId", platform.node())
+AGENT_ID = config.get("AgentId", "")
 
-print(f"[Config] Active Backend URL: {BACKEND_URL}")
-print(f"[Config] Tenant API Key: {API_KEY[:5]}...***")
+# Dynamic Agent ID Logic
+# Always verify if the loaded ID matches the current system
+import getpass
+current_hostname = platform.node()
+current_user = getpass.getuser()
+expected_prefix = f"{current_hostname}-{current_user}"
+
+# If ID is missing OR doesn't match the current system (e.g. config copied from another machine)
+if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
+    unique_suffix = str(uuid.uuid4())[:8].upper()
+    AGENT_ID = f"{expected_prefix}-{unique_suffix}"
+    print(f"[Init] ID Mismatch or Missing. Generated New Agent ID: {AGENT_ID}")
+    
+    # Update Config with new ID to persist it
+    config["AgentId"] = AGENT_ID
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=4)
+        print(f"[Init] Saved new Agent ID to config.json")
+    except Exception as e:
+        print(f"[Init] Failed to save config: {e}")
+else:
+    print(f"[Init] Using Configured Agent ID: {AGENT_ID}")
 
 # Socket.IO Client
 sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False)
 
 # Initialize Modules
 fim = FileIntegrityMonitor(paths_to_watch=["."])
-# net_scanner = NetworkScanner()
+net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
-# live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated        # 5. WebRTC Manager (Disabled for 22MB Rollback)
-# webrtc_manager = WebRTCManager(sio, AGENT_ID)
-        
-# 6. USB Monitor
+live_streamer = LiveStreamer(AGENT_ID, sio) # We will inject loop later or relies on get_event_loop in thread if safe
+
+from modules.webrtc_stream import WebRTCManager
+
+# ...
+# Existing LiveStreamer (Keep for fallback if needed, or disable)
+# live_streamer = LiveStreamer(AGENT_ID, sio) 
+webrtc_manager = WebRTCManager(sio, AGENT_ID)
 
 @sio.event
 async def connect():
@@ -195,9 +172,12 @@ async def system_monitor_loop():
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             
-            # Subnet Scan (Legacy Removed - handled by active NetworkMonitor)
-            # if (datetime.now() - last_net_scan).seconds > 60:
-            #    pass
+            # Subnet Scan (Every 60s)
+            scan_results = []
+            if (datetime.now() - last_net_scan).seconds > 60:
+                print("[Net] Performing Periodic Scan...")
+                scan_results = net_scanner.scan_subnet()
+                last_net_scan = datetime.now()
                 
             # Software Scan (Every 60m)
             if (datetime.now() - last_sw_scan).seconds > 3600 or not software_cache:
@@ -214,7 +194,7 @@ async def system_monitor_loop():
                 "Timestamp": datetime.utcnow().isoformat(),
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
-                "LocalIp": socket.gethostbyname(socket.gethostname()), 
+                "LocalIp": net_scanner.local_ip, 
                 "Gateway": "Unknown"
             }
 
@@ -248,7 +228,7 @@ async def system_monitor_loop():
         await asyncio.sleep(5) # Report every 5 seconds
 
 async def main():
-    print(f"--- Monitorix Agent v2.1.0-FIXED ({platform.system()}) ---")
+    print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
     
     # Connect WebSocket
     # Connect WebSocket with Retry
@@ -264,51 +244,15 @@ async def main():
 
     # Start Security Modules
     fim.start()
-    
-    # Conditional Screenshot Start
-    if config.get("ScreenshotsEnabled", False):
-        print("[Screens] Enabled by config")
-        screen_cap.start()
-    else:
-        print("[Screens] Disabled by default (waiting for command)")
-
-    try:
-        activity_mon.start()
-        print("[Activity] Monitor Started")
-    except Exception as e:
-        print(f"[Activity] Failed to start: {e}")
-
-    try:
-        mail_mon.start()
-        print("[Mail] Monitor Started")
-    except Exception as e:
-        print(f"[Mail] Failed to start: {e}")
-
+    screen_cap.start()
+    activity_mon.start()
+    activity_mon.start()
+    mail_mon.start()
     remote_desktop.start()
     
     # Enforce Browser Policies
     print("[Init] Enforcing Browser Extensions...")
-    try:
-        BrowserEnforcer().enforce()
-    except Exception as e:
-        print(f"[Browser] Enforce failed: {e}")
-
-    # Start USB Monitor
-    try:
-        usb_monitor = USBEventMonitor(sio, AGENT_ID)
-        usb_monitor.start()
-        print("[USB] Monitor Started")
-    except Exception as e:
-        print(f"[USB] Monitor Failed: {e}")
-
-    # Start Network Monitor
-    try:
-        # Note: We are now using NetworkMonitor instead of the old passive scanner for active alerting
-        network_mon_active = NetworkMonitor(sio, AGENT_ID)
-        network_mon_active.start()
-        print("[Net] Active Monitor Started")
-    except Exception as e:
-        print(f"[Net] Monitor Failed: {e}")
+    BrowserEnforcer().enforce()
 
     # Start Tasks
     await system_monitor_loop()

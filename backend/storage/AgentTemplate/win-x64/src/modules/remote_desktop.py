@@ -12,6 +12,7 @@ from PIL import Image
 try:
     import pyautogui
 except ImportError:
+except ImportError:
     pyautogui = None 
 from datetime import datetime
 import os
@@ -93,9 +94,6 @@ class RemoteDesktopAgent:
         with mss.mss() as sct:
             monitor = sct.monitors[1] 
             
-            frame_count = 0
-            last_log_time = time.time()
-            
             while self.running:
                 start_time = time.time()
                 try:
@@ -113,28 +111,18 @@ class RemoteDesktopAgent:
                             self._init_writer(img.width, img.height)
                         
                         # Write Frame (Convert to BGR for OpenCV)
-                        # Write Frame (Convert to BGR for OpenCV)
                         if self.writer:
-                            # import cv2
-                            # import numpy as np
-                            # # Convert PIL RGB to OpenCV BGR
-                            # frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                            pass
-                            # self.writer.write(frame) # Disabled for rollback
+                            import cv2
+                            import numpy as np
+                            # Convert PIL RGB to OpenCV BGR
+                            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                            self.writer.write(frame)
 
                     # Save to Bytes (JPEG) for Stream
                     buffer = io.BytesIO()
                     img.save(buffer, format="JPEG", quality=self.quality, optimize=True)
                     data = buffer.getvalue()
                     await websocket.send(data)
-                    
-                    # Verbose Logging
-                    frame_count += 1
-                    if time.time() - last_log_time > 5:
-                        size_kb = len(data) / 1024
-                        self.logger.info(f"Stream Active: Sent {frame_count} frames in last 5s. (Last frame: {size_kb:.1f}KB)")
-                        frame_count = 0
-                        last_log_time = time.time()
 
                 except Exception as e:
                     self.logger.error(f"Stream Error: {e}")
@@ -146,12 +134,10 @@ class RemoteDesktopAgent:
 
     def _init_writer(self, width, height):
         try:
-            # import cv2
+            import cv2
             filename = f"session_{int(time.time())}.mp4"
-            # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            # self.writer = cv2.VideoWriter(filename, fourcc, self.fps_target, (width, height))
-            self.writer = None # Recording temporarily disabled to save space
-            print(f"[RemoteDesktop] Recording stubbed (Rollback): {filename}")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.writer = cv2.VideoWriter(filename, fourcc, self.fps_target, (width, height))
             self.current_recording_path = filename
             self.recording_start_time = datetime.now()
             self.logger.info(f"Initialized Video Writer: {filename}")

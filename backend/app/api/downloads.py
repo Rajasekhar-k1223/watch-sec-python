@@ -337,20 +337,38 @@ async def download_agent(
 
 @router.get("/public/payload")
 async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
-    # Serve the raw EXE (29MB) directly
-    # Validate Key (Optional but good)
+    # Serve the raw EXE (29MB or Split 106MB)
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     base_path = "storage"
-    exe_path = os.path.join(base_path, "AgentTemplate", "win-x64", "monitorix-agent.exe")
+    template_dir = os.path.join(base_path, "AgentTemplate", "win-x64")
+    exe_path = os.path.join(template_dir, "monitorix-agent.exe")
     
-    if not os.path.exists(exe_path):
-        raise HTTPException(status_code=404, detail="Agent Binary Not Found")
-        
-    return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="monitorix-agent.exe")
+    # 1. Check for Single File (Small Build)
+    if os.path.exists(exe_path):
+        return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="monitorix-agent.exe")
+    
+    # 2. Check for Split Files (Large Build)
+    part_0 = os.path.join(template_dir, "monitorix-agent.exe.part0")
+    if os.path.exists(part_0):
+        # Generator to stream parts sequentially
+        def iterfile():
+            part_num = 0
+            while True:
+                part_file = os.path.join(template_dir, f"monitorix-agent.exe.part{part_num}")
+                if not os.path.exists(part_file):
+                    break
+                with open(part_file, "rb") as f:
+                    while chunk := f.read(65536):
+                        yield chunk
+                part_num += 1
+                
+        return StreamingResponse(iterfile(), media_type="application/vnd.microsoft.portable-executable", headers={"Content-Disposition": "attachment; filename=monitorix-agent.exe"})
+
+    raise HTTPException(status_code=404, detail="Agent Binary Not Found (Split or Single)")
 
 @router.get("/script")
 async def get_install_script(request: Request, key: str, db: AsyncSession = Depends(get_db)):

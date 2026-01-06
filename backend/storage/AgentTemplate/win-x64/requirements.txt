@@ -5,14 +5,17 @@ emoji==2.10.0
 watchdog==3.0.0
 mss==9.0.1
 pyinstaller==6.3.0
-jaraco.text==4.0.0
-jaraco.classes==3.4.0
-jaraco.context
-jaraco.functools
-platformdirs==4.5.1
-Pillow
-websockets
-pyautogui
 
-wmi
+cx_Freeze
+aiohttp==3.9.3
 
+Pillow==10.2.0
+aiortc
+av
+numpy
+opencv-python-headless
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-ApplicationServices; sys_platform == 'darwin'
+pywin32; sys_platform == 'win32'
+python-xlib; sys_platform == 'linux'
