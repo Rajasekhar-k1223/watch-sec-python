@@ -454,7 +454,7 @@ try {{
     Write-Host "Registering Startup Persistence..."
     $TaskName = "MonitorixAgent"
     
-    try {
+    try {{
         # Try Admin/Scheduled Task Persistence First
         $Action = New-ScheduledTaskAction -Execute "$InstallDir\\monitorix-agent.exe"
         $Trigger = New-ScheduledTaskTrigger -AtLogon
@@ -462,17 +462,17 @@ try {{
         
         Register-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -TaskName $TaskName -Description "Monitorix Security Agent" -Force -ErrorAction Stop | Out-Null
         Write-Host "Persistence (Scheduled Task) Installed." -ForegroundColor Green
-    } catch {
+    }} catch {{
         Write-Warning "Scheduled Task Registration Failed (Require Admin?). Falling back to Registry Persistence..."
-        try {
+        try {{
             # Fallback: Registry Run Key (Current User)
-            $RegPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+            $RegPath = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
             Set-ItemProperty -Path $RegPath -Name "MonitorixAgent" -Value "$InstallDir\\monitorix-agent.exe" -Force
             Write-Host "Persistence (Registry) Installed." -ForegroundColor Green
-        } catch {
+        }} catch {{
             Write-Error "Failed to install persistence: $_"
-        }
-    }
+        }}
+    }}
     
     # Run Agent Immediately
     $ExePath = "$InstallDir\\monitorix-agent.exe"
