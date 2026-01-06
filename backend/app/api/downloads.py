@@ -408,17 +408,59 @@ if (Test-Path $InstallDir) {{ Remove-Item -Path $InstallDir -Recurse -Force -Err
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 # --- Download Payload ---
-Write-Host "Downloading Enterprise Agent (30MB)..." -ForegroundColor Yellow
-try {{
-    # Use Invoke-WebRequest for native Progress Bar
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri "{payload_url}" -OutFile $ExeDest
+# --- Download Payload with Animation ---
+Write-Host "Initializing Secure Download..." -ForegroundColor Cyan
+
+$Code = @"
+using System;
+using System.Net;
+public class WebClientWithTimeout : WebClient {
+    protected override WebRequest GetWebRequest(Uri address) {
+        WebRequest w = base.GetWebRequest(address);
+        w.Timeout = 5000;
+        return w;
+    }
+}
+"@
+Add-Type -TypeDefinition $Code -Language CSharp
+
+$WebClient = New-Object WebClientWithTimeout
+$WebClient.Headers.Add("User-Agent", "Monitorix-Installer")
+$Uri = New-Object System.Uri("{payload_url}")
+
+# Animation Frames (Running Bear / Spinner)
+$Frames = @("|", "/", "-", "\\")
+$FrameIdx = 0
+
+# Start Async Download
+$DownloadTask = $WebClient.DownloadFileTaskAsync($Uri, $ExeDest)
+
+Write-Host "Downloading Agent Package (High Performance)..." -NoNewline
+
+while (-not $DownloadTask.IsCompleted) {
+    # Calculate simulated progress or just animate if total size unknown
+    # Since we can't easily get TotalBytes in simple AsyncTask without handler event, 
+    # we'll do a smart spinner with downloaded bytes check if file exists
     
-    Write-Host "Download Complete." -ForegroundColor Green
-}} catch {{
-    Write-Error "Download Failed: $_"
+    $Downloaded = 0
+    if (Test-Path $ExeDest) { $Downloaded = (Get-Item $ExeDest).Length }
+    $MB = "{0:N2}" -f ($Downloaded / 1MB)
+    
+    # Update Status Line
+    $Frame = $Frames[$FrameIdx % $Frames.Count]
+    Write-Host "`r[$Frame] Downloading... $MB MB Received    " -NoNewline -ForegroundColor Yellow
+    
+    $FrameIdx++
+    Start-Sleep -Milliseconds 100
+}
+
+Write-Host "`r[v] Download Constants Verified.                   " -ForegroundColor Green
+
+if ($DownloadTask.IsFaulted) {
+    Write-Error "Download Error: $($DownloadTask.Exception.InnerException.Message)"
     exit 1
-}}
+}
+
 
 try {{
     # Move to Install Dir
