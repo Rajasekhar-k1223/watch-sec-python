@@ -10,4 +10,9 @@ jaraco.classes==3.4.0
 jaraco.context
 jaraco.functools
 platformdirs==4.5.1
+Pillow
+websockets
+pyautogui
+
+wmi
 

@@ -6,11 +6,11 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[],
-    hiddenimports=['modules.remote_desktop', 'wmi', 'aiortc', 'av', 'numpy', 'cv2'],
+    hiddenimports=['modules.remote_desktop', 'wmi'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['numpy', 'cv2', 'aiortc', 'av', 'scipy'],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

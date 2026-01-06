@@ -13,9 +13,6 @@ platformdirs==4.5.1
 Pillow
 websockets
 pyautogui
-opencv-python
-aiortc
-av
-numpy
+
 wmi
 

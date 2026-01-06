@@ -44,7 +44,7 @@ logging.getLogger("engineio").setLevel(logging.WARNING)
 logging.getLogger("socketio").setLevel(logging.WARNING)
 
 from modules.live_stream import LiveStreamer
-from modules.webrtc_stream import WebRTCManager
+# from modules.webrtc_stream import WebRTCManager  <-- Disabled for 22MB Rollback
 from modules.fim import FileIntegrityMonitor
 from modules.fim import FileIntegrityMonitor
 # from modules.network import NetworkScanner
@@ -116,8 +116,8 @@ screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
-# live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated        # 5. WebRTC Manager
-webrtc_manager = WebRTCManager(sio, AGENT_ID)
+# live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated        # 5. WebRTC Manager (Disabled for 22MB Rollback)
+# webrtc_manager = WebRTCManager(sio, AGENT_ID)
         
 # 6. USB Monitor
 

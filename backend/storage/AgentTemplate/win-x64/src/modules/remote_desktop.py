@@ -115,11 +115,12 @@ class RemoteDesktopAgent:
                         # Write Frame (Convert to BGR for OpenCV)
                         # Write Frame (Convert to BGR for OpenCV)
                         if self.writer:
-                            import cv2
-                            import numpy as np
-                            # Convert PIL RGB to OpenCV BGR
-                            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                            self.writer.write(frame)
+                            # import cv2
+                            # import numpy as np
+                            # # Convert PIL RGB to OpenCV BGR
+                            # frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                            pass
+                            # self.writer.write(frame) # Disabled for rollback
 
                     # Save to Bytes (JPEG) for Stream
                     buffer = io.BytesIO()
@@ -145,12 +146,12 @@ class RemoteDesktopAgent:
 
     def _init_writer(self, width, height):
         try:
-            import cv2
+            # import cv2
             filename = f"session_{int(time.time())}.mp4"
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.writer = cv2.VideoWriter(filename, fourcc, self.fps_target, (width, height))
-            # self.writer = None # Recording temporarily disabled to save space
-            # print(f"[RemoteDesktop] Recording stubbed: {filename}")
+            # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # self.writer = cv2.VideoWriter(filename, fourcc, self.fps_target, (width, height))
+            self.writer = None # Recording temporarily disabled to save space
+            print(f"[RemoteDesktop] Recording stubbed (Rollback): {filename}")
             self.current_recording_path = filename
             self.recording_start_time = datetime.now()
             self.logger.info(f"Initialized Video Writer: {filename}")
