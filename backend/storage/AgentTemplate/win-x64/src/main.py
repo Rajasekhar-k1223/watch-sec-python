@@ -44,8 +44,10 @@ logging.getLogger("engineio").setLevel(logging.WARNING)
 logging.getLogger("socketio").setLevel(logging.WARNING)
 
 from modules.live_stream import LiveStreamer
+from modules.webrtc_stream import WebRTCManager
 from modules.fim import FileIntegrityMonitor
-from modules.network import NetworkScanner
+from modules.fim import FileIntegrityMonitor
+# from modules.network import NetworkScanner
 from modules.security import ProcessSecurity
 from modules.screenshots import ScreenshotCapture
 from modules.activity_monitor import ActivityMonitor
@@ -53,6 +55,8 @@ from modules.mail_monitor import MailMonitor
 from modules.mail_monitor import MailMonitor
 from modules.browser_enforcer import BrowserEnforcer
 from modules.remote_desktop import RemoteDesktopAgent
+from modules.usb_monitor import USBEventMonitor
+from modules.network import NetworkMonitor
 
 import uuid
 
@@ -106,7 +110,7 @@ sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False
 
 # Initialize Modules
 fim = FileIntegrityMonitor(paths_to_watch=["."])
-net_scanner = NetworkScanner()
+# net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
@@ -191,12 +195,9 @@ async def system_monitor_loop():
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             
-            # Subnet Scan (Every 60s)
-            scan_results = []
-            if (datetime.now() - last_net_scan).seconds > 60:
-                print("[Net] Performing Periodic Scan...")
-                scan_results = net_scanner.scan_subnet()
-                last_net_scan = datetime.now()
+            # Subnet Scan (Legacy Removed - handled by active NetworkMonitor)
+            # if (datetime.now() - last_net_scan).seconds > 60:
+            #    pass
                 
             # Software Scan (Every 60m)
             if (datetime.now() - last_sw_scan).seconds > 3600 or not software_cache:
@@ -213,7 +214,7 @@ async def system_monitor_loop():
                 "Timestamp": datetime.utcnow().isoformat(),
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
-                "LocalIp": net_scanner.local_ip, 
+                "LocalIp": socket.gethostbyname(socket.gethostname()), 
                 "Gateway": "Unknown"
             }
 
@@ -291,6 +292,23 @@ async def main():
         BrowserEnforcer().enforce()
     except Exception as e:
         print(f"[Browser] Enforce failed: {e}")
+
+    # Start USB Monitor
+    try:
+        usb_monitor = USBEventMonitor(sio, AGENT_ID)
+        usb_monitor.start()
+        print("[USB] Monitor Started")
+    except Exception as e:
+        print(f"[USB] Monitor Failed: {e}")
+
+    # Start Network Monitor
+    try:
+        # Note: We are now using NetworkMonitor instead of the old passive scanner for active alerting
+        network_mon_active = NetworkMonitor(sio, AGENT_ID)
+        network_mon_active.start()
+        print("[Net] Active Monitor Started")
+    except Exception as e:
+        print(f"[Net] Monitor Failed: {e}")
 
     # Start Tasks
     await system_monitor_loop()

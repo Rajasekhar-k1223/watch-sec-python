@@ -3,6 +3,19 @@ __pycache__/
 *$py.class
 venv/
 .env
-.DS_Store
-.idea/
-.vscode/
+
+# PyInstaller
+build/
+*.spec
+*.pkg
+backend/storage/AgentTemplate/win-x64/build/
+*.toc
+
+
+# PyInstaller
+build/
+*.spec
+*.pkg
+backend/storage/AgentTemplate/win-x64/build/
+backend/storage/AgentTemplate/win-x64/dist/
+!backend/storage/AgentTemplate/win-x64/dist/monitorix.exe

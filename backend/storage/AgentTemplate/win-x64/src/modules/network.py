@@ -1,11 +1,82 @@
 import socket
 import threading
-import concurrent.futures
+import time
+import logging
+import psutil
 
-class NetworkScanner:
-    def __init__(self):
-        self.local_ip = self._get_local_ip()
+class NetworkMonitor:
+    def __init__(self, sio_client, agent_id):
+        self.sio = sio_client
+        self.agent_id = agent_id
+        self.logger = logging.getLogger("NetworkMonitor")
+        self.running = False
+        self.thread = None
+        self.known_connections = set()
 
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread.start()
+        self.logger.info("Network Monitor Started.")
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+
+    def _monitor_loop(self):
+        # Initialize baseline
+        self._scan_connections(initial=True)
+        
+        while self.running:
+            try:
+                self._scan_connections()
+                time.sleep(5) # Poll every 5 seconds
+            except Exception as e:
+                self.logger.error(f"Network Loop Error: {e}")
+                time.sleep(5)
+
+    def _scan_connections(self, initial=False):
+        try:
+            # key mechanism: (fd, family, type, laddr, raddr, status, pid)
+            # We focus on ESTABLISHED connections to remote hosts
+            current_conns = psutil.net_connections(kind='inet')
+            
+            # Filter for meaningful outbound connections (ignore localhost)
+            active_remote_conns = []
+            for c in current_conns:
+                if c.status == 'ESTABLISHED' and c.raddr:
+                    ip = c.raddr.ip
+                    if not ip.startswith("127."):
+                        active_remote_conns.append((ip, c.raddr.port, c.pid))
+
+            current_set = set(active_remote_conns)
+            
+            if not initial:
+                new_conns = current_set - self.known_connections
+                for ip, port, pid in new_conns:
+                    try:
+                        proc = psutil.Process(pid)
+                        proc_name = proc.name()
+                    except:
+                        proc_name = "unknown"
+                        
+                    self.logger.info(f"New Connection: {proc_name} -> {ip}:{port}")
+                    self.sio.emit("agent_event", {
+                        "agent_id": self.agent_id,
+                        "type": "network_alert",
+                        "category": "new_connection",
+                        "details": f"Process '{proc_name}' connected to {ip}:{port}",
+                        "severity": "info",
+                        "timestamp": time.time()
+                    })
+
+            self.known_connections = current_set
+            
+        except Exception as e:
+            self.logger.error(f"Scan failed: {e}")
+
+    # Legacy Scanner Methods (kept if needed for manual scans)
     def _get_local_ip(self):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -15,35 +86,3 @@ class NetworkScanner:
             return ip
         except:
             return "127.0.0.1"
-
-    def scan_port(self, ip, port):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
-            result = sock.connect_ex((ip, port))
-            sock.close()
-            return port if result == 0 else None
-        except:
-            return None
-
-    def scan_subnet(self, subnet=None):
-        if not subnet:
-            # Assume /24 of local IP
-            base = ".".join(self.local_ip.split(".")[:3])
-            subnet = f"{base}.0/24"
-        
-        print(f"[Net] Scanning Subnet: {subnet}")
-        active_hosts = []
-        
-        # Simple Logic: Ping widely or scan common ports on neighbors
-        # For Python Demo: Just scan neighboring IPs for Port 80/443/22
-        base_ip = ".".join(self.local_ip.split(".")[:3])
-        
-        # Limit scan for speed in demo
-        target_ips = [f"{base_ip}.{i}" for i in range(1, 20)] 
-        
-        for ip in target_ips:
-            if self.scan_port(ip, 80) or self.scan_port(ip, 443):
-                active_hosts.append({"ip": ip, "status": "Active"})
-        
-        return active_hosts
