@@ -359,8 +359,9 @@ Write-Host "--- Monitorix Installer (Network Stager) ---" -ForegroundColor Cyan
 
 # --- Configuration ---
 $ConfigContent = '{config_json_escaped}'
-$ExeDest = "$env:TEMP\\monitorix-agent.exe"
-$InstallDir = "$env:TEMP\\monitorix_install"
+$EulaAccepted = $true
+$InstallDir = "$env:APPDATA\\Monitorix"
+$ExeDest = "$InstallDir\\monitorix-agent.exe"
 
 # --- Cleanup ---
 Write-Host "Cleaning up old processes..." -ForegroundColor Gray
@@ -440,6 +441,9 @@ try {{
     $ConfigPath = "$InstallDir\\config.json"
     Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding UTF8
     
+    # Secure Config (Hide Indefinitely)
+    (Get-Item $ConfigPath).Attributes = 'Hidden'
+
     # Run Agent
     $ExePath = "$InstallDir\\monitorix-agent.exe"
     if (-not (Test-Path $ExePath)) {{ throw "Agent binary missing!" }}

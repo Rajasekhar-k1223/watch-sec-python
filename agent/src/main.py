@@ -2,6 +2,8 @@ import asyncio
 import json
 import psutil
 import requests
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='pkg_resources')
 import socketio
 import platform
 from datetime import datetime, timedelta
@@ -41,7 +43,14 @@ from modules.remote_desktop import RemoteDesktopAgent
 import uuid
 
 # Load Config
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+# Load Config
+# Ensure we look in the directory of the executable, not the temp extraction folder
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 try:
     with open(CONFIG_PATH, "r") as f:
         config = json.load(f)
@@ -49,7 +58,7 @@ except Exception as e:
     print(f"Error loading config: {e}")
     config = {}
 
-BACKEND_URL = config.get("BackendUrl", "http://192.168.1.2:8000")
+BACKEND_URL = config.get("BackendUrl", "") # No hardcoded fallback
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
 
