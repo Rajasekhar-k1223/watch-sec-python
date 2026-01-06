@@ -1,8 +1,11 @@
 from .socket_instance import sio
 
 @sio.event
-async def connect(sid, environ):
-    print(f"[Socket.IO] Client Connected: {sid}")
+async def connect(sid, environ, auth=None):
+    print(f"[Socket.IO] Client Connected: {sid} | Auth: {auth}")
+    if auth and 'room' in auth:
+        await sio.enter_room(sid, auth['room'])
+        print(f"[Socket.IO] Added {sid} to room: {auth['room']}")
 
 @sio.event
 async def disconnect(sid):
