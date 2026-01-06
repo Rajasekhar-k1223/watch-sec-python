@@ -280,8 +280,10 @@ async def get_install_script(request: Request, key: str):
     # Helper to get the One-Liner Script
     
     backend_url = _get_backend_url(request)
+    import time
+    timestamp = int(time.time())
     # The script uses the PUBLIC endpoint to download the binary
-    download_url = f"{backend_url}/api/downloads/public/agent?key={key}&os_type=windows&payload=false"
+    download_url = f"{backend_url}/api/downloads/public/agent?key={key}&os_type=windows&payload=false&t={timestamp}"
     
     ps_script = f"""
 $ErrorActionPreference = 'Stop'

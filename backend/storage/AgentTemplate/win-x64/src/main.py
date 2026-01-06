@@ -231,7 +231,7 @@ async def system_monitor_loop():
         await asyncio.sleep(5) # Report every 5 seconds
 
 async def main():
-    print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    print(f"--- Monitorix Agent v2.1.0-FIXED ({platform.system()}) ---")
     
     # Connect WebSocket
     # Connect WebSocket with Retry

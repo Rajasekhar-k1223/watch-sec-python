@@ -19,7 +19,7 @@ from .api import (
 # ======================================================
 app = FastAPI(
     title="WatchSec Backend",
-    version="2.0.0",
+    version="2.1.0-FIXED",
 )
 
 # ======================================================
@@ -81,7 +81,12 @@ app.mount("/socket.io", socketio.ASGIApp(sio))
 # ======================================================
 @app.get("/")
 async def root():
-    return {"status": "online"}
+    return {
+        "status": "online",
+        "version": "2.1.0-FIXED", 
+        "timestamp": "2026-01-06T07:30:00",
+        "docs": "/docs"
+    }
 
 @app.get("/api/health")
 async def health():
