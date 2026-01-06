@@ -27,6 +27,22 @@ if not hasattr(aiohttp, 'ClientWSTimeout'):
 # Add src to path if running nicely
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+import logging
+import sys
+
+# Configure Logging to Console
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# Set external libraries to warning to avoid noise
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("engineio").setLevel(logging.WARNING)
+logging.getLogger("socketio").setLevel(logging.WARNING)
+
 from modules.live_stream import LiveStreamer
 from modules.fim import FileIntegrityMonitor
 from modules.network import NetworkScanner

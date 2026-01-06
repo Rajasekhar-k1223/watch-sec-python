@@ -12,7 +12,6 @@ from PIL import Image
 try:
     import pyautogui
 except ImportError:
-except ImportError:
     pyautogui = None 
 from datetime import datetime
 import os
@@ -94,6 +93,9 @@ class RemoteDesktopAgent:
         with mss.mss() as sct:
             monitor = sct.monitors[1] 
             
+            frame_count = 0
+            last_log_time = time.time()
+            
             while self.running:
                 start_time = time.time()
                 try:
@@ -123,6 +125,14 @@ class RemoteDesktopAgent:
                     img.save(buffer, format="JPEG", quality=self.quality, optimize=True)
                     data = buffer.getvalue()
                     await websocket.send(data)
+                    
+                    # Verbose Logging
+                    frame_count += 1
+                    if time.time() - last_log_time > 5:
+                        size_kb = len(data) / 1024
+                        self.logger.info(f"Stream Active: Sent {frame_count} frames in last 5s. (Last frame: {size_kb:.1f}KB)")
+                        frame_count = 0
+                        last_log_time = time.time()
 
                 except Exception as e:
                     self.logger.error(f"Stream Error: {e}")
