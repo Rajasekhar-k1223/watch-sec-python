@@ -296,3 +296,11 @@ if __name__ == "__main__":
         mail_mon.stop()
         remote_desktop.stop()
         sys.exit(0)
+    except Exception as e:
+        print(f"\n[CRITICAL ERROR] Agent crashed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("\n[EXIT] Process Terminated.")
+        input("Press Enter to close window...")
+        sys.exit(1)
