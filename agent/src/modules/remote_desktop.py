@@ -12,14 +12,11 @@ from PIL import Image
 try:
     import pyautogui
 except ImportError:
-except ImportError:
     pyautogui = None 
 from datetime import datetime
 import os
 import requests
 import shutil
-from datetime import datetime
-import os
 
 class RemoteDesktopAgent:
     def __init__(self, api_url, agent_id, api_key):

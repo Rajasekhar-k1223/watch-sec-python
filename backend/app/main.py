@@ -91,3 +91,8 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "healthy"}
+
+# ======================================================
+# MOUNT SOCKET.IO APP
+# ======================================================
+app = socketio.ASGIApp(sio, app)

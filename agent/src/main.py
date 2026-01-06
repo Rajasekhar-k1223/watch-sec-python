@@ -227,8 +227,36 @@ async def system_monitor_loop():
 
         await asyncio.sleep(5) # Report every 5 seconds
 
+async def run_self_test():
+    print("\n[Self-Test] --- Starting Connectivity Check ---")
+    print(f"[Self-Test] Configured Backend: {BACKEND_URL}")
+    print(f"[Self-Test] Agent ID: {AGENT_ID}")
+    
+    # 1. HTTP Connectivity
+    try:
+        print(f"[Self-Test] Pinging Backend API...", end=" ", flush=True)
+        resp = await asyncio.to_thread(requests.get, f"{BACKEND_URL}/health", timeout=5, verify=False)
+        if resp.status_code == 200:
+            print("OK (HTTP 200)")
+        else:
+            print(f"WARNING (HTTP {resp.status_code})")
+    except Exception as e:
+        print(f"FAILED ({e})")
+        print("[Self-Test] CRITICAL: Backend unreachable via HTTP.")
+
+    # 2. WebSocket Connectivity (Simulated)
+    print(f"[Self-Test] WebSocket Target: {BACKEND_URL}")
+
+    # 3. Module Status
+    print(f"[Self-Test] FIM: {'Active' if fim else 'Error'}")
+    print(f"[Self-Test] WebRTC: {'Ready' if webrtc_manager else 'Error'}")
+    print("[Self-Test] --- Check Complete ---\n")
+
 async def main():
     print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    
+    # Run Diagnostics
+    await run_self_test()
     
     # Connect WebSocket
     # Connect WebSocket with Retry
@@ -268,3 +296,11 @@ if __name__ == "__main__":
         mail_mon.stop()
         remote_desktop.stop()
         sys.exit(0)
+    except Exception as e:
+        print(f"\n[CRITICAL ERROR] Agent crashed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        print("\n[EXIT] Process Terminated.")
+        input("Press Enter to close window...")
+        sys.exit(1)

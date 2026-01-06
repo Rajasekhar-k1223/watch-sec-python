@@ -13,9 +13,7 @@ Pillow==10.2.0
 aiortc
 av
 numpy
-opencv-python-headless
-pyobjc-framework-Cocoa; sys_platform == 'darwin'
-pyobjc-framework-Quartz; sys_platform == 'darwin'
-pyobjc-framework-ApplicationServices; sys_platform == 'darwin'
-pywin32; sys_platform == 'win32'
-python-xlib; sys_platform == 'linux'
+opencv-python
+wmi
+pywin32
+pypiwin32

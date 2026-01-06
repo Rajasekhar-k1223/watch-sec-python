@@ -362,7 +362,7 @@ async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
                 if not os.path.exists(part_file):
                     break
                 with open(part_file, "rb") as f:
-                    while chunk := f.read(65536):
+                    while chunk := f.read(4 * 1024 * 1024):
                         yield chunk
                 part_num += 1
                 
@@ -429,6 +429,12 @@ $WebClient.Headers.Add("User-Agent", "Monitorix-Installer")
 $Uri = New-Object System.Uri("{payload_url}")
 
 # Animation Frames (Running Bear / Spinner)
+$BearFrames = @(
+    " (^-.-^) ",
+    " (^~.~^) ",
+    " (o...o) ",
+    " (>...<) "
+)
 $Frames = @("|", "/", "-", "\\")
 $FrameIdx = 0
 
@@ -447,8 +453,9 @@ while (-not $DownloadTask.IsCompleted) {{
     $MB = "{{0:N2}}" -f ($Downloaded / 1MB)
     
     # Update Status Line
+    $Bear = $BearFrames[$FrameIdx % $BearFrames.Count]
     $Frame = $Frames[$FrameIdx % $Frames.Count]
-    Write-Host "`r[$Frame] Downloading... $MB MB Received    " -NoNewline -ForegroundColor Yellow
+    Write-Host "`r$Bear [$Frame] Downloading... $MB MB Received    " -NoNewline -ForegroundColor Yellow
     
     $FrameIdx++
     Start-Sleep -Milliseconds 100
