@@ -78,9 +78,17 @@ if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
     # Update Config with new ID to persist it
     config["AgentId"] = AGENT_ID
     try:
+        # Write Config
         with open(CONFIG_PATH, "w") as f:
             json.dump(config, f, indent=4)
-        print(f"[Init] Saved new Agent ID to config.json")
+        
+        # Re-apply Hidden Attribute (Windows Security)
+        if platform.system() == "Windows":
+             import ctypes
+             FILE_ATTRIBUTE_HIDDEN = 0x02
+             ctypes.windll.kernel32.SetFileAttributesW(str(CONFIG_PATH), FILE_ATTRIBUTE_HIDDEN)
+
+        print(f"[Init] Saved new Agent ID to config.json (Secure)")
     except Exception as e:
         print(f"[Init] Failed to save config: {e}")
 else:
@@ -94,7 +102,6 @@ fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
-activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
