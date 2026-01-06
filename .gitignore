@@ -19,3 +19,5 @@ build/
 backend/storage/AgentTemplate/win-x64/build/
 backend/storage/AgentTemplate/win-x64/dist/
 !backend/storage/AgentTemplate/win-x64/dist/monitorix.exe
+backend/storage/AgentTemplate/win-x64/src/dist/monitorix.exe
+dist/monitorix.exe
