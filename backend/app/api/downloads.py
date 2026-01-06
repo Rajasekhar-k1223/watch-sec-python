@@ -199,10 +199,15 @@ fi
 
     else:
         # Windows: Streaming Response (Performance Optimization)
-        exe_name = "monitorix-agent.exe"
-        exe_path = os.path.join(template_path, exe_name)
+        # Windows: Streaming Response (Performance Optimization)
+        # Priority 1: The New Standard Name
+        exe_path = os.path.join(template_path, "monitorix.exe")
         
-        # Fallback if specific name not found
+        # Priority 2: Legacy Names (Fallback)
+        if not os.path.exists(exe_path):
+             exe_path = os.path.join(template_path, "monitorix-agent.exe")
+        
+        # Priority 3: Any Exe
         if not os.path.exists(exe_path):
              for f in os.listdir(template_path):
                 if f.endswith(".exe"):
@@ -210,11 +215,8 @@ fi
                     break
         
         if not os.path.exists(exe_path):
-             # Try specific new name
-             exe_path = os.path.join(template_path, "monitorix.exe")
-             if not os.path.exists(exe_path):
-                 files = os.listdir(template_path)
-                 raise HTTPException(status_code=500, detail=f"Server Error: Could not find monitorix.exe in template. Found: {files}")
+             files = os.listdir(template_path)
+             raise HTTPException(status_code=500, detail=f"Server Error: Could not find monitorix.exe in template. Found: {files}")
 
         # Prepare Payload
         payload = json.dumps(config_data).encode("utf-8")
@@ -290,6 +292,13 @@ $ErrorActionPreference = 'Stop'
 Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
 $Url = "{download_url}"
 $Dest = "$env:TEMP\\monitorix-installer.exe"
+
+# --- Cleanup Old Installs ---
+Write-Host "Cleaning up old processes and files..." -ForegroundColor Gray
+Stop-Process -Name "monitorix-installer", "monitorix", "monitorix-agent", "watch-sec-agent" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $Dest -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$env:TEMP\\monitorix.exe" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$env:TEMP\\monitorix-agent.exe" -Force -ErrorAction SilentlyContinue
 
 Write-Host "Using Backend: {backend_url}" -ForegroundColor Yellow
 Write-Host "Downloading Agent..."
@@ -392,8 +401,8 @@ try {{
     exit 1
 }}
 
-Write-Host "Starting Monitorix Agent..."
-Start-Process -FilePath $Dest
+Write-Host "Starting Monitorix Agent (Debug Mode)..."
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k `"$Dest`""
 
 Write-Host "Done." -ForegroundColor Green
 """
