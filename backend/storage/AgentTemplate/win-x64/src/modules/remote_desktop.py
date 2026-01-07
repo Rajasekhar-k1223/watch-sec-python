@@ -1,6 +1,6 @@
 
 import asyncio
-import websockets
+import aiohttp
 import json
 import logging
 import threading
@@ -20,7 +20,7 @@ import shutil
 
 class RemoteDesktopAgent:
     def __init__(self, api_url, agent_id, api_key):
-        self.api_url = api_url.replace("http", "ws") # Ensure ws:// scheme
+        self.api_url = api_url.replace("http", "ws").replace("https", "wss")
         self.agent_id = agent_id
         self.api_key = api_key
         self.running = False
@@ -63,25 +63,27 @@ class RemoteDesktopAgent:
         
         while self.running:
             try:
-                # Add headers to satisfy CORS and potential future auth requirements
-                extra_headers = {
+                # Use aiohttp for WebSocket connection
+                headers = {
                     "Origin": "http://localhost:5173",
                     "User-Agent": "WatchSec-Agent/1.0"
                 }
-                async with websockets.connect(uri, extra_headers=extra_headers) as websocket:
-                    self.logger.info("Connected to Remote Hub.")
-                    
-                    # Start Sender and Receiver tasks
-                    sender_task = asyncio.create_task(self._stream_screen(websocket))
-                    receiver_task = asyncio.create_task(self._handle_input(websocket))
-                    
-                    done, pending = await asyncio.wait(
-                        [sender_task, receiver_task],
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
-                    
-                    for task in pending:
-                        task.cancel()
+                timeout = aiohttp.ClientTimeout(total=None) # No timeout for persistent connection
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.ws_connect(uri, headers=headers) as websocket:
+                        self.logger.info("Connected to Remote Hub.")
+                        
+                        # Start Sender and Receiver tasks
+                        sender_task = asyncio.create_task(self._stream_screen(websocket))
+                        receiver_task = asyncio.create_task(self._handle_input(websocket))
+                        
+                        done, pending = await asyncio.wait(
+                            [sender_task, receiver_task],
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        for task in pending:
+                            task.cancel()
                         
             except Exception as e:
                 self.logger.error(f"Connection Error: {e}")
@@ -103,15 +105,11 @@ class RemoteDesktopAgent:
                         
                     # Recording Logic
                     if self.recording:
-                        # Init Writer if needed
                         if not self.writer:
                             self._init_writer(img.width, img.height)
-                        
-                        # Write Frame (Convert to BGR for OpenCV)
                         if self.writer:
                             import cv2
                             import numpy as np
-                            # Convert PIL RGB to OpenCV BGR
                             frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
                             self.writer.write(frame)
 
@@ -119,7 +117,9 @@ class RemoteDesktopAgent:
                     buffer = io.BytesIO()
                     img.save(buffer, format="JPEG", quality=self.quality, optimize=True)
                     data = buffer.getvalue()
-                    await websocket.send(data)
+                    
+                    # aiohttp send_bytes
+                    await websocket.send_bytes(data)
 
                 except Exception as e:
                     self.logger.error(f"Stream Error: {e}")
@@ -129,6 +129,7 @@ class RemoteDesktopAgent:
                 delay = max(0, (1.0 / self.fps_target) - elapsed)
                 await asyncio.sleep(delay)
 
+    # _init_writer and _upload_recording methods remain same/similar...
     def _init_writer(self, width, height):
         try:
             import cv2
@@ -145,12 +146,8 @@ class RemoteDesktopAgent:
     def _upload_recording(self, file_path, duration, start_time):
         if not file_path or not os.path.exists(file_path):
             return
-        
-        # Upload in a separate thread to avoid blocking loop? 
-        # For simplicity, we do it here but it blocks the input loop briefly.
-        # Ideally use asyncio.to_thread
         try:
-            url = f"{self.api_url.replace('ws', 'http')}/api/remote/upload-session"
+            url = f"{self.api_url.replace('ws', 'http').replace('wss', 'https')}/api/remote/upload-session"
             self.logger.info(f"Uploading recording to {url}...")
             
             with open(file_path, 'rb') as f:
@@ -173,50 +170,65 @@ class RemoteDesktopAgent:
         
         while self.running:
             try:
-                msg = await websocket.recv()
-                command = json.loads(msg)
+                # aiohttp receive
+                msg = await websocket.receive()
                 
-                cmd_type = command.get("type")
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    command = json.loads(msg.data)
+                    cmd_type = command.get("type")
+                    
+                    if cmd_type == "mousemove":
+                        x = int(command["x"] * width)
+                        y = int(command["y"] * height)
+                        pyautogui.moveTo(x, y)
+                        
+                    elif cmd_type == "click":
+                        x = int(command["x"] * width)
+                        y = int(command["y"] * height)
+                        button = command.get("button", "left")
+                        pyautogui.click(x, y, button=button)
+                        
+                    elif cmd_type == "keypress":
+                        key = command.get("key")
+                        pyautogui.press(key)
+                        
+                    elif cmd_type == "type":
+                        text = command.get("text")
+                        pyautogui.typewrite(text)
+    
+                    elif cmd_type == "lock":
+                        try:
+                            import ctypes
+                            ctypes.windll.user32.LockWorkStation()
+                            self.logger.info("Executed Lock Workstation command.")
+                        except Exception as e:
+                            self.logger.error(f"Failed to lock workstation: {e}")
+    
+                    elif cmd_type == "start_recording":
+                        self.recording = True
+                        self.logger.info("Recording Started")
+    
+                    elif cmd_type == "stop_recording":
+                        self.recording = False
+                        self.logger.info("Recording Stopped")
+                        if self.writer:
+                            self.writer.release()
+                            self.writer = None
+                            # Convert duration
+                            if self.recording_start_time:
+                                duration = (datetime.now() - self.recording_start_time).total_seconds()
+                                self._upload_recording(self.current_recording_path, duration, self.recording_start_time)
+                                self.current_recording_path = None
+
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    break
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    break
+            except Exception as e:
+                self.logger.error(f"Input Loop Error: {e}")
+                await asyncio.sleep(1)
                 
-                if cmd_type == "mousemove":
-                    x = int(command["x"] * width)
-                    y = int(command["y"] * height)
-                    pyautogui.moveTo(x, y)
-                    
-                elif cmd_type == "click":
-                    x = int(command["x"] * width)
-                    y = int(command["y"] * height)
-                    button = command.get("button", "left")
-                    pyautogui.click(x, y, button=button)
-                    
-                elif cmd_type == "keypress":
-                    key = command.get("key")
-                    pyautogui.press(key)
-                    
-                elif cmd_type == "type":
-                    text = command.get("text")
-                    pyautogui.typewrite(text)
 
-                elif cmd_type == "lock":
-                    try:
-                        import ctypes
-                        ctypes.windll.user32.LockWorkStation()
-                        self.logger.info("Executed Lock Workstation command.")
-                    except Exception as e:
-                        self.logger.error(f"Failed to lock workstation: {e}")
-
-                elif cmd_type == "start_recording":
-                    self.recording = True
-                    self.logger.info("Recording Started")
-
-                elif cmd_type == "stop_recording":
-                    self.recording = False
-                    self.logger.info("Recording Stopped")
-                    if self.writer:
-                        self.writer.release()
-                        self.writer = None
-                        # Convert duration
-                        if self.recording_start_time:
                             duration = (datetime.now() - self.recording_start_time).seconds
                             await asyncio.to_thread(self._upload_recording, self.current_recording_path, duration, self.recording_start_time)
                         self.current_recording_path = None
