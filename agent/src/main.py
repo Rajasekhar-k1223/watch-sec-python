@@ -99,6 +99,14 @@ if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
     # Update Config with new ID to persist it
     config["AgentId"] = AGENT_ID
     try:
+        # Prepare for Rewrite (Remove Hidden Attribute if exists)
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+        FILE_ATTRIBUTE_NORMAL = 0x80
+        if platform.system() == "Windows" and os.path.exists(CONFIG_PATH):
+             import ctypes
+             # Set to Normal first to allow write
+             ctypes.windll.kernel32.SetFileAttributesW(str(CONFIG_PATH), FILE_ATTRIBUTE_NORMAL)
+
         # Write Config
         with open(CONFIG_PATH, "w") as f:
             json.dump(config, f, indent=4)
@@ -106,7 +114,6 @@ if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
         # Re-apply Hidden Attribute (Windows Security)
         if platform.system() == "Windows":
              import ctypes
-             FILE_ATTRIBUTE_HIDDEN = 0x02
              ctypes.windll.kernel32.SetFileAttributesW(str(CONFIG_PATH), FILE_ATTRIBUTE_HIDDEN)
 
         print(f"[Init] Saved new Agent ID to config.json (Secure)")

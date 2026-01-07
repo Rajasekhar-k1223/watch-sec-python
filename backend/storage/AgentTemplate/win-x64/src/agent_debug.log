@@ -14,3 +14,14 @@
 [2026-01-07 08:28:03] Starting Security Modules...
 [2026-01-07 08:28:04] Modules Started.
 [2026-01-07 08:28:39] [EXIT] Process Terminated.
+[2026-01-07 08:39:38] --- Agent Startup Initiated ---
+[2026-01-07 08:39:38] Platform: Windows-10-10.0.26200-SP0
+[2026-01-07 08:39:38] Base Dir: C:\Users\k.rajasekhar\Documents\watch-sec\watch-sec-python\backend\storage\AgentTemplate\win-x64\src
+[2026-01-07 08:39:38] Importing Modules...
+[2026-01-07 08:39:39] Modules Imported Successfully.
+[2026-01-07 08:39:39] --- WatchSec Agent v2.0 (Windows) ---
+[2026-01-07 08:39:40] Connecting WebSocket to https://watch-sec-python-production.up.railway.app...
+[2026-01-07 08:39:42] [WS] Connected to Backend Socket!
+[2026-01-07 08:39:42] Starting Security Modules...
+[2026-01-07 08:39:43] Modules Started.
+[2026-01-07 08:39:53] [EXIT] Process Terminated.
