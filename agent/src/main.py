@@ -72,8 +72,13 @@ import getpass
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 try:
     if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r") as f:
-            config = json.load(f)
+        if os.path.getsize(CONFIG_PATH) == 0:
+             print("[Init] Config file found but is EMPTY (0 bytes). Re-initializing fresh config.")
+             log_to_file("[Init] Warning: config.json is empty. Initializing empty.")
+             config = {}
+        else:
+            with open(CONFIG_PATH, "r") as f:
+                config = json.load(f)
     else:
         config = {}
         log_to_file("[Init] Warning: config.json not found. Initializing empty.")
