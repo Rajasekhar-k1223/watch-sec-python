@@ -359,16 +359,31 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
 
     # [NEW] Check Agent Limit BEFORE Generating Installer
     # If limit reached, return a PS script that aborts immediately.
-    if tenant.AgentCount >= tenant.AgentLimit:
+    
+    # Needs imports: from sqlalchemy import func; from ..db.models import Agent
+    # Since imports are at top, assume we might be missing them or need to add logic here.
+    # To be safe, adding local import if needed or just using what's available.
+    
+    from sqlalchemy import func
+    from ..db.models import Agent
+    
+    # Query Count
+    count_query = select(func.count()).select_from(Agent).where(Agent.TenantId == tenant.Id)
+    count_res = await db.execute(count_query)
+    current_count = count_res.scalar()
+    
+    if current_count >= tenant.AgentLimit:
         # Use a polite but firm error message
         limit_script = f"""
         Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
         Write-Error "INSTALLATION ABORTED: Agent Limit Reached for your plan."
-        Write-Host "Current Usage: {tenant.AgentCount} / {tenant.AgentLimit}" -ForegroundColor Red
+        Write-Host "Current Usage: {current_count} / {tenant.AgentLimit}" -ForegroundColor Red
         Write-Host "Please contact your administrator to upgrade your license." -ForegroundColor Gray
         exit 1
         """
         return Response(content=limit_script, media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="install.ps1"'})
+    
+    # 2. Generate PowerShell Stager
 
     # 2. Generate PowerShell Stager
     payload_url = f"{backend_url}/api/downloads/public/payload?key={key}"
