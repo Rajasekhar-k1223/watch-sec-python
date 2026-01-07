@@ -15,6 +15,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module='pkg_resources')
 
 # Monkey Patch for aiohttp 3.9+ compatibility
+import aiohttp 
 if not hasattr(aiohttp, 'ClientWSTimeout'):
     class MockClientWSTimeout(aiohttp.ClientTimeout):
         def __init__(self, ws_close=None, ws_receive=None, **kwargs):
