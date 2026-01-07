@@ -42,6 +42,12 @@ def log_to_file(msg):
     except: pass
     print(msg)
 
+# Global Robust Session
+http_session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(max_retries=3)
+http_session.mount('https://', adapter)
+http_session.mount('http://', adapter)
+
 log_to_file("--- Agent Startup Initiated ---")
 log_to_file(f"Platform: {platform.platform()}")
 log_to_file(f"Base Dir: {BASE_DIR}")
@@ -212,7 +218,8 @@ async def system_monitor_loop():
             try:
                 # Use async run_in_executor for request to avoid blocking
                 # verify=False bypasses SSL self-signed errors
-                resp = await asyncio.to_thread(requests.post, f"{BACKEND_URL}/api/report", json=payload, timeout=5, verify=False)
+                # Use http_session for keep-alive and retries
+                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     # Handle Feature Flags
@@ -246,7 +253,7 @@ async def run_self_test():
     # 1. HTTP Connectivity
     try:
         print(f"[Self-Test] Pinging Backend API...", end=" ", flush=True)
-        resp = await asyncio.to_thread(requests.get, f"{BACKEND_URL}/api/health", timeout=5, verify=False)
+        resp = await asyncio.to_thread(http_session.get, f"{BACKEND_URL}/api/health", timeout=10, verify=False)
         if resp.status_code == 200:
             print("OK (HTTP 200)")
         else:

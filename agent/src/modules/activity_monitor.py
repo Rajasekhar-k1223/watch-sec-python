@@ -58,6 +58,12 @@ class ActivityMonitor:
             "process": "",
             "start_time": datetime.utcnow()
         }
+        
+        # Robust Session initialization
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
 
     def start(self):
         if SYSTEM_OS == "Darwin" and not HAS_QUARTZ:
@@ -216,5 +222,5 @@ class ActivityMonitor:
             "Timestamp": timestamp.isoformat()
         }
         try:
-            requests.post(f"{self.backend_url}/api/events/activity", json=payload, timeout=5)
+            self.session.post(f"{self.backend_url}/api/events/activity", json=payload, timeout=10, verify=False)
         except: pass

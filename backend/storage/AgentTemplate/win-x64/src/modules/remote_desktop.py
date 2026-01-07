@@ -28,8 +28,8 @@ class RemoteDesktopAgent:
         self.thread = None
         
         # Performance Settings
-        self.quality = 70 # JPEG Quality
-        self.resolution_scale = 1.0 # Scaling factor (1.0 = 100% size)
+        self.quality = 50 # JPEG Quality (Lowered for speed)
+        self.resolution_scale = 0.8 # Scaling factor (0.8 = 80% size - Balance)
         self.fps_target = 10
         self.recording = False
         self.writer = None
