@@ -316,14 +316,15 @@ async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
     part_0 = os.path.join(template_dir, "monitorix-agent.exe.part0")
     if os.path.exists(part_0):
         # Generator to stream parts sequentially
-        def iterfile():
+        import aiofiles
+        async def iterfile():
             part_num = 0
             while True:
                 part_file = os.path.join(template_dir, f"monitorix-agent.exe.part{part_num}")
                 if not os.path.exists(part_file):
                     break
-                with open(part_file, "rb") as f:
-                    while chunk := f.read(8 * 1024 * 1024): # 8MB Chunk
+                async with aiofiles.open(part_file, "rb") as f:
+                    while chunk := await f.read(1024 * 1024): # 1MB Chunk (Smoother, Non-Blocking)
                         yield chunk
                 part_num += 1
                 
