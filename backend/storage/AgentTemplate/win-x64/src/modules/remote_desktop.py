@@ -229,10 +229,3 @@ class RemoteDesktopAgent:
                 await asyncio.sleep(1)
                 
 
-                            duration = (datetime.now() - self.recording_start_time).seconds
-                            await asyncio.to_thread(self._upload_recording, self.current_recording_path, duration, self.recording_start_time)
-                        self.current_recording_path = None
-
-            except Exception as e:
-                self.logger.error(f"Input Error: {e}")
-                break
