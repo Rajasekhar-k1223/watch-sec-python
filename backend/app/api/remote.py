@@ -54,7 +54,7 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
             b64_img = base64.b64encode(data).decode('utf-8')
             
             # Broadcast to "agent_id" room (Frontend listens to this room)
-            await sio.emit('receive_stream_frame', {
+            await sio.emit('stream_frame', {
                 'agentId': agent_id,
                 'image': b64_img
             }, room=agent_id)
@@ -66,8 +66,6 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
         manager.disconnect(agent_id)
 
 # --- Socket.IO Handlers for Input (Frontend -> Backend) ---
-# Check main.py for existing handlers? If none, define here.
-# Assuming Frontend emits 'RemoteInput'
 
 @sio.on('RemoteInput')
 async def on_remote_input(sid, data):
@@ -76,6 +74,20 @@ async def on_remote_input(sid, data):
     if agent_id:
         # Relay to WS
         await manager.send_command(agent_id, data)
+
+@sio.on('start_stream')
+async def on_start_stream(sid, data):
+    agent_id = data.get('agentId')
+    if agent_id:
+        print(f"[Remote] Start Stream requested for {agent_id}")
+        await manager.send_command(agent_id, {"type": "start_stream"})
+
+@sio.on('stop_stream')
+async def on_stop_stream(sid, data):
+    agent_id = data.get('agentId')
+    if agent_id:
+        print(f"[Remote] Stop Stream requested for {agent_id}")
+        await manager.send_command(agent_id, {"type": "stop_stream"})
 
 # --- Session Recording Upload ---
 
