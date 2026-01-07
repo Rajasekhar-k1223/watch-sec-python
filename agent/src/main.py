@@ -153,7 +153,7 @@ activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 # live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated in favor of WebRTC
-webrtc_manager = WebRTCManager(str(BACKEND_URL), str(AGENT_ID), sio)
+webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
 
 async def system_monitor_loop():
