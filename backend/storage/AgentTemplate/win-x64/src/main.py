@@ -14,7 +14,6 @@ import warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module='pkg_resources')
 
-import aiohttp
 # Monkey Patch for aiohttp 3.9+ compatibility
 if not hasattr(aiohttp, 'ClientWSTimeout'):
     class MockClientWSTimeout(aiohttp.ClientTimeout):
@@ -25,24 +24,45 @@ if not hasattr(aiohttp, 'ClientWSTimeout'):
         print("[Init] Monkey-patched aiohttp.ClientWSTimeout (Advanced)")
     except: pass
 
-# Add src to path if running nicely
+# --- Setup Logging ---
+# Log to file for debugging silent crashes on user machines
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     sys.path.append(BASE_DIR)
 
+LOG_FILE = os.path.join(BASE_DIR, "agent_debug.log")
+def log_to_file(msg):
+    try:
+        with open(LOG_FILE, "a", encoding='utf-8') as f:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] {msg}\n")
+    except: pass
+    print(msg)
+
+log_to_file("--- Agent Startup Initiated ---")
+log_to_file(f"Platform: {platform.platform()}")
+log_to_file(f"Base Dir: {BASE_DIR}")
+
 # --- Import Modules ---
-from modules.live_stream import LiveStreamer
-from modules.fim import FileIntegrityMonitor
-from modules.network import NetworkScanner
-from modules.security import ProcessSecurity
-from modules.screenshots import ScreenshotCapture
-from modules.activity_monitor import ActivityMonitor
-from modules.mail_monitor import MailMonitor
-from modules.browser_enforcer import BrowserEnforcer
-from modules.remote_desktop import RemoteDesktopAgent
-from modules.webrtc_stream import WebRTCManager
+try:
+    log_to_file("Importing Modules...")
+    from modules.live_stream import LiveStreamer
+    from modules.fim import FileIntegrityMonitor
+    from modules.network import NetworkScanner
+    from modules.security import ProcessSecurity
+    from modules.screenshots import ScreenshotCapture
+    from modules.activity_monitor import ActivityMonitor
+    from modules.mail_monitor import MailMonitor
+    from modules.browser_enforcer import BrowserEnforcer
+    from modules.remote_desktop import RemoteDesktopAgent
+    from modules.webrtc_stream import WebRTCManager
+    log_to_file("Modules Imported Successfully.")
+except Exception as e:
+    log_to_file(f"CRITICAL IMPORT ERROR: {e}")
+    import traceback
+    log_to_file(traceback.format_exc())
 
 import uuid
 import getpass
@@ -216,7 +236,7 @@ async def run_self_test():
     print("[Self-Test] --- Check Complete ---\n")
 
 async def main():
-    print(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    log_to_file(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
     
     # Run Diagnostics
     await run_self_test()
@@ -225,22 +245,28 @@ async def main():
     while True:
         try:
             # IMPORTANT: Auth dict with 'room' ensures backend routes us correctly
+            log_to_file(f"Connecting WebSocket to {BACKEND_URL}...")
             await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
-            print("[WS] Connected to Backend Socket!")
+            log_to_file("[WS] Connected to Backend Socket!")
             break
         except Exception as e:
-            print(f"[WS] Connection Failed (Retrying in 5s): {e}")
+            log_to_file(f"[WS] Connection Failed (Retrying in 5s): {e}")
             try:
                 await sio.disconnect()
             except: pass
             await asyncio.sleep(5)
 
     # Start Security Modules
-    fim.start()
-    screen_cap.start()
-    activity_mon.start()
-    mail_mon.start()
-    remote_desktop.start()
+    log_to_file("Starting Security Modules...")
+    try:
+        fim.start()
+        screen_cap.start()
+        activity_mon.start()
+        mail_mon.start()
+        remote_desktop.start()
+        log_to_file("Modules Started.")
+    except Exception as e:
+        log_to_file(f"Error starting modules: {e}")
     
     # Enforce Browser Policies
     print("[Init] Enforcing Browser Extensions...")
@@ -262,9 +288,9 @@ if __name__ == "__main__":
         remote_desktop.stop()
         sys.exit(0)
     except Exception as e:
-        print(f"\n[CRITICAL ERROR] Agent crashed: {e}")
+        log_to_file(f"[CRITICAL CRASH] Agent: {e}") # Debug Log
         import traceback
         traceback.print_exc()
         input("Press Enter to Exit...") # Keep console open on crash
     finally:
-        print("\n[EXIT] Process Terminated.")
+        log_to_file("[EXIT] Process Terminated.")
