@@ -445,7 +445,7 @@ try {{
     # Write Config
     Write-Host "Applying Configuration..."
     $ConfigPath = "$InstallDir\\config.json"
-    Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding UTF8
+    Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding Ascii
     
     # Secure Config (Hide Indefinitely)
     (Get-Item $ConfigPath).Attributes = 'Hidden'

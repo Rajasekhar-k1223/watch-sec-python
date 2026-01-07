@@ -76,6 +76,13 @@ try:
             config = json.load(f)
     else:
         config = {}
+        log_to_file("[Init] Warning: config.json not found. Initializing empty.")
+
+    # Debug Config Content (Masking Key for security in logs, but printing existence)
+    masked_config = config.copy()
+    if "TenantApiKey" in masked_config:
+        masked_config["TenantApiKey"] = masked_config["TenantApiKey"][:4] + "***" 
+    log_to_file(f"[Init] Loaded Config: {masked_config}")
 except Exception as e:
     msg = f"[CRITICAL] Config file exists at {CONFIG_PATH} but failed to load: {e}"
     print(msg)
