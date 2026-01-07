@@ -20,6 +20,12 @@ class ScreenshotCapture:
         self.quality = 80
         self.resolution = "Original" 
         self.max_size = 0 # 0 = Unlimited (KB)
+        
+        # Robust Session
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
 
     def set_config(self, quality, resolution, max_size):
         self.quality = int(quality) if quality else 80
@@ -118,7 +124,7 @@ class ScreenshotCapture:
         
         try:
             url = f"{self.backend_url}/api/screenshots/upload"
-            resp = requests.post(url, files=files, data=data, timeout=10)
+            resp = self.session.post(url, files=files, data=data, timeout=20, verify=False)
             if resp.status_code == 200:
                 print(f"[Screens] Sent Screenshot")
             else:
