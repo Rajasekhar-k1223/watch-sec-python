@@ -71,11 +71,19 @@ import getpass
 # --- Configuration Loading ---
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 try:
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r") as f:
+            config = json.load(f)
+    else:
+        config = {}
 except Exception as e:
-    print(f"Error loading config: {e}")
-    config = {}
+    msg = f"[CRITICAL] Config file exists at {CONFIG_PATH} but failed to load: {e}"
+    print(msg)
+    try:
+        log_to_file(msg)
+    except: pass
+    print("Aborting to prevent configuration corruption. Please fix config.json syntax.")
+    sys.exit(1)
 
 # Backend Configuration (User Defined Production URL)
 BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
