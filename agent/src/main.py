@@ -117,10 +117,34 @@ print(f"[Init] Expected Agent ID Prefix: {expected_prefix}")
 print(f"[Init] Loaded Agent ID: {AGENT_ID}")
 
 # If ID is missing OR doesn't match the current system (e.g. config copied from another machine)
+def get_stable_id():
+    try:
+        if platform.system() == "Windows":
+             import winreg
+             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
+             guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+             return guid
+        elif platform.system() == "Linux":
+            with open("/etc/machine-id", "r") as f:
+                return f.read().strip()
+        elif platform.system() == "Darwin":
+            import subprocess
+            cmd = "ioreg -rd1 -c IOPlatformExpertDevice | grep IOPlatformUUID"
+            result = subprocess.check_output(cmd, shell=True).decode()
+            return result.split('"')[-2]
+    except Exception as e:
+        print(f"[Init] Failed to get stable ID: {e}")
+        return str(uuid.uuid4()) # Fallback
+
 if not AGENT_ID or not AGENT_ID.startswith(expected_prefix):
-    unique_suffix = str(uuid.uuid4())[:8].upper()
-    AGENT_ID = f"{expected_prefix}-{unique_suffix}"
-    print(f"[Init] ID Mismatch or Missing. Generated New Agent ID: {AGENT_ID}")
+    # Use Hardware ID for stability across reinstalls
+    machine_id = get_stable_id()
+    # Create short hash of machine ID to keep Agent ID readable
+    import hashlib
+    machine_hash = hashlib.md5(machine_id.encode()).hexdigest()[:8].upper()
+    
+    AGENT_ID = f"{expected_prefix}-{machine_hash}"
+    print(f"[Init] Stable ID Generated (Hardware Based): {AGENT_ID}")
     
     # Update Config with new ID to persist it
     config["AgentId"] = AGENT_ID
