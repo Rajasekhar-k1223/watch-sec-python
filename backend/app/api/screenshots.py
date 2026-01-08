@@ -33,12 +33,20 @@ router = APIRouter()
 STORAGE_BASE = "storage/Screenshots"
 
 @router.get("/list/{agent_id}", response_model=List[ScreenshotDto])
-async def list_screenshots(
-    agent_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    # TODO: Tenant Check (Agent belongs to Tenant)
+    # Tenant Check
+    # We must verifying Agent belongs to this user's Tenant
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
     
+    if not agent:
+        # If agent DB record missing, treating as 404
+        return []
+
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+            # Unauthorized access to another tenant's agent
+            raise HTTPException(status_code=403, detail="Access denied")
+
     agent_path = os.path.join(STORAGE_BASE, agent_id)
     if not os.path.exists(agent_path):
         return []
@@ -181,8 +189,20 @@ async def view_screenshot(
     agent_id: str,
     date: str,
     filename: str,
-    current_user: User = Depends(get_image_access_user) # Swapped dependency
+    current_user: User = Depends(get_image_access_user),
+    db: AsyncSession = Depends(get_db)
 ):
+    # [SECURITY] Validate Ownership
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
+    
+    if not agent:
+         raise HTTPException(status_code=404, detail="Agent not found")
+
+    if current_user.Role != "SuperAdmin":
+         if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+             raise HTTPException(status_code=403, detail="Access denied")
+
     path = os.path.join(STORAGE_BASE, agent_id, date, filename)
     
     if not os.path.exists(path):

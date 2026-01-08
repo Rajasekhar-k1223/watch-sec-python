@@ -33,6 +33,10 @@ async def create_user(
     if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    # [SECURITY] Prevent TenantAdmin from creating SuperAdmin
+    if current_user.Role != "SuperAdmin" and req.role == "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Insufficient privileges to create SuperAdmin")
+
     # 2. Determine TenantId
     target_tenant_id = current_user.TenantId
     if current_user.Role == "SuperAdmin":

@@ -39,33 +39,59 @@ async def get_productivity_summary(
     productive_apps = ["code", "visual studio", "chrome", "teams", "slack", "outlook"]
     unproductive_apps = ["netflix", "facebook", "youtube", "steam", "spotify"]
     
+    top_apps = {} # Key: ProcessName, Val: {duration, category}
+    
     for log in logs:
-        proc = (log.get("ProcessName") or "").lower()
+        proc = (log.get("ProcessName") or "Unknown").strip()
         title = (log.get("WindowTitle") or "").lower()
         duration = float(log.get("DurationSeconds", 0))
         
-        is_prod = any(app in proc for app in productive_apps)
-        is_unprod = any(app in proc or app in title for app in unproductive_apps)
+        # Categorize
+        cat = "Neutral"
+        proc_lower = proc.lower()
+        
+        is_prod = any(app in proc_lower for app in productive_apps)
+        is_unprod = any(app in proc_lower or app in title for app in unproductive_apps)
         
         if is_prod:
+            cat = "Productive"
             productive_seconds += duration
         elif is_unprod:
+            cat = "Unproductive"
             unproductive_seconds += duration
         else:
-             neutral_seconds += duration
+            cat = "Neutral"
+            neutral_seconds += duration
+
+        # Aggregate for Top Apps
+        if proc not in top_apps:
+            top_apps[proc] = {"duration": 0.0, "category": cat}
+        top_apps[proc]["duration"] += duration
+        # Update category if it changes (simple heuristic: allow overwrite or stick to first? stick to calc)
+        top_apps[proc]["category"] = cat 
              
     total = productive_seconds + unproductive_seconds + neutral_seconds
     score = 0
     if total > 0:
         score = int((productive_seconds / total) * 100)
         
+    # Sort and Format Top Apps
+    sorted_apps = sorted(top_apps.items(), key=lambda x: x[1]['duration'], reverse=True)[:10]
+    final_top_apps = [
+        {"name": k, "duration": v['duration'], "category": v['category']}
+        for k, v in sorted_apps
+    ]
+        
     return {
-        "AgentId": agent_id,
-        "Score": score,
-        "ProductiveSeconds": productive_seconds,
-        "UnproductiveSeconds": unproductive_seconds,
-        "NeutralSeconds": neutral_seconds,
-        "TotalSeconds": total
+        "score": score,
+        "totalSeconds": total,
+        "breakdown": {
+            "productive": productive_seconds,
+            "unproductive": unproductive_seconds,
+            "neutral": neutral_seconds
+        },
+        "topApps": final_top_apps,
+        "agentId": agent_id
     }
 
 @router.get("/me")

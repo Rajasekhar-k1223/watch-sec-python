@@ -91,12 +91,14 @@ async def report_event(
     await db.commit()
     
     # 3. Realtime Alert via Socket
-    await sio.emit('ReceiveEvent', {
-        'agentId': dto.AgentId,
-        'type': dto.Type, # Frontend expects lowercase keys usually? Check Frontend.
-        'details': dto.Details,
-        'timestamp': dto.Timestamp.isoformat()
-    })
+    # Broadcast to specific Tenant Room
+    if tenant:
+        await sio.emit('ReceiveEvent', {
+            'agentId': dto.AgentId,
+            'type': dto.Type, 
+            'details': dto.Details,
+            'timestamp': dto.Timestamp.isoformat()
+        }, room=f"tenant_{tenant.Id}")
     
     return {"status": "Logged"}
 
@@ -189,24 +191,27 @@ async def log_activity(
         print(f"Error logging activity to Mongo: {e}")
         raise HTTPException(status_code=500, detail="Log Error")
 
-    # Broadcast via Socket.IO
-    await sio.emit('ReceiveEvent', {
-        'agentId': dto.AgentId,
-        'title': dto.ActivityType,
-        'details': f"{dto.ProcessName or ''} {dto.WindowTitle or dto.Url or ''}".strip(),
-        'timestamp': dto.Timestamp.isoformat()
-    })
-    
-    # Broadcast Detailed Activity for Realtime Logs
-    await sio.emit('new_client_activity', {
-        'AgentId': dto.AgentId,
-        'ActivityType': dto.ActivityType,
-        'ProcessName': dto.ProcessName,
-        'WindowTitle': dto.WindowTitle,
-        'Url': dto.Url,
-        'DurationSeconds': dto.DurationSeconds,
-        'RiskLevel': risk_level,
-        'Timestamp': dto.Timestamp.isoformat()
-    })
+    # Broadcast via Socket.IO -> TENANT ROOM
+    if tenant:
+        room_name = f"tenant_{tenant.Id}"
+        
+        await sio.emit('ReceiveEvent', {
+            'agentId': dto.AgentId,
+            'title': dto.ActivityType,
+            'details': f"{dto.ProcessName or ''} {dto.WindowTitle or dto.Url or ''}".strip(),
+            'timestamp': dto.Timestamp.isoformat()
+        }, room=room_name)
+        
+        # Broadcast Detailed Activity for Realtime Logs
+        await sio.emit('new_client_activity', {
+            'AgentId': dto.AgentId,
+            'ActivityType': dto.ActivityType,
+            'ProcessName': dto.ProcessName,
+            'WindowTitle': dto.WindowTitle,
+            'Url': dto.Url,
+            'DurationSeconds': dto.DurationSeconds,
+            'RiskLevel': risk_level,
+            'Timestamp': dto.Timestamp.isoformat()
+        }, room=room_name)
 
     return {"status": "Logged"}

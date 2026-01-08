@@ -23,6 +23,19 @@ async def get_agent_history(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
+    # [SECURITY] Validate Agent Ownership
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    
+    if not agent:
+        # Return empty or 404? 404 is cleaner but empty list might be safer for UI
+        # User asked for "strict validation", so 404/403 is better
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+             raise HTTPException(status_code=403, detail="Access Denied")
+
     query = select(AgentReportEntity).where(AgentReportEntity.AgentId == agent_id).order_by(AgentReportEntity.Timestamp.desc()).limit(100)
     result = await db.execute(query)
     history = result.scalars().all()
@@ -41,6 +54,10 @@ class AgentReportDto(BaseModel):
     InstalledSoftwareJson: Optional[str] = None
     LocalIp: Optional[str] = None
     Gateway: Optional[str] = None
+    # [NEW] Agent-Reported Location
+    Latitude: Optional[float] = 0.0
+    Longitude: Optional[float] = 0.0
+    Country: Optional[str] = None
 
 @router.post("/report")
 async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession = Depends(get_db)):
@@ -69,8 +86,79 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
     result = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
     agent = result.scalars().first()
 
-    # Extract Public IP
-    client_ip = request.client.host if request.client else "Unknown"
+    # Extract Public IP (Robust Proxy Support)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    real_ip = request.headers.get("X-Real-IP")
+    
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    elif real_ip:
+        client_ip = real_ip
+    else:
+        client_ip = request.client.host if request.client else "Unknown"
+
+    if client_ip not in ["127.0.0.1", "localhost", "::1", "Unknown"]:
+        # [SECURITY] Strict IP One-Entity-Per-IP Rule
+        
+        # 1. Check if IP used by a Tenant
+        ip_tenant = await db.execute(select(Tenant).where(Tenant.RegistrationIp == client_ip))
+        if ip_tenant.scalars().first():
+             # If exact match found in Tenants table, BLOCK Agent.
+             print(f"[API] Blocked Agent Registration from Tenant IP: {client_ip}")
+             raise HTTPException(status_code=400, detail="IP Address restriction: This IP is already associated with a Tenant account.")
+
+        # 2. Check if IP used by ANOTHER Agent (Optional: "one agent per ip"?)
+        # User said "filter agents and tenant if ipaddress already exit".
+        # This implies cross-checking. Let's enforce strict unique IP across the board?
+        # Or maybe just "Don't mismatch".
+        # Let's enforce: If IP is used by an Agent of ANOTHER Tenant? No, that's complex (NAT).
+        # Let's start with just blocking if Tenant exists.
+        pass
+
+    # [LOCATION] Geolocation Logic 
+    # Check Toggle First (User Consent)
+    if agent.LocationTrackingEnabled:
+        lat, lon, country = 0.0, 0.0, "Unknown"
+        
+        # 1. Check Agent Report
+        if dto.Latitude and dto.Latitude != 0.0:
+            lat = dto.Latitude
+            lon = dto.Longitude
+            country = dto.Country or "Unknown"
+        
+        # 2. Fallback to Backend IP Lookup
+        else:
+            should_geolocate = False
+            if not agent:
+                should_geolocate = True
+            elif agent.PublicIp != client_ip:
+                should_geolocate = True
+                
+            if should_geolocate and client_ip not in ["127.0.0.1", "localhost", "::1", "Unknown"]:
+                try:
+                     import requests
+                     import asyncio
+                     geo_resp = await asyncio.to_thread(
+                         requests.get, 
+                         f"http://ip-api.com/json/{client_ip}?fields=status,country,lat,lon", 
+                         timeout=3
+                     )
+                     if geo_resp.status_code == 200:
+                         geo_data = geo_resp.json()
+                         if geo_data.get("status") == "success":
+                             lat = geo_data.get("lat", 0.0)
+                             lon = geo_data.get("lon", 0.0)
+                             country = geo_data.get("country", "Unknown")
+                             print(f"[API] Geolocated {client_ip} -> {country} ({lat}, {lon})")
+                except Exception as e:
+                    print(f"[API] Geolocation Failed: {e}")
+        
+        # Apply Updates if we have data
+        if lat != 0.0:
+            agent.Latitude = lat
+            agent.Longitude = lon
+            agent.Country = country
+            # print(f"[API] Updated Location for {agent.AgentId}")
 
     status_msg = "Updated"
 
@@ -93,6 +181,9 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
             Hostname=dto.Hostname or "Unknown",
             LocalIp=dto.LocalIp or "0.0.0.0",
             PublicIp=client_ip,
+            Latitude=lat,
+            Longitude=lon,
+            Country=country,
             Gateway=dto.Gateway or "Unknown",
             InstalledSoftwareJson=dto.InstalledSoftwareJson or "[]"
         )
@@ -100,9 +191,17 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
         status_msg = "Registered"
     else:
         # Update Existing
-        status_msg = "Already Registered" # Per user request "already exit and registrater", maybe imply "Updated" but acknowledge existence.
+        status_msg = "Already Registered" 
         agent.LastSeen = datetime.utcnow()
         agent.TenantId = tenant.Id
+        
+        # Only update location if we actually fetched it (don't overwrite with 0.0 if fetch failed)
+        if should_geolocate and lat != 0.0:
+            agent.Latitude = lat
+            agent.Longitude = lon
+            agent.Country = country
+            print(f"[API] Updated Location for {agent.AgentId}")
+
         agent.PublicIp = client_ip
         if dto.Hostname:
             agent.Hostname = dto.Hostname
@@ -150,6 +249,10 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
         "message": status_msg,
         "config": {
             "ScreenshotsEnabled": agent.ScreenshotsEnabled,
+            "LocationTrackingEnabled": agent.LocationTrackingEnabled,
+            "UsbBlockingEnabled": agent.UsbBlockingEnabled, # [FIX] Sync DLP Config
+            "NetworkMonitoringEnabled": agent.NetworkMonitoringEnabled, # [FIX] Sync DLP Config
+            "FileDlpEnabled": agent.FileDlpEnabled, # [FIX] Sync DLP Config
             "ScreenshotQuality": agent.ScreenshotQuality or 80,
             "ScreenshotResolution": agent.ScreenshotResolution or "Original",
             "MaxScreenshotSize": agent.MaxScreenshotSize or 0
@@ -164,6 +267,17 @@ async def export_activity_logs(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
+    # [SECURITY] Validate Agent Ownership
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+             raise HTTPException(status_code=403, detail="Access Denied")
+
     # 1. Fetch Logs
     query = select(ActivityLogModel).where(ActivityLogModel.AgentId == agent_id).order_by(ActivityLogModel.Timestamp.desc()).limit(1000)
     result = await db.execute(query)

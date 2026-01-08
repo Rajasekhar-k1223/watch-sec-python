@@ -71,8 +71,45 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
 async def on_remote_input(sid, data):
     # data: { agentId, type: 'mousemove', x, y, ... }
     agent_id = data.get('agentId')
-    if agent_id:
-        # Relay to WS
+    if not agent_id: return
+
+    # [SECURITY] Check User Authorization via Session
+    # Since we implemented session saving in socket_events.py on connect/auth
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    
+    if not user:
+        # print("Unauthorized Remote Input") 
+        return
+
+    # Check Tenant Scope (if not SuperAdmin)
+    # Ideally checking against Agent Table again, but simpler:
+    # If the user successfully joined the 'agent_id' room, they passed the check in on_join.
+    # However, 'RemoteInput' doesn't require being in the room logically, but we should enforce it 
+    # OR re-verify. Re-verification is safer.
+    # For speed (mouse moves), DB hit every packet is BAD.
+    # Optim: Trust if they are in the Room? Or just trust session context if we cached Agent Ownership?
+    # Let's do: If User is TenantAdmin, verify they joined the room "agent_id" ?
+    # Sio rooms checking is async.
+    # BETTER: We trust the Logic: "Users can only see the remote screen if they joined the room".
+    # Sending input blindly without seeing screen is useless.
+    # So if we enforce joined room == agent_id, we are good?
+    
+    # Since checking rooms list is internal to SIO, let's assume if they have a valid Session User 
+    # AND the Agent belongs to their Tenant (which we can cache or just rely on the fact they accessed the UI).
+    # Real-time compromised check: Explicit DB or Cache.
+    # Compromise: Check if user['tenantId'] matches what we know about the agent.
+    # But we don't know Agent's tenant here without DB.
+    # Valid approach: The `manager` only holds active WS connections.
+    # The Frontend sends input.
+    # Let's rely on the fact that `on_join` was strict. 
+    # If strict security demanded:
+    # 1. User connects -> Auth & Cache TenantID
+    # 2. User joins 'agent_id' -> We verified Agent.TenantID == User.TenantID
+    # 3. RemoteInput -> We verify User is in room 'agent_id'
+    
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
         await manager.send_command(agent_id, data)
 
 @sio.on('start_stream')

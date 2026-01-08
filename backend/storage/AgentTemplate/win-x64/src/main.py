@@ -206,29 +206,27 @@ async def on_uninstall(data):
         print(f"[Command] Uninstall Failed: {e}")
 
 # --- Initialize Modules ---
-fim = FileIntegrityMonitor(paths_to_watch=["."])
-net_scanner = NetworkScanner()
-proc_sec = ProcessSecurity()
-screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30) # Original line, kept for context
+# Core Modules
+screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+proc_sec = ProcessSecurity()
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
 # DLP Modules
-usb_monitor = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
-network_monitor = NetworkMonitor(AGENT_ID, API_KEY, BACKEND_URL)
-file_monitor = FileMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+fim_monitor = FileIntegrityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+net_scanner = NetworkScanner(AGENT_ID, API_KEY, BACKEND_URL)
+usb_ctrl = UsbControl()
 
 # --- Start Threads ---
 activity_mon.start()
 screen_cap.start() 
 
-usb_monitor.start()
-network_monitor.start()
-file_monitor.start()
+# DLP Modules are started conditionally in the loop based on config, 
+# but we can ensure they are ready. They don't block.
 
-# Remote Desktop & WebRTC are manually started via Socket/API usually, or auto-start if configured
+# Remote Desktop & WebRTC
 remote_desktop.start() 
 
 print("[Main] All Monitoring Modules Initialized and Started.")
@@ -267,11 +265,52 @@ async def system_monitor_loop():
                 resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
+                    
                     # Handle Feature Flags
-                    if "ScreenshotsEnabled" in data:
-                        screen_cap.set_enabled(data["ScreenshotsEnabled"])
+                    config = data.get("config", {}) 
+
+                    # Support both nested 'config' and direct fields logic
+                    network_enabled = config.get("NetworkMonitoringEnabled", data.get("NetworkMonitoringEnabled", False))
+                    file_dlp_enabled = config.get("FileDlpEnabled", data.get("FileDlpEnabled", False))
+                    usb_blocking_enabled = config.get("UsbBlockingEnabled", data.get("UsbBlockingEnabled", False))
+                    screenshot_enabled = config.get("ScreenshotsEnabled", data.get("ScreenshotsEnabled", False))
+                    location_enabled = config.get("LocationTrackingEnabled", data.get("LocationTrackingEnabled", False))
+
+                    if screenshot_enabled: screen_cap.set_enabled(True)
+                    else: screen_cap.set_enabled(False)
                         
-                    # Handle Quality/Res Settings
+                    # [NET] Network Monitoring
+                    if network_enabled and not net_scanner.is_running:
+                        net_scanner.start()
+                    elif not network_enabled and net_scanner.is_running:
+                        net_scanner.stop()
+                        
+                    # [DLP] File Monitoring
+                    if file_dlp_enabled and not fim_monitor.is_running:
+                        fim_monitor.start()
+                    elif not file_dlp_enabled and fim_monitor.is_running:
+                        fim_monitor.stop()
+
+                    # [LOCATION] Update Loop State 
+                    if not location_enabled:
+                         cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
+
+                    # [DLP] USB Control
+                    success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled)
+                    if not success and usb_blocking_enabled:
+                         # [ERROR FEEDBACK] Report Failure to Backend
+                         try:
+                             print(f"[DLP ERROR] USB Block Failed: {msg}")
+                             err_payload = {
+                                 "AgentId": AGENT_ID,
+                                 "TenantApiKey": API_KEY,
+                                 "Type": "SystemError",
+                                 "Details": f"USB Blocking Failed: {msg}",
+                                 "Timestamp": datetime.utcnow().isoformat()
+                             }
+                             # Fire and forget error report
+                             asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
+                         except: pass
                     if "ScreenshotQuality" in data:
                         screen_cap.set_config(
                             quality=data.get("ScreenshotQuality"), 

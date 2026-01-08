@@ -61,14 +61,11 @@ try:
     from modules.security import ProcessSecurity
     from modules.screenshots import ScreenshotCapture
     from modules.activity_monitor import ActivityMonitor
+    from modules.usb_control import UsbControl
     from modules.mail_monitor import MailMonitor
     from modules.browser_enforcer import BrowserEnforcer
     from modules.remote_desktop import RemoteDesktopAgent
     from modules.webrtc_stream import WebRTCManager
-    # DLP Modules (New)
-    from modules.usb_monitor import UsbMonitor
-    from modules.network_monitor import NetworkMonitor
-    from modules.file_monitor import FileMonitor
     log_to_file("Modules Imported Successfully.")
 except Exception as e:
     log_to_file(f"CRITICAL IMPORT ERROR: {e}")
@@ -206,35 +203,43 @@ async def on_uninstall(data):
         print(f"[Command] Uninstall Failed: {e}")
 
 # --- Initialize Modules ---
-fim = FileIntegrityMonitor(paths_to_watch=["."])
-net_scanner = NetworkScanner()
-proc_sec = ProcessSecurity()
-screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30) # Original line, kept for context
+# --- Initialize Modules ---
+# Core Modules
+screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+proc_sec = ProcessSecurity()
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
 # DLP Modules
-usb_monitor = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
-network_monitor = NetworkMonitor(AGENT_ID, API_KEY, BACKEND_URL)
-file_monitor = FileMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+fim_monitor = FileIntegrityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+net_scanner = NetworkScanner(AGENT_ID, API_KEY, BACKEND_URL)
+usb_ctrl = UsbControl()
 
 # --- Start Threads ---
 activity_mon.start()
 screen_cap.start() 
 
-usb_monitor.start()
-network_monitor.start()
-file_monitor.start()
+# DLP Modules are started conditionally in the loop based on config, 
+# but we can ensure they are ready. They don't block.
+# Actually, their start() methods typically start a thread. 
+# We'll let the loop control start/stop to respect the flags immediately.
+# EXCEPT if they need to be running to receive config? No, main loop handles config.
 
-# Remote Desktop & WebRTC are manually started via Socket/API usually, or auto-start if configured
+# Remote Desktop & WebRTC
 remote_desktop.start() 
 
-print("[Main] All Monitoring Modules Initialized and Started.")
+print("[Main] All Monitoring Modules Initialized.")
+
 
 
 async def system_monitor_loop():
+    # Location Cache
+    cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
+    last_location_check = datetime.min
+    location_enabled = False # Default OFF until authorized by backend
+    
     print("[Loop] Starting System Monitor Loop...")
     while True:
         try:
@@ -244,8 +249,32 @@ async def system_monitor_loop():
             # Periodic Software Scan (every hour approx)
             software_cache = []
             if datetime.now().minute == 0:
-                print("[Sec] Scanning Installed Software...")
-                software_cache = proc_sec.get_installed_software()
+                 # ... existing software scan logic logic handled by existing code path ...
+                 # Assuming logic flows here, but to avoid replacing too much I will keep it simple.
+                 pass
+
+            # [LOCATION] Agent-Side Self-Geolocation (Every 60 mins)
+            # This allows the Agent to report "Where I think I am"
+            # CHECK: Only run if authorized by backend
+            if location_enabled and (datetime.now() - last_location_check).total_seconds() > 3600:
+                 try:
+                     print("[Loc] Fetching current location...")
+                     geo_resp = await asyncio.to_thread(http_session.get, "http://ip-api.com/json/?fields=status,country,lat,lon", timeout=5)
+                     if geo_resp.status_code == 200:
+                         gdata = geo_resp.json()
+                         if gdata.get("status") == "success":
+                             cached_location["lat"] = gdata.get("lat")
+                             cached_location["lon"] = gdata.get("lon")
+                             cached_location["country"] = gdata.get("country")
+                             print(f"[Loc] Updated: {cached_location['country']}")
+                             last_location_check = datetime.now()
+                 except Exception as e:
+                     print(f"[Loc] Failed: {e}")
+
+            # Re-implement software scan logic as I'm replacing the block
+            if datetime.now().minute == 0 and datetime.now().second < 10:
+                 # Minimal check to avoid spamming validity
+                 software_cache = proc_sec.get_installed_software()
 
             payload = {
                 "AgentId": AGENT_ID,
@@ -257,7 +286,11 @@ async def system_monitor_loop():
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
-                "Gateway": "Unknown"
+                "Gateway": "Unknown",
+                # [NEW] Agent Self-Reported Location
+                "Latitude": cached_location["lat"],
+                "Longitude": cached_location["lon"],
+                "Country": cached_location["country"]
             }
 
             try:
@@ -267,16 +300,61 @@ async def system_monitor_loop():
                 resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
+                    
                     # Handle Feature Flags
-                    if "ScreenshotsEnabled" in data:
-                        screen_cap.set_enabled(data["ScreenshotsEnabled"])
+                    config = data.get("config", {}) 
+
+                    # Support both nested 'config' and direct fields logic
+                    network_enabled = config.get("NetworkMonitoringEnabled", data.get("NetworkMonitoringEnabled", False))
+                    file_dlp_enabled = config.get("FileDlpEnabled", data.get("FileDlpEnabled", False))
+                    usb_blocking_enabled = config.get("UsbBlockingEnabled", data.get("UsbBlockingEnabled", False))
+                    screenshot_enabled = config.get("ScreenshotsEnabled", data.get("ScreenshotsEnabled", False))
+                    location_enabled = config.get("LocationTrackingEnabled", data.get("LocationTrackingEnabled", False))
+
+                    if screenshot_enabled: screen_cap.set_enabled(True)
+                    else: screen_cap.set_enabled(False)
                         
+                    # [NET] Network Monitoring
+                    if network_enabled and not net_scanner.is_running:
+                        net_scanner.start()
+                    elif not network_enabled and net_scanner.is_running:
+                        net_scanner.stop()
+                        
+                    # [DLP] File Monitoring
+                    if file_dlp_enabled and not fim_monitor.is_running:
+                        fim_monitor.start()
+                    elif not file_dlp_enabled and fim_monitor.is_running:
+                        fim_monitor.stop()
+
+                    # [LOCATION] Update Loop State 
+                    if not location_enabled:
+                         cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
+
+                    # [DLP] USB Control
+                    success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled)
+                    if not success and usb_blocking_enabled:
+                         # [ERROR FEEDBACK] Report Failure to Backend
+                         try:
+                             print(f"[DLP ERROR] USB Block Failed: {msg}")
+                             err_payload = {
+                                 "AgentId": AGENT_ID,
+                                 "TenantApiKey": API_KEY,
+                                 "Type": "SystemError",
+                                 "Details": f"USB Blocking Failed: {msg}",
+                                 "Timestamp": datetime.utcnow().isoformat()
+                             }
+                             # Fire and forget error report
+                             asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
+                         except: pass
+
                     # Handle Quality/Res Settings
-                    if "ScreenshotQuality" in data:
+                    
+                    # Handle Quality/Res Settings
+                    if "ScreenshotQuality" in config:
                         screen_cap.set_config(
-                            quality=data.get("ScreenshotQuality"), 
-                            resolution=data.get("ScreenshotResolution"), 
-                            max_size=data.get("MaxScreenshotSize")
+                            quality=config.get("ScreenshotQuality"), 
+                            resolution=config.get("ScreenshotResolution"), 
+                            max_size=config.get("MaxScreenshotSize")
                         )
                         
                     print(f"[Report] Sent: CPU {cpu}% | MEM {payload['MemoryUsage']:.1f}MB")
@@ -326,7 +404,7 @@ async def main():
         try:
             # IMPORTANT: Auth dict with 'room' ensures backend routes us correctly
             log_to_file(f"Connecting WebSocket to {BACKEND_URL}...")
-            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
+            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY})
             log_to_file("[WS] Connected to Backend Socket!")
             break
         except Exception as e:

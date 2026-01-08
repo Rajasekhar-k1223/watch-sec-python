@@ -32,6 +32,10 @@ class Agent(Base):
     AgentId = Column(String(255), unique=True, index=True)
     TenantId = Column(Integer, nullable=False)
     ScreenshotsEnabled = Column(Boolean, default=False)
+    LocationTrackingEnabled = Column(Boolean, default=False) # [NEW] User Toggle
+    UsbBlockingEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement User Toggle
+    NetworkMonitoringEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
+    FileDlpEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
     LastSeen = Column(DateTime, default=datetime.utcnow)
     Hostname = Column(String(255), default="Unknown")
     PublicIp = Column(String(50), nullable=True)

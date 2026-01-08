@@ -17,6 +17,10 @@ async def get_dashboard_status(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
+    # Enforce Tenant Isolation
+    if current_user.Role != "SuperAdmin":
+        tenantId = current_user.TenantId
+
     # 1. Fetch Agents for metadata
     agent_query = select(Agent)
     if tenantId:
@@ -25,14 +29,10 @@ async def get_dashboard_status(
     agents_map = {a.AgentId: a for a in agent_result.scalars().all()}
 
     # 2. Fetch Latest Reports for Status Calculation
-    # Optimized: Instead of fetching all reports, we should try to get latest per agent.
-    # For now, sticking to previous logic but identifying we need "Latest" status.
     query = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
     if tenantId:
         query = query.where(AgentReportEntity.TenantId == tenantId)
     
-    # Limit to reasonable recent history to avoid fetching millions of rows if table is huge
-    # assuming we just want current status, last 24h is enough.
     threshold = datetime.utcnow() - timedelta(hours=24)
     query = query.where(AgentReportEntity.Timestamp >= threshold)
 
@@ -41,7 +41,6 @@ async def get_dashboard_status(
 
     latest = {}
     
-    # Pre-fill with known agents from Agent table (so even if no report in last 24h, they appear as offline)
     for agent_id, agent in agents_map.items():
         latest[agent_id] = {
             "agentId": agent_id,
@@ -54,20 +53,14 @@ async def get_dashboard_status(
             "longitude": 0.0
         }
 
-    # Update with latest report data
     for r in all_reports:
-        # Since we ordered DESC, the first time we see an AgentId is its latest report
         if r.AgentId in latest and latest[r.AgentId].get("_processed"):
              continue
         
-        # Calculate Status
-        now_utc = datetime.utcnow()
-        # time_diff = (now_utc - r.Timestamp).total_seconds()
-        # Using server-side 2 min threshold for Online
-        computed_status = "Online" if (now_utc - r.Timestamp).total_seconds() < 120 else "Offline"
+        computed_status = "Online" if (datetime.utcnow() - r.Timestamp).total_seconds() < 120 else "Offline"
         
         if r.AgentId not in latest:
-             latest[r.AgentId] = {} # Should have been prefilled, but safe fallback
+             latest[r.AgentId] = {} 
 
         ts_str = r.Timestamp.isoformat()
         if not ts_str.endswith("Z"): ts_str += "Z"
@@ -79,10 +72,9 @@ async def get_dashboard_status(
             "memoryUsage": r.MemoryUsage,
             "timestamp": ts_str,
             "hostname": agents_map[r.AgentId].Hostname if r.AgentId in agents_map else "Unknown",
-            "_processed": True # Flag to skip older reports for this agent
+            "_processed": True 
         })
 
-    # Remove the internal flag before return
     for v in latest.values():
         if "_processed" in v: del v["_processed"]
 
@@ -97,6 +89,10 @@ async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
+    # Enforce Tenant Isolation
+    if current_user.Role != "SuperAdmin":
+        tenantId = current_user.TenantId
+
     # 0. Time Range Logic
     now_utc = datetime.utcnow()
     
@@ -104,7 +100,7 @@ async def get_dashboard_stats(
         try:
             start_dt = datetime.fromisoformat(from_date.replace('Z', '+00:00'))
         except:
-            start_dt = now_utc - timedelta(hours=hours) # Fallback
+            start_dt = now_utc - timedelta(hours=hours)
     else:
         start_dt = now_utc - timedelta(hours=hours)
 
@@ -116,28 +112,21 @@ async def get_dashboard_stats(
     else:
         end_dt = now_utc
 
-    # Ensure naive datetimes are treated as UTC if ISO parsing didn't set tz
     if start_dt.tzinfo is not None: start_dt = start_dt.replace(tzinfo=None)
     if end_dt.tzinfo is not None: end_dt = end_dt.replace(tzinfo=None)
 
     total_hours = (end_dt - start_dt).total_seconds() / 3600
     
-    # 1. Agent Stats (Online/Offline) - Snapshot (Always 'Now' for status, or could use range if supported)
-    # Status is typically "Current", so we keep the standard "Last 2 mins" check for Online/Offline counts
-    # regardless of history range, OR we can show "Active in range".
-    # Let's stick to CURRENT status for the gauge, but Trends for the range.
-    
     try:
         total_agents = 0
         online_agents = 0
         
-        # Get total registered agents
+        # 1. Agent Stats
         q_total = select(func.count(Agent.Id))
         if tenantId: q_total = q_total.where(Agent.TenantId == tenantId)
         total_res = await db.execute(q_total)
         total_agents = total_res.scalar() or 0
         
-        # Get Online Count (Active in last 2 mins)
         threshold_online = now_utc - timedelta(minutes=2)
         q_online = select(func.count(func.distinct(AgentReportEntity.AgentId))).where(AgentReportEntity.Timestamp >= threshold_online)
         if tenantId: q_online = q_online.where(AgentReportEntity.TenantId == tenantId)
@@ -166,13 +155,9 @@ async def get_dashboard_stats(
         
         if tenantId: q_trend = q_trend.where(AgentReportEntity.TenantId == tenantId)
         
-        # Limit rows to prevent massive fetch
         trend_res = await db.execute(q_trend.limit(5000)) 
         items = trend_res.all()
         
-        # Dynamic Grouping
-        # If range < 48h -> Group by Hour
-        # If range > 48h -> Group by Day
         group_by_day = total_hours > 48
         
         buckets = {}
@@ -194,37 +179,38 @@ async def get_dashboard_stats(
                 "full_date": k
             })
 
-    # 4. Threats (SQL)
+        # 4. Threats
         threats = {"total": 0, "byType": [], "trend": []}
+        # Note: EventLog doesn't strictly have TenantId column in some versions, but we should join or filter if possible.
+        # Assuming AgentId is the link. To strictly filter by Tenant, we'd need to join Agents table (or add TenantId to EventLog).
+        # For now, to be safe and given schema, we rely on AgentId match if we can, BUT EventLog in schema didn't show TenantId.
+        # FIX: We must filter EventLog by joining Agent table.
         try:
-            # Count by Type
-            q_type = select(EventLog.Type, func.count(EventLog.Id)).where(
-                (EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)
-            ).group_by(EventLog.Type)
+            q_type = select(EventLog.Type, func.count(EventLog.Id))
+            if tenantId:
+                q_type = q_type.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
+            
+            q_type = q_type.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)).group_by(EventLog.Type)
             
             res_type = await db.execute(q_type)
-            type_counts = res_type.all() # [(Type, Count), ...]
+            type_counts = res_type.all()
             
             total_threats = sum(c for _, c in type_counts)
             by_type = [{"type": t, "count": c} for t, c in type_counts]
             
-            # Trend (Complex to do purely in SQL agnostic way without specific date functions)
-            # For now, fetch generic list and aggregate in python if volume is low, or skip
-            # Let's do simple python aggregation for trend
-            q_trend = select(EventLog.Timestamp).where(
-                (EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)
-            ).order_by(EventLog.Timestamp)
+            q_trend = select(EventLog.Timestamp)
+            if tenantId:
+                q_trend = q_trend.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
+            q_trend = q_trend.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)).order_by(EventLog.Timestamp)
             
             res_trend = await db.execute(q_trend)
             trend_items = res_trend.scalars().all()
             
             format_str = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H:00"
             trend_buckets = {}
-            
             for ts in trend_items:
                 key = ts.strftime(format_str)
                 trend_buckets[key] = trend_buckets.get(key, 0) + 1
-                
             threat_trend = [{"time": k, "count": v} for k, v in sorted(trend_buckets.items())]
 
             threats = {
@@ -235,7 +221,7 @@ async def get_dashboard_stats(
         except Exception as e:
             print(f"[Dashboard] Threats Error: {e}")
 
-        # 5. Recent Logs (SQL ActivityLogs)
+        # 5. Recent Logs
         recent_logs = []
         try:
             q_logs = select(ActivityLogModel).where(
@@ -258,10 +244,9 @@ async def get_dashboard_stats(
         except Exception as e: 
              print(f"[Dashboard] Recent Logs Error: {e}")
 
-        # 6. Risky Assets (SQL)
+        # 6. Risky Assets
         risky_assets_data = []
         try:
-            # Count High Risk logs per agent
             q_risk = select(ActivityLogModel.AgentId, func.count(ActivityLogModel.Id).label("count"))\
                 .where((ActivityLogModel.Timestamp >= start_dt) & (ActivityLogModel.Timestamp <= end_dt))\
                 .where(ActivityLogModel.RiskLevel == "High")\
@@ -278,18 +263,15 @@ async def get_dashboard_stats(
         except Exception as e:
             print(f"[Dashboard] Risky Assets Error: {e}")
 
-        # 7. Productivity (Approx)
+        # 7. Productivity
         offline_ratio = (offline_agents / total_agents) if total_agents > 0 else 0
-        penalty_offline = offline_ratio * 100 * 0.5
-        days = max(1, total_hours / 24)
-        threats_per_day = total_threats / days
-        penalty_threats = min(50, threats_per_day * 2) 
-        score = max(0, min(100, 100 - penalty_offline - penalty_threats))
+        score = max(0, min(100, 100 - (offline_ratio * 50)))
 
-        # 8. Network (Stub)
-        net_in = round(online_agents * 0.5, 1)
-        net_out = round(online_agents * 0.2, 1) 
-
+        # 8. Network (Real Data Only)
+        # We generally do not have bandwidth data unless agents send it. 
+        # Using 0 for Mbps to indicate 'active but unknown bandwidth' or simply omitting if UI handles it.
+        # But for 'activeConnections', we use online_agents count.
+        
         return {
             "agents": {"total": total_agents, "online": online_agents, "offline": offline_agents},
             "resources": {
@@ -299,7 +281,11 @@ async def get_dashboard_stats(
             },
             "threats": threats,
             "recentLogs": recent_logs,
-            "network": {"inboundMbps": net_in, "outboundMbps": net_out, "activeConnections": online_agents * 4},
+            "network": {
+                "inboundMbps": 0, 
+                "outboundMbps": 0, 
+                "activeConnections": online_agents
+            },
             "riskyAssets": risky_assets_data,
             "productivity": {"globalScore": int(score)}
         }

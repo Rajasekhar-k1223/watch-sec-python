@@ -108,8 +108,34 @@ async def register_tenant(
     }
     agent_limit = limit_map.get(form_data.plan, 5) # Default to 5
 
-    # Extract IP
-    client_ip = request.client.host if request.client else "Unknown"
+    # Extract IP (Robust Proxy Support)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    real_ip = request.headers.get("X-Real-IP")
+    
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    elif real_ip:
+        client_ip = real_ip
+    else:
+        client_ip = request.client.host if request.client else "Unknown"
+
+    # 1.5. Validate IP Uniqueness (Anti-Spam / One Tenant Per IP)
+    # STRICT MODE: No exceptions for localhost. One tenant per IP.
+    ip_check = await db.execute(select(Tenant).where(Tenant.RegistrationIp == client_ip))
+    if ip_check.scalars().first():
+        raise HTTPException(
+            status_code=400, 
+            detail="Registration Limit Exceeded: A tenant is already registered from this IP address."
+        )
+        
+    # Check against Agents
+    from ..db.models import Agent
+    agent_check = await db.execute(select(Agent).where(Agent.PublicIp == client_ip))
+    if agent_check.scalars().first():
+         raise HTTPException(
+            status_code=400, 
+            detail="Registration Limit Exceeded: An Agent is already active from this IP address."
+        )
 
     new_tenant = Tenant(
         Name=form_data.tenantName,
