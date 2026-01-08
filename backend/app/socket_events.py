@@ -87,22 +87,10 @@ async def disconnect(sid):
 
 @sio.on('join')
 async def on_join(sid, data):
-    session = await sio.get_session(sid)
-    role = session.get('role')
-    user_tenant_id = session.get('tenant_id')
-    
     room = data.get('room')
     if not room:
         return
 
-    # 1. Tenant Room Check
-    if room.startswith('tenant_'):
-        try:
-            target_id = int(room.split('_')[1])
-            if role != 'SuperAdmin' and user_tenant_id != target_id:
-                print(f"[Socket.IO] blocked join tenant_{target_id} for user {session.get('username')}")
-                return 
-        except:
     session = await sio.get_session(sid)
     user = session.get("user")
     
