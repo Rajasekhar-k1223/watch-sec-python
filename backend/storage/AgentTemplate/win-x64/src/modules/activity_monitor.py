@@ -45,19 +45,32 @@ elif SYSTEM_OS == "Linux":
     except ImportError:
         pass
 
+# Windows Idle Detection
+if platform.system() == "Windows":
+    import ctypes
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    def get_idle_duration():
+        lastInputInfo = LASTINPUTINFO()
+        lastInputInfo.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lastInputInfo)):
+            millis = ctypes.windll.kernel32.GetTickCount() - lastInputInfo.dwTime
+            return millis / 1000.0
+        return 0
+else:
+    def get_idle_duration():
+        return 0
+
 class ActivityMonitor:
-    def __init__(self, agent_id, api_key, backend_url, interval=2.0):
+    def __init__(self, agent_id, api_key, backend_url, interval=5):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.interval = interval
         self.running = False
-        self._thread = None
-        self.current_window = {
-            "title": "",
-            "process": "",
-            "start_time": datetime.utcnow()
-        }
+        self.thread = None
+        self.current_window = {"process": "", "title": "", "start_time": datetime.utcnow()} # Init generic
         
         # Robust Session initialization
         self.session = requests.Session()
@@ -182,6 +195,15 @@ class ActivityMonitor:
                 proc, title = self._get_active_window()
                 
                 # Check for change
+                idle_sec = get_idle_duration()
+                
+                # Override: If idle > 300s (5 mins), consider "Idle"
+                if idle_sec > 300:
+                    proc = "System"
+                    title = "User Idle (Inactive)"
+                    # If we were already idle, do nothing (title matches)
+                    # If we were active, this triggers a "change" automatically because title != last_title
+
                 if proc != last_process or title != last_title:
                     now = datetime.utcnow()
                     

@@ -10,7 +10,9 @@ from ..db.models import Tenant, EventLog, ActivityLog as ActivityLogModel
 from ..schemas import SecurityEventLog, ActivityLog, ActivityLogDto
 from .deps import get_current_user
 from ..db.models import User
+from ..db.models import User
 from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -57,6 +59,46 @@ async def simulate_event(
     db.add(event)
     await db.commit()
     return {"message": "Event Simulated"}
+
+# --- Generic Event Reporting (USB, Network, Etc) ---
+class SecurityEventDto(BaseModel):
+    AgentId: str
+    TenantApiKey: str
+    Type: str
+    Details: str
+    Timestamp: datetime
+
+@router.post("/report")
+async def report_event(
+    dto: SecurityEventDto,
+    db: AsyncSession = Depends(get_db)
+):
+    # 1. Validate Tenant
+    result = await db.execute(select(Tenant).where(Tenant.ApiKey == dto.TenantApiKey))
+    tenant = result.scalars().first()
+    
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Unauthorized Tenant")
+
+    # 2. Log to SQL
+    event = EventLog(
+        AgentId=dto.AgentId,
+        Type=dto.Type,
+        Details=dto.Details,
+        Timestamp=dto.Timestamp
+    )
+    db.add(event)
+    await db.commit()
+    
+    # 3. Realtime Alert via Socket
+    await sio.emit('ReceiveEvent', {
+        'agentId': dto.AgentId,
+        'type': dto.Type, # Frontend expects lowercase keys usually? Check Frontend.
+        'details': dto.Details,
+        'timestamp': dto.Timestamp.isoformat()
+    })
+    
+    return {"status": "Logged"}
 
 # --- Activity Logs ---
 

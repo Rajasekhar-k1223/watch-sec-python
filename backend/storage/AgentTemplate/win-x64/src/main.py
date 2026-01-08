@@ -65,6 +65,10 @@ try:
     from modules.browser_enforcer import BrowserEnforcer
     from modules.remote_desktop import RemoteDesktopAgent
     from modules.webrtc_stream import WebRTCManager
+    # DLP Modules (New)
+    from modules.usb_monitor import UsbMonitor
+    from modules.network_monitor import NetworkMonitor
+    from modules.file_monitor import FileMonitor
     log_to_file("Modules Imported Successfully.")
 except Exception as e:
     log_to_file(f"CRITICAL IMPORT ERROR: {e}")
@@ -205,12 +209,29 @@ async def on_uninstall(data):
 fim = FileIntegrityMonitor(paths_to_watch=["."])
 net_scanner = NetworkScanner()
 proc_sec = ProcessSecurity()
-screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
+screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30) # Original line, kept for context
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
-# live_streamer = LiveStreamer(AGENT_ID, sio) # Deprecated in favor of WebRTC
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
+
+# DLP Modules
+usb_monitor = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+network_monitor = NetworkMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+file_monitor = FileMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+
+# --- Start Threads ---
+activity_mon.start()
+screen_cap.start() 
+
+usb_monitor.start()
+network_monitor.start()
+file_monitor.start()
+
+# Remote Desktop & WebRTC are manually started via Socket/API usually, or auto-start if configured
+remote_desktop.start() 
+
+print("[Main] All Monitoring Modules Initialized and Started.")
 
 
 async def system_monitor_loop():

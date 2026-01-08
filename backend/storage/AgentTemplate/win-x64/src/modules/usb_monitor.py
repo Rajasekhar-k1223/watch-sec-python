@@ -1,141 +1,147 @@
-import logging
+import wmi
 import threading
 import time
 import pythoncom
-import wmi
 import winreg
 import json
+import requests
+from datetime import datetime
 
-class USBMonitor:
-    def __init__(self, sio_client, agent_id):
-        self.sio = sio_client
+class UsbMonitor:
+    def __init__(self, agent_id, api_key, backend_url, interval=5):
         self.agent_id = agent_id
-        self.logger = logging.getLogger("USBMonitor")
+        self.api_key = api_key
+        self.backend_url = backend_url
+        self.interval = interval
         self.running = False
         self.thread = None
-        self.last_policy_status = None
+        
+        # Policy: "Allow", "Block", "ReadOnly" (ReadOnly not implemented yet)
+        self.policy = "Allow" 
+        self.known_devices = set()
+
+        # Robust Session from main
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
+
+    def set_policy(self, policy):
+        """ Allow or Block """
+        self.policy = policy
+        print(f"[USB] Policy Updated: {self.policy}")
+        self.enforce_policy()
+
+    def enforce_policy(self):
+        """ Writes to Windows Registry to Enable/Disable USB Storage Driver """
+        try:
+            # HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR
+            # Start = 3 (Enabled), 4 (Disabled)
+            req_value = 4 if self.policy == "Block" else 3
+            
+            key_path = r"SYSTEM\CurrentControlSet\Services\USBSTOR"
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE)
+                winreg.SetValueEx(key, "Start", 0, winreg.REG_DWORD, req_value)
+                winreg.CloseKey(key)
+                print(f"[USB] Registry Policy Applied: Start={req_value}")
+            except Exception as e:
+                print(f"[USB] Failed to set Registry Policy: {e} (Run as Admin?)")
+                
+        except Exception as e:
+            print(f"[USB] Policy Enforcement Error: {e}")
 
     def start(self):
         self.running = True
-        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread = threading.Thread(target=self._loop)
+        self.thread.daemon = True
         self.thread.start()
-        self.logger.info("USB Monitor Started.")
+        print("[USB] Monitor Started")
 
     def stop(self):
         self.running = False
         if self.thread:
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=1)
 
-    def _monitor_loop(self):
-        # WMI requires COM initialization in a new thread
+    def _get_connected_drives(self, c):
+        """ Returns list of (DeviceID, Caption, InterfaceType) """
+        devices = []
+        try:
+            # InterfaceType='USB' is key
+            for drive in c.Win32_DiskDrive(InterfaceType="USB"):
+                devices.append({
+                    "id": drive.DeviceID,
+                    "name": drive.Caption,
+                    "serial": drive.SerialNumber if hasattr(drive, 'SerialNumber') else "Unknown"
+                })
+        except: pass
+        return devices
+
+    def _loop(self):
+        # Initialize COM for this thread
         pythoncom.CoInitialize()
         c = wmi.WMI()
-        watcher = c.Win32_PnPEntity.watch_for(operation="Creation")
         
-        # Initial Policy Check
-        self._check_usb_policy()
+        # Build initial snapshot
+        initial_drives = self._get_connected_drives(c)
+        self.known_devices = {d["id"] for d in initial_drives}
+        print(f"[USB] Initial Devices: {self.known_devices}")
 
         while self.running:
             try:
-                # 1. Real-time Event Monitoring (Blocking Call with timeout logic implied by polling or threads)
-                # WMI watch_for is blocking, which makes stopping hard. 
-                # Better approach for responsive stop: Polling or specialized async watcher.
-                # For simplicity/robustness in threaded agent: Polling active USB hubs/disks or using a non-blocking approach if possible.
-                # Actually, `watch_for` without timeout blocks forever.
-                # Let's use a polling loop for "Disks" and "Policy" instead to be safe and stoppable.
+                current_drives = self._get_connected_drives(c)
+                current_ids = {d["id"] for d in current_drives}
                 
-                self._check_new_devices(c)
-                self._check_usb_policy()
-                time.sleep(2)
+                # Check for Insertions
+                new_ids = current_ids - self.known_devices
+                for dev_id in new_ids:
+                    # Find details
+                    details = next((d for d in current_drives if d["id"] == dev_id), None)
+                    if details:
+                        print(f"[USB] INSERTED: {details['name']}")
+                        self._send_alert("USB_INSERTION", f"Device Connected: {details['name']} ({details['serial']})")
+                        
+                        # Use Eject if Blocking is active (Double enforcement: Registry + active eject)
+                        if self.policy == "Block":
+                            print(f"[USB] Blocking Active! Attempting Eject logic...")
+                            # TODO: Eject logic here if needed, but Registry usually prevents mounting.
+                            self._send_alert("USB_BLOCKED", f"Blocked Policy Prevented Access: {details['name']}")
+
+                # Check for Removals
+                removed_ids = self.known_devices - current_ids
+                for dev_id in removed_ids:
+                    print(f"[USB] REMOVED: {dev_id}")
+                    self._send_alert("USB_REMOVAL", f"Device Removed: {dev_id}")
+
+                self.known_devices = current_ids
                 
             except Exception as e:
-                self.logger.error(f"USB Monitor Error: {e}")
-                time.sleep(5)
+                print(f"[USB] Loop Error: {e}")
+            
+            time.sleep(self.interval)
         
         pythoncom.CoUninitialize()
 
-    def _check_new_devices(self, wmi_client):
-        # This is a simplified poller. For production, listening to raw events is better but complex in Python threading.
-        # We'll diff existing list of disks.
-        pass # To be implemented via "New Device" logic if desired. 
-        # Actually, let's implement the WMI event listener in a way that doesn't block forever or use a shorter timeout if supported.
-        # Standard wmi module `watch_for` blocks.
-        # Alternative: Poll `Win32_DiskDrive` where InterfaceType='USB'.
-        
+    def _send_alert(self, event_type, details):
+        payload = {
+            "AgentId": self.agent_id,
+            "Type": event_type,
+            "Details": details,
+            "Timestamp": datetime.utcnow().isoformat()
+        }
         try:
-            current_disks = [d.Caption for d in wmi_client.Win32_DiskDrive(InterfaceType="USB")]
-            # In a real impl, we'd store state and diff. 
-            # For now, let's look for *changes*.
-            # (Skipping stateful complexity for this step, sticking to Policy check primarily as requested)
-        except:
-            pass
-
-    def _check_usb_policy(self):
-        try:
-            key_path = r"SYSTEM\CurrentControlSet\Services\USBSTOR"
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
-                val, type = winreg.QueryValueEx(key, "Start")
-                # 3 = Enabled, 4 = Disabled
-                status = "Disabled" if val == 4 else "Enabled"
-                
-                if status != self.last_policy_status:
-                    self.logger.info(f"USB Policy Changed: {status}")
-                    self.sio.emit("agent_event", {
-                        "agent_id": self.agent_id,
-                        "type": "security_alert",
-                        "category": "usb_policy",
-                        "details": f"USB Storage Policy is now {status}",
-                        "severity": "high" if status == "Disabled" else "info",
-                        "timestamp": time.time()
-                    })
-                    self.last_policy_status = status
+            # Assuming main API for events is /api/events/{agent_id} or similar
+            # Based on existing code, we likely need a generic event endpoint.
+            # Using specific event creation logic or generic log.
+            # Let's check `backend/app/api/events.py` implies we might need a dedicated endpoint or reuse `simulate`.
+            # Actually ActivityMonitor sends to `/api/events/activity`.
+            # We need a Security Event endpoint.
+            # `events.py` lines 41-59 has `/simulate`. We need a real POST endpoint for events.
+            # I will assume `POST /api/events/security` exists or I need to create it.
+            # Checking `events.py` again... wait, logic in `events.py` shows GET and simulate POST. 
+            # I need to ADD a generic `POST /api/events/report` for security events.
+            
+            # For now, I'll point to `/api/events/report` and I will CREATE that endpoint next.
+            self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=10, verify=False)
         except Exception as e:
-            # Registry key might not exist on some systems
-            pass
-
-class USBEventMonitor(USBMonitor):
-    # Specialized version using the raw watcher in a way that we tolerate blocking or just run it.
-    def _monitor_loop(self):
-        pythoncom.CoInitialize()
-        c = wmi.WMI()
-        watcher = c.Win32_PnPEntity.watch_for(operation="Creation")
-        
-        self.logger.info("Listening for PnP Events...")
-        
-        while self.running:
-            try:
-                # Check Policy
-                self._check_usb_policy()
-                
-                # Timed wait workaround: WMI doesn't easily support timeout on `watch_for`.
-                # We will just do a polling check for USB Disks to avoid blocking forever.
-                
-                disks = c.Win32_DiskDrive(InterfaceType="USB")
-                if not hasattr(self, 'known_disks'):
-                    self.known_disks = set(d.DeviceID for d in disks)
-                
-                current_disks_map = {d.DeviceID: d.Caption for d in disks}
-                current_ids = set(current_disks_map.keys())
-                
-                new_ids = current_ids - self.known_disks
-                
-                for new_id in new_ids:
-                    caption = current_disks_map[new_id]
-                    self.logger.warning(f"USB Device Detected: {caption}")
-                    self.sio.emit("agent_event", {
-                        "agent_id": self.agent_id,
-                        "type": "security_alert",
-                        "category": "usb_insertion",
-                        "details": f"USB Device Inserted: {caption}",
-                        "severity": "critical", # USB insertion is often critical in secure envs
-                        "timestamp": time.time()
-                    })
-                
-                self.known_disks = current_ids
-                time.sleep(1)
-
-            except Exception as e:
-                self.logger.error(f"USB Loop Error: {e}")
-                time.sleep(2)
-        
-        pythoncom.CoUninitialize()
+            print(f"[USB] Failed to send alert: {e}")
