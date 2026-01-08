@@ -45,6 +45,7 @@ async def get_dashboard_status(
         
         for agent_id, agent in agents_map.items():
             latest[agent_id] = {
+                "id": agent.Id,
                 "agentId": agent_id,
                 "status": "Offline",
                 "cpuUsage": 0,
@@ -67,7 +68,11 @@ async def get_dashboard_status(
             ts_str = r.Timestamp.isoformat()
             if not ts_str.endswith("Z"): ts_str += "Z"
 
+            # Get Database ID from map if possible
+            db_id = agents_map[r.AgentId].Id if r.AgentId in agents_map else None
+
             latest[r.AgentId].update({
+                "id": db_id,
                 "agentId": r.AgentId,
                 "status": computed_status,
                 "cpuUsage": r.CpuUsage,
