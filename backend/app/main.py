@@ -6,6 +6,15 @@ from sqlalchemy import text
 from .socket_instance import sio
 from .db.session import settings, engine
 
+from .api import (
+    auth, tenants, users, agents, install,
+    downloads, commands, events, mail, audit,
+    screenshots, policies, productivity, billing,
+    uploads, reports, dashboard, ai, system,
+    ocr, thesaurus, speech, hashbank, fingerprints,
+    searches, remote
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP: Check & Fix Database Schema ---
