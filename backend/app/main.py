@@ -1,18 +1,49 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
-
+from sqlalchemy import text
 from .socket_instance import sio
-from .db.session import settings
+from .db.session import settings, engine
 
-from .api import (
-    auth, tenants, users, agents, install,
-    downloads, commands, events, mail, audit,
-    screenshots, policies, productivity, billing,
-    uploads, reports, dashboard, ai, system,
-    ocr, thesaurus, speech, hashbank, fingerprints,
-    searches, remote
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP: Check & Fix Database Schema ---
+    print("--- STARTUP: Checking Database Schema ---")
+    try:
+        async with engine.begin() as conn:
+            # List of columns to check/add in 'Agents' table
+            # Format: (ColumnName, ColumnType)
+            new_columns = [
+                ("LocationTrackingEnabled", "TINYINT(1) DEFAULT 0"),
+                ("UsbBlockingEnabled", "TINYINT(1) DEFAULT 0"),
+                ("NetworkMonitoringEnabled", "TINYINT(1) DEFAULT 0"),
+                ("FileDlpEnabled", "TINYINT(1) DEFAULT 0"),
+            ]
+            
+            for col_name, col_type in new_columns:
+                try:
+                    # Attempt to add the column. 
+                    # If it exists, this might fail depending on DB version/strictness, 
+                    # or we can check information_schema first. 
+                    # But 'try-except' is robust for "Duplicate column name" error (1060).
+                    print(f"Checking/Adding column '{col_name}' to Agents...")
+                    await conn.execute(text(f"ALTER TABLE Agents ADD COLUMN {col_name} {col_type}"))
+                    print(f" -> Added '{col_name}' successfully.")
+                except Exception as e:
+                    # Ignore if "Duplicate column name" (Error 1060)
+                    if "1060" in str(e) or "Duplicate column" in str(e):
+                        print(f" -> Column '{col_name}' already exists. Skipping.")
+                    else:
+                        print(f" -> Error adding '{col_name}': {e}")
+            
+    except Exception as e:
+        print(f"--- STARTUP ERROR: Database Migration Failed: {e} ---")
+
+    yield
+    # --- SHUTDOWN ---
+    print("--- SHUTDOWN ---")
+
 
 # ======================================================
 # FastAPI App
@@ -20,6 +51,7 @@ from .api import (
 app = FastAPI(
     title="WatchSec Backend",
     version="2.1.0-FIXED",
+    lifespan=lifespan,
 )
 
 # ======================================================
