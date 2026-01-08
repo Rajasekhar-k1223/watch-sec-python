@@ -27,6 +27,7 @@ app = FastAPI(
 # ======================================================
 ALLOWED_ORIGINS = [
     "https://monitorix.up.railway.app",
+    "https://monitorix.up.railway.app/",
     "http://localhost:3000",
     "http://localhost:5173",
 ]

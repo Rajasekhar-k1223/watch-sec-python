@@ -16,6 +16,22 @@ from .deps import get_current_user
 
 router = APIRouter()
 
+class ReportDto(BaseModel):
+    id: int
+    title: str
+    date: datetime
+    status: str
+    url: str
+
+@router.get("/reports", response_model=list[ReportDto])
+async def list_reports():
+    # Mock response for now
+    return []
+
+@router.post("/reports/generate")
+async def generate_report():
+    return {"status": "success", "message": "Report generation started"}
+
 # --- History Endpoint ---
 @router.get("/history/{agent_id}")
 async def get_agent_history(
