@@ -33,6 +33,11 @@ router = APIRouter()
 STORAGE_BASE = "storage/Screenshots"
 
 @router.get("/list/{agent_id}", response_model=List[ScreenshotDto])
+async def list_screenshots(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     # Tenant Check
     # We must verifying Agent belongs to this user's Tenant
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
