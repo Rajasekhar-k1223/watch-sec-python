@@ -28,21 +28,30 @@ async def get_agents(
     agents = result.scalars().all()
     return agents
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_identifier}")
 async def delete_agent(
-    agent_id: int, # Database ID
+    agent_identifier: str, # Accepts Database ID (int) OR Agent ID (string)
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
 ):
     if current_user.Role != "SuperAdmin" and current_user.Role != "TenantAdmin":
          raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Find Agent
-    result = await db.execute(select(Agent).where(Agent.Id == agent_id))
-    agent = result.scalars().first()
+    # Try to resolve agent
+    agent = None
     
+    # 1. Try as Integer Database ID
+    if agent_identifier.isdigit():
+        result = await db.execute(select(Agent).where(Agent.Id == int(agent_identifier)))
+        agent = result.scalars().first()
+    
+    # 2. If not found or not integer, try as String Agent ID
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        result = await db.execute(select(Agent).where(Agent.AgentId == agent_identifier))
+        agent = result.scalars().first()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found by ID or String ID")
         
     # Check Tenant Scoping
     if current_user.Role == "TenantAdmin" and agent.TenantId != current_user.TenantId:
