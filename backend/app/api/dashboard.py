@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func, case
@@ -17,68 +18,73 @@ async def get_dashboard_status(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
-    # Enforce Tenant Isolation
-    if current_user.Role != "SuperAdmin":
-        tenantId = current_user.TenantId
+    try:
+        # Enforce Tenant Isolation
+        if current_user.Role != "SuperAdmin":
+            tenantId = current_user.TenantId
 
-    # 1. Fetch Agents for metadata
-    agent_query = select(Agent)
-    if tenantId:
-       agent_query = agent_query.where(Agent.TenantId == tenantId)
-    agent_result = await db.execute(agent_query)
-    agents_map = {a.AgentId: a for a in agent_result.scalars().all()}
+        # 1. Fetch Agents for metadata
+        agent_query = select(Agent)
+        if tenantId:
+           agent_query = agent_query.where(Agent.TenantId == tenantId)
+        agent_result = await db.execute(agent_query)
+        agents_map = {a.AgentId: a for a in agent_result.scalars().all()}
 
-    # 2. Fetch Latest Reports for Status Calculation
-    query = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
-    if tenantId:
-        query = query.where(AgentReportEntity.TenantId == tenantId)
-    
-    threshold = datetime.utcnow() - timedelta(hours=24)
-    query = query.where(AgentReportEntity.Timestamp >= threshold)
-
-    result = await db.execute(query)
-    all_reports = result.scalars().all()
-
-    latest = {}
-    
-    for agent_id, agent in agents_map.items():
-        latest[agent_id] = {
-            "agentId": agent_id,
-            "status": "Offline",
-            "cpuUsage": 0,
-            "memoryUsage": 0,
-            "timestamp": agent.LastSeen.isoformat() if agent.LastSeen else datetime.utcnow().isoformat(),
-            "hostname": agent.Hostname or "Unknown",
-            "latitude": 0.0,
-            "longitude": 0.0
-        }
-
-    for r in all_reports:
-        if r.AgentId in latest and latest[r.AgentId].get("_processed"):
-             continue
+        # 2. Fetch Latest Reports for Status Calculation
+        query = select(AgentReportEntity).order_by(desc(AgentReportEntity.Timestamp))
+        if tenantId:
+            query = query.where(AgentReportEntity.TenantId == tenantId)
         
-        computed_status = "Online" if (datetime.utcnow() - r.Timestamp).total_seconds() < 120 else "Offline"
+        threshold = datetime.utcnow() - timedelta(hours=24)
+        query = query.where(AgentReportEntity.Timestamp >= threshold)
+
+        result = await db.execute(query)
+        all_reports = result.scalars().all()
+
+        latest = {}
         
-        if r.AgentId not in latest:
-             latest[r.AgentId] = {} 
+        for agent_id, agent in agents_map.items():
+            latest[agent_id] = {
+                "agentId": agent_id,
+                "status": "Offline",
+                "cpuUsage": 0,
+                "memoryUsage": 0,
+                "timestamp": agent.LastSeen.isoformat() if agent.LastSeen else datetime.utcnow().isoformat(),
+                "hostname": agent.Hostname or "Unknown",
+                "latitude": 0.0,
+                "longitude": 0.0
+            }
 
-        ts_str = r.Timestamp.isoformat()
-        if not ts_str.endswith("Z"): ts_str += "Z"
+        for r in all_reports:
+            if r.AgentId in latest and latest[r.AgentId].get("_processed"):
+                 continue
+            
+            computed_status = "Online" if (datetime.utcnow() - r.Timestamp).total_seconds() < 120 else "Offline"
+            
+            if r.AgentId not in latest:
+                 latest[r.AgentId] = {} 
 
-        latest[r.AgentId].update({
-            "agentId": r.AgentId,
-            "status": computed_status,
-            "cpuUsage": r.CpuUsage,
-            "memoryUsage": r.MemoryUsage,
-            "timestamp": ts_str,
-            "hostname": agents_map[r.AgentId].Hostname if r.AgentId in agents_map else "Unknown",
-            "_processed": True 
-        })
+            ts_str = r.Timestamp.isoformat()
+            if not ts_str.endswith("Z"): ts_str += "Z"
 
-    for v in latest.values():
-        if "_processed" in v: del v["_processed"]
+            latest[r.AgentId].update({
+                "agentId": r.AgentId,
+                "status": computed_status,
+                "cpuUsage": r.CpuUsage,
+                "memoryUsage": r.MemoryUsage,
+                "timestamp": ts_str,
+                "hostname": agents_map[r.AgentId].Hostname if r.AgentId in agents_map else "Unknown",
+                "_processed": True 
+            })
 
-    return list(latest.values())
+        for v in latest.values():
+            if "_processed" in v: del v["_processed"]
+
+        return list(latest.values())
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()})
 
 @router.get("/dashboard/stats")
 async def get_dashboard_stats(
@@ -292,7 +298,7 @@ async def get_dashboard_stats(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise e
+        return JSONResponse(status_code=500, content={"detail": str(e), "trace": traceback.format_exc()})
 
 @router.get("/dashboard/topology")
 async def get_network_topology(
