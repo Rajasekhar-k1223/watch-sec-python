@@ -18,6 +18,11 @@ opts = [
     '--clean',
     '--distpath=dist',
     '--workpath=build',
+    '--hidden-import=jaraco.text',
+    '--hidden-import=jaraco.classes',
+    '--hidden-import=jaraco.functools',
+    '--hidden-import=jaraco.context',
+    '--hidden-import=platformdirs',
 ]
 
 if platform.system() == "Windows":
