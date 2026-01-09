@@ -66,17 +66,11 @@ app = FastAPI(
 # ======================================================
 # CORS — SINGLE SOURCE OF TRUTH
 # ======================================================
-ALLOWED_ORIGINS = [
-    "https://monitorix.up.railway.app",
-    "https://monitorix.up.railway.app/",
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
+ALLOWED_ORIGINS = settings.BACKEND_CORS_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.railway\.app|http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

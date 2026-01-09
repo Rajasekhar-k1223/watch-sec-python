@@ -26,10 +26,8 @@ class Settings(BaseSettings):
     # CORS
     # =========================
     BACKEND_CORS_ORIGINS: str | list[str] = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:3000",
-        "https://monitorix.up.railway.app",
+        "https://monitorix.co.in",
+        "https://www.monitorix.co.in",
     ]
 
     model_config = SettingsConfigDict(
@@ -46,6 +44,13 @@ class Settings(BaseSettings):
         elif isinstance(v, (list, str)):
             return v
         raise ValueError(v)
+
+    @field_validator("DATABASE_URL", "MONGO_URL", mode="before")
+    @classmethod
+    def strip_quotes(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip('"').strip("'")
+        return v
 
 
 settings = Settings()

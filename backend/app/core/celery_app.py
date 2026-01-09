@@ -2,8 +2,11 @@ import os
 from celery import Celery
 
 # Default to local Redis if not set
-CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://default:jKitLvLgbzIcEdttPdeecllDxzuuughO@turntable.proxy.rlwy.net:35861")
-CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://default:jKitLvLgbzIcEdttPdeecllDxzuuughO@turntable.proxy.rlwy.net:35861")
+#CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://default:jKitLvLgbzIcEdttPdeecllDxzuuughO@turntable.proxy.rlwy.net:35861")
+#CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://default:jKitLvLgbzIcEdttPdeecllDxzuuughO@turntable.proxy.rlwy.net:35861")
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND")
 
 celery_app = Celery(
     "watchsec",
