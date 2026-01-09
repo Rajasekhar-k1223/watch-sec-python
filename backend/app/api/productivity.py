@@ -31,50 +31,60 @@ async def get_productivity_summary(
     
     logs = await cursor.to_list(length=10000)
     
-    productive_seconds = 0.0
-    unproductive_seconds = 0.0
-    neutral_seconds = 0.0
+    effective_productive = 0.0
+    effective_unproductive = 0.0
+    effective_neutral = 0.0
+    total_idle = 0.0
     
-    # Basic Classification Logic (Mock)
-    productive_apps = ["code", "visual studio", "chrome", "teams", "slack", "outlook"]
-    unproductive_apps = ["netflix", "facebook", "youtube", "steam", "spotify"]
+    # Fallback Classification Logic (Legacy)
+    legacy_productive = ["code", "visual studio", "chrome", "teams", "slack", "outlook"]
+    legacy_unproductive = ["netflix", "facebook", "youtube", "steam", "spotify"]
     
     top_apps = {} # Key: ProcessName, Val: {duration, category}
     
     for log in logs:
         proc = (log.get("ProcessName") or "Unknown").strip()
         title = (log.get("WindowTitle") or "").lower()
-        duration = float(log.get("DurationSeconds", 0))
         
-        # Categorize
-        cat = "Neutral"
-        proc_lower = proc.lower()
+        raw_duration = float(log.get("DurationSeconds", 0))
+        idle_time = float(log.get("IdleSeconds", 0))
         
-        is_prod = any(app in proc_lower for app in productive_apps)
-        is_unprod = any(app in proc_lower or app in title for app in unproductive_apps)
+        # Clamp idle time to duration just in case
+        if idle_time > raw_duration: idle_time = raw_duration
         
-        if is_prod:
-            cat = "Productive"
-            productive_seconds += duration
-        elif is_unprod:
-            cat = "Unproductive"
-            unproductive_seconds += duration
+        active_duration = raw_duration - idle_time
+        total_idle += idle_time
+        
+        # Determine Category
+        cat = log.get("Category", "Neutral")
+        
+        # Fallback if DB category is missing or Neutral (try to smart-guess generic logs)
+        if cat == "Neutral":
+             proc_lower = proc.lower()
+             if any(app in proc_lower for app in legacy_productive): cat = "Productive"
+             elif any(app in proc_lower or app in title for app in legacy_unproductive): cat = "Unproductive"
+        
+        if cat == "Productive":
+            effective_productive += active_duration
+        elif cat == "Unproductive":
+            effective_unproductive += active_duration
         else:
-            cat = "Neutral"
-            neutral_seconds += duration
+            effective_neutral += active_duration
 
         # Aggregate for Top Apps
         if proc not in top_apps:
             top_apps[proc] = {"duration": 0.0, "category": cat}
-        top_apps[proc]["duration"] += duration
-        # Update category if it changes (simple heuristic: allow overwrite or stick to first? stick to calc)
+        top_apps[proc]["duration"] += raw_duration # Use RAW duration for "Time Open"
         top_apps[proc]["category"] = cat 
              
-    total = productive_seconds + unproductive_seconds + neutral_seconds
+    total_active = effective_productive + effective_unproductive + effective_neutral
+    total_time = total_active + total_idle
+    
     score = 0
-    if total > 0:
-        score = int((productive_seconds / total) * 100)
-        
+    if total_active > 0:
+        # Score based on Active Time only
+        score = int((effective_productive / total_active) * 100)
+    
     # Sort and Format Top Apps
     sorted_apps = sorted(top_apps.items(), key=lambda x: x[1]['duration'], reverse=True)[:10]
     final_top_apps = [
@@ -84,11 +94,12 @@ async def get_productivity_summary(
         
     return {
         "score": score,
-        "totalSeconds": total,
+        "totalSeconds": total_time,
         "breakdown": {
-            "productive": productive_seconds,
-            "unproductive": unproductive_seconds,
-            "neutral": neutral_seconds
+            "productive": effective_productive,
+            "unproductive": effective_unproductive,
+            "neutral": effective_neutral,
+            "idle": total_idle
         },
         "topApps": final_top_apps,
         "agentId": agent_id

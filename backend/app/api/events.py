@@ -126,6 +126,9 @@ async def get_activity_logs(
                 "WindowTitle": l.get("WindowTitle"),
                 "Url": l.get("Url"),
                 "DurationSeconds": l.get("DurationSeconds", 0),
+                "IdleSeconds": l.get("IdleSeconds", 0),
+                "Category": l.get("Category", "Neutral"),
+                "ProductivityScore": l.get("ProductivityScore", 0),
                 "RiskScore": l.get("RiskScore", 0),
                 "RiskLevel": l.get("RiskLevel", "Normal"),
                 "Timestamp": l.get("Timestamp")
@@ -210,6 +213,9 @@ async def log_activity(
             'WindowTitle': dto.WindowTitle,
             'Url': dto.Url,
             'DurationSeconds': dto.DurationSeconds,
+            'IdleSeconds': dto.IdleSeconds,
+            'Category': dto.Category,
+            'ProductivityScore': dto.ProductivityScore,
             'RiskLevel': risk_level,
             'Timestamp': dto.Timestamp.isoformat()
         }, room=room_name)

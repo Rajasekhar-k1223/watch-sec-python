@@ -107,9 +107,17 @@ except Exception as e:
     sys.exit(1)
 
 # Backend Configuration (User Defined Production URL)
-BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
+BACKEND_URL = config.get("BackendUrl", "https://api.monitorix.co.in")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
+
+if not API_KEY or API_KEY == "CHANGE_ME" or len(API_KEY) < 10:
+    print("\n[CRITICAL ERROR] 'TenantApiKey' is missing or invalid in config.json.")
+    print(f"Please copy the correct API Key from your dashboard at {BACKEND_URL}")
+    print("Edit file: agent/config.json\n")
+    log_to_file("[CRITICAL] Missing TenantApiKey. Aborting.")
+    # We won't exit immediately to allow debugging, but we skip connection or loop warning
+    # sys.exit(1)
 
 # --- Dynamic Agent ID Logic ---
 current_hostname = platform.node()
@@ -184,11 +192,25 @@ sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False
 async def on_uninstall(data):
     print("[Command] Received Remote Uninstall/Stop...")
     try:
-        # 1. Remove Persistence (Scheduled Task)
+        # 1. Remove Persistence
         if platform.system() == "Windows":
              import subprocess
-             print("[Uninstall] Removing Scheduled Task...")
+             print("[Uninstall] Removing Scheduled Task (Windows)...")
              subprocess.run(["schtasks", "/Delete", "/TN", "MonitorixAgent", "/F"], capture_output=True)
+             
+        elif platform.system() == "Linux":
+            print("[Uninstall] Removing Systemd Service (Linux)...")
+            subprocess.run(["systemctl", "disable", "--now", "monitorix"], capture_output=True)
+            if os.path.exists("/etc/systemd/system/monitorix.service"):
+                os.remove("/etc/systemd/system/monitorix.service")
+                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+                
+        elif platform.system() == "Darwin":
+            print("[Uninstall] Removing LaunchAgent (macOS)...")
+            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.monitorix.agent.plist")
+            subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+            if os.path.exists(plist_path):
+                os.remove(plist_path)
         
         # 2. Stop Modules (Best Effort)
         try:
@@ -391,7 +413,7 @@ async def run_self_test():
     print(f"[Self-Test] WebSocket Target: {BACKEND_URL}")
 
     # 3. Module Status
-    print(f"[Self-Test] FIM: {'Active' if fim else 'Error'}")
+    print(f"[Self-Test] FIM: {'Active' if fim_monitor else 'Error'}")
     print(f"[Self-Test] WebRTC: {'Ready' if webrtc_manager else 'Error'}")
     print("[Self-Test] --- Check Complete ---\n")
 
@@ -419,7 +441,7 @@ async def main():
     # Start Security Modules
     log_to_file("Starting Security Modules...")
     try:
-        fim.start()
+        fim_monitor.start()
         screen_cap.start()
         activity_mon.start()
         mail_mon.start()

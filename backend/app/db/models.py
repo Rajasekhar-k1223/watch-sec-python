@@ -139,6 +139,9 @@ class ActivityLog(Base):
     WindowTitle = Column(Text, nullable=True)
     Url = Column(Text, nullable=True)
     DurationSeconds = Column(Float, default=0.0)
+    IdleSeconds = Column(Float, default=0.0) # [NEW]
+    Category = Column(String(50), default="Neutral") # [NEW]
+    ProductivityScore = Column(Float, default=0.0) # [NEW]
     RiskScore = Column(Float, default=0.0)
     RiskLevel = Column(String(50), default="Normal")
     Timestamp = Column(DateTime, default=datetime.utcnow)

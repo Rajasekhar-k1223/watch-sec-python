@@ -1,5 +1,5 @@
 {
-    "BackendUrl": "https://watch-sec-python.up.railway.app",
+    "BackendUrl": "https://api.monitorix.co.in",
     "TenantApiKey": "e7cdae55-2e7e-467a-bdc5-3cbf5d321368",
     "AgentId": "Hostname-Username-UniqueId"
 }

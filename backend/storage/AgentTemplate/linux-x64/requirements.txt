@@ -1,0 +1,23 @@
+requests==2.31.0
+psutil==5.9.8
+python-socketio[client]==5.10.0
+emoji==2.10.0
+watchdog==3.0.0
+mss==9.0.1
+pyinstaller==6.3.0
+
+cx_Freeze
+aiohttp>=3.9.0
+
+Pillow==10.2.0
+aiortc
+av
+numpy
+opencv-python
+# OS Specific
+pywin32; sys_platform == 'win32'
+pypiwin32; sys_platform == 'win32'
+wmi; sys_platform == 'win32'
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+python-xlib; sys_platform == 'linux'
+

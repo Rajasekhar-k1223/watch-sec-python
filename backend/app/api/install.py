@@ -80,3 +80,18 @@ async def validate_device(req: ValidateRequest, db: AsyncSession = Depends(get_d
              )
 
     return {"Status": "Authorization Required", "Message": "This device is not in the trusted network. Admin has been notified."}
+
+# [NEW] OTP Generation for Installation
+import random
+import string
+
+@router.post("/token")
+async def generate_install_token(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # Simple 6-digit OTP
+    otp = ''.join(random.choices(string.digits, k=6))
+    
+    # In a real app, store this in Redis or DB with expiration
+    # For now, we just return it to display in UI (stateless or assume valid for short time)
+    # Ideally, save to Tenant.InstallToken or similar if needed for validation
+    
+    return {"token": otp}

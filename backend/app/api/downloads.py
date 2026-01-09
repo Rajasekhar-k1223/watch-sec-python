@@ -99,16 +99,23 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
         payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type={os_type.lower()}&payload=true"
 
         install_script = f"""#!/bin/bash
-# Monitorix Installer
+# Monitorix Agent Installer (Source Mode)
 API_KEY="{tenant.ApiKey}"
 BACKEND_URL="{backend_url}"
 PAYLOAD_URL="{payload_url}"
 
-echo "--- Monitorix Agent Installer ---"
+echo "--- Monitorix Agent Installer (Cross-Platform) ---"
 
-echo "[1/4] Creating Directory..."
+# 0. Check Prerequisites
+if ! command -v python3 &> /dev/null; then
+    echo "Error: python3 is required."
+    echo "Please install it (e.g., 'sudo apt install python3 python3-pip' or 'brew install python3')"
+    exit 1
+fi
+
+echo "[1/5] Creating Directory..."
 mkdir -p ./monitorix-agent
-dir_name="./monitorix-agent"
+dir_name="$(pwd)/monitorix-agent"
 
 # Bear Animation Function
 show_bear_progress() {{
@@ -133,7 +140,7 @@ show_bear_progress() {{
     printf "\\r\\033[1;32m(^-^) Download Complete!   \\033[0m\\n"
 }}
 
-echo "[2/4] Downloading Agent Payload..."
+echo "[2/5] Downloading Agent Source..."
 if command -v curl &> /dev/null; then
     # Background curl, show animation
     curl -L "$PAYLOAD_URL" -o agent.zip -s &
@@ -150,54 +157,99 @@ else
     exit 1
 fi
 
-echo "[3/4] Extracting..."
+echo "[3/5] Extracting..."
 if ! command -v unzip &> /dev/null; then
-    echo "Error: unzip is required. Please install it (apt install unzip / yum install unzip)."
+    echo "Error: unzip is required. Please install it."
     exit 1
 fi
 unzip -o agent.zip -d "$dir_name" > /dev/null
 rm agent.zip
 
-echo "[4/4] Configuring..."
-echo '{json.dumps(config_data)}' > "$dir_name/config.json"
-
-# Make executable
-chmod +x "$dir_name/monitorix" 2>/dev/null || true
-chmod +x "$dir_name/src/main.py" 2>/dev/null || true
-
-# Rename wrapper if needed (we renamed it on server, but just in case)
-if [ -f "$dir_name/monitorix-agent" ]; then
-    mv "$dir_name/monitorix-agent" "$dir_name/monitorix"
+echo "[4/5] Installing Dependencies..."
+if [ -f "$dir_name/requirements.txt" ]; then
+    echo "Installing Python requirements..."
+    python3 -m pip install -r "$dir_name/requirements.txt" --break-system-packages 2>/dev/null || python3 -m pip install -r "$dir_name/requirements.txt"
+else
+    echo "Warning: requirements.txt not found."
 fi
 
-# Create Systemd Service
-SERVICE_FILE="/etc/systemd/system/monitorix.service"
-if [ -d "/etc/systemd/system" ]; then
-    echo "[5/4] Installing Service..."
-    cat > $SERVICE_FILE <<EOF
+echo "[5/5] Configuring..."
+echo '{json.dumps(config_data)}' > "$dir_name/config.json"
+
+# Create Systemd Service (Linux)
+if [ "$(uname)" = "Linux" ] && [ -d "/etc/systemd/system" ]; then
+    SERVICE_FILE="/etc/systemd/system/monitorix.service"
+    echo "Installing Systemd Service..."
+    
+    if [ "$EUID" -ne 0 ]; then
+        echo "Note: Service installation requires root. Your password may be requested for sudo."
+        SUDO="sudo"
+    else
+        SUDO=""
+    fi
+
+    $SUDO bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=Monitorix Security Agent
 After=network.target
 
 [Service]
 Type=simple
-User=root
+User=$USER
 WorkingDirectory=$dir_name
-ExecStart=$dir_name/monitorix
+ExecStart=$(which python3) $dir_name/src/main.py
 Restart=always
 RestartSec=5
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable monitorix
-    systemctl restart monitorix
+    $SUDO systemctl daemon-reload 2>/dev/null
+    $SUDO systemctl enable monitorix 2>/dev/null
+    $SUDO systemctl restart monitorix 2>/dev/null
     echo "Service installed and started!"
+
+# Create LaunchAgent (macOS)
+elif [ "$(uname)" = "Darwin" ]; then
+    PLIST_DIR="$HOME/Library/LaunchAgents"
+    PLIST_FILE="$PLIST_DIR/com.monitorix.agent.plist"
+    
+    mkdir -p "$PLIST_DIR"
+    
+    cat > "$PLIST_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.monitorix.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$(which python3)</string>
+        <string>$dir_name/src/main.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$dir_name/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>$dir_name/agent.err</string>
+</dict>
+</plist>
+EOF
+    
+    echo "Installing LaunchAgent..."
+    launchctl unload "$PLIST_FILE" 2>/dev/null
+    launchctl load "$PLIST_FILE"
+    echo "Agent started via launchctl!"
+
 else
-    echo "Done! To start the agent manually:"
+    echo "Manual Start Required:"
     echo "  cd $dir_name"
-    echo "  ./monitorix"
+    echo "  python3 src/main.py"
 fi
 """
 
@@ -297,40 +349,56 @@ async def download_agent(
     return _serve_agent_package(os_type, tenant, backend_url, serve_payload=payload, format_type=format)
 
 @router.get("/public/payload")
-async def get_payload_binary(key: str, db: AsyncSession = Depends(get_db)):
-    # Serve the raw EXE (29MB or Split 106MB)
+async def get_payload_binary(key: str, os_type: str = "windows", db: AsyncSession = Depends(get_db)):
+    # Serve the raw Binary (Split or Single)
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     base_path = "storage"
-    template_dir = os.path.join(base_path, "AgentTemplate", "win-x64")
-    exe_path = os.path.join(template_dir, "monitorix-agent.exe")
     
-    # 1. Check for Single File (Small Build)
-    if os.path.exists(exe_path):
-        return FileResponse(exe_path, media_type="application/vnd.microsoft.portable-executable", filename="monitorix-agent.exe")
+    # OS Path Resolution
+    template_folder_map = {
+        "linux": "linux-x64",
+        "mac": "osx-x64",
+        "windows": "win-x64"
+    }
+    folder_name = template_folder_map.get(os_type.lower(), "win-x64")
+    template_dir = os.path.join(base_path, "AgentTemplate", folder_name)
     
-    # 2. Check for Split Files (Large Build)
-    part_0 = os.path.join(template_dir, "monitorix-agent.exe.part0")
+    # Binary Name Resolution
+    binary_name = "monitorix-agent.exe"
+    if os_type.lower() == "linux": binary_name = "monitorix-agent-linux"
+    elif os_type.lower() == "mac": binary_name = "monitorix-agent-mac"
+    
+    binary_path = os.path.join(template_dir, binary_name)
+    
+    # 1. Check for Single File
+    if os.path.exists(binary_path):
+        media_type = "application/octet-stream"
+        if os_type.lower() == "windows": media_type = "application/vnd.microsoft.portable-executable"
+        return FileResponse(binary_path, media_type=media_type, filename=binary_name)
+    
+    # 2. Check for Split Files
+    part_0 = os.path.join(template_dir, f"{binary_name}.part0")
     if os.path.exists(part_0):
         # Generator to stream parts sequentially
         import aiofiles
         async def iterfile():
             part_num = 0
             while True:
-                part_file = os.path.join(template_dir, f"monitorix-agent.exe.part{part_num}")
+                part_file = os.path.join(template_dir, f"{binary_name}.part{part_num}")
                 if not os.path.exists(part_file):
                     break
                 async with aiofiles.open(part_file, "rb") as f:
-                    while chunk := await f.read(1024 * 1024): # 1MB Chunk (Smoother, Non-Blocking)
+                    while chunk := await f.read(1024 * 1024): # 1MB Chunk
                         yield chunk
                 part_num += 1
                 
-        return StreamingResponse(iterfile(), media_type="application/vnd.microsoft.portable-executable", headers={"Content-Disposition": "attachment; filename=monitorix-agent.exe"})
+        return StreamingResponse(iterfile(), media_type="application/octet-stream", headers={"Content-Disposition": f"attachment; filename={binary_name}"})
 
-    raise HTTPException(status_code=404, detail="Agent Binary Not Found (Split or Single)")
+    raise HTTPException(status_code=404, detail=f"Agent Binary Not Found in {folder_name}")
 
 @router.get("/script")
 async def get_install_script(request: Request, key: str, db: AsyncSession = Depends(get_db)):
@@ -383,8 +451,6 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
         """
         return Response(content=limit_script, media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="install.ps1"'})
     
-    # 2. Generate PowerShell Stager
-
     # 2. Generate PowerShell Stager
     payload_url = f"{backend_url}/api/downloads/public/payload?key={key}"
     

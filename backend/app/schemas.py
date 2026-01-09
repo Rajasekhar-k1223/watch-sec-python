@@ -19,6 +19,9 @@ class ActivityLog(BaseModel):
     ProcessName: str
     Url: Optional[str] = None
     DurationSeconds: float
+    IdleSeconds: float = 0.0
+    Category: Optional[str] = "Neutral"
+    ProductivityScore: Optional[float] = 0.0
     Timestamp: datetime
     RiskScore: Optional[float] = 0.0
     RiskLevel: Optional[str] = "Normal"
@@ -49,6 +52,9 @@ class ActivityLogDto(BaseModel):
     ProcessName: str
     Url: Optional[str] = None
     DurationSeconds: float
+    IdleSeconds: float = 0.0
+    Category: Optional[str] = "Neutral"
+    ProductivityScore: Optional[float] = 0.0
     Timestamp: datetime
 
 class ScreenshotDto(BaseModel):
