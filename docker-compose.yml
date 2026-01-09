@@ -10,11 +10,37 @@ services:
       - DATABASE_URL=mysql+aiomysql://root:Admin!123@db_sql:3306/watchsec
       - MONGO_URL=mongodb://mongo:27017
       - HOST=0.0.0.0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     depends_on:
+      - db_sql
+      - mongo
+      - redis
+    volumes:
+      - ./backend/storage:/app/storage
+
+  celery:
+    build: ./backend
+    container_name: watch-sec-celery
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=mysql+aiomysql://root:Admin!123@db_sql:3306/watchsec
+      - MONGO_URL=mongodb://mongo:27017
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      - backend
+      - redis
       - db_sql
       - mongo
     volumes:
       - ./backend/storage:/app/storage
+
+  redis:
+    image: redis:7
+    container_name: watch-sec-redis
+    ports:
+      - "6379:6379"
 
   db_sql:
     image: mysql:8.0
