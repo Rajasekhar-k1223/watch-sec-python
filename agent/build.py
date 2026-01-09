@@ -8,20 +8,34 @@ ENTRY_POINT = os.path.join("src", "main.py")
 
 print(f"Building {AGENT_NAME}...")
 
+import platform
+    
 # Run PyInstaller
-PyInstaller.__main__.run([
+opts = [
     ENTRY_POINT,
     '--name=%s' % AGENT_NAME,
     '--onefile',            # Bundle into single exe
-    '--noconsole',          # Hide console window (for prod) - Optional, maybe keep for debug
-    #'--icon=icon.ico',     # TODO: Add icon
     '--clean',
     '--distpath=dist',
     '--workpath=build',
-])
+]
+
+if platform.system() == "Windows":
+    opts.append('--noconsole') # Hide console on Windows
+    ext = ".exe"
+else:
+    # Linux/Mac usually keep console for status or use nohup, but --noconsole might hide valid logs.
+    # Keep console for now or make it configurable. 
+    # For a daemon-like agent, --noconsole is often preferred if logging to file.
+    # main.py logs to file.
+    # opts.append('--noconsole') 
+    ext = ""
+
+PyInstaller.__main__.run(opts)
 
 print("Build Complete.")
-print(f"Artifact: dist/{AGENT_NAME}.exe")
+print(f"Artifact: dist/{AGENT_NAME}{ext}")
+
 
 # Copy config.json to dist for testing
 if os.path.exists("config.json"):
