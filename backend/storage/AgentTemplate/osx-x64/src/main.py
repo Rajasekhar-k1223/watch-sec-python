@@ -109,7 +109,7 @@ except Exception as e:
     sys.exit(1)
 
 # Backend Configuration (User Defined Production URL)
-BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
+BACKEND_URL = config.get("BackendUrl", "https://api.monitorix.co.in")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
 
