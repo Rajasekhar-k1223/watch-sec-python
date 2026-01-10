@@ -307,5 +307,8 @@ class ActivityMonitor:
             "Timestamp": timestamp.isoformat()
         }
         try:
-            self.session.post(f"{self.backend_url}/api/events/activity", json=payload, timeout=10, verify=False)
-        except: pass
+            response = self.session.post(f"{self.backend_url}/api/events/activity", json=payload, timeout=10, verify=False)
+            if response.status_code != 200:
+                print(f"[ActivityMonitor] Backend Rejected: {response.status_code} {response.text}")
+        except Exception as e:
+            print(f"[ActivityMonitor] Upload Error: {e}")

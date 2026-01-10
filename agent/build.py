@@ -26,7 +26,7 @@ opts = [
 ]
 
 if platform.system() == "Windows":
-    opts.append('--noconsole') # Hide console on Windows
+    # opts.append('--noconsole') # Hide console on Windows (DISABLED FOR DEBUGGING)
     ext = ".exe"
 else:
     # Linux/Mac usually keep console for status or use nohup, but --noconsole might hide valid logs.
