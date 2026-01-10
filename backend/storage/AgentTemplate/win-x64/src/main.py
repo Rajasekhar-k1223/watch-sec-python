@@ -4,7 +4,7 @@ import psutil
 import requests
 import socketio
 import platform
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import sys
 import urllib3
@@ -253,7 +253,7 @@ async def system_monitor_loop():
                 "Hostname": platform.node(),
                 "CpuUsage": cpu,
                 "MemoryUsage": mem.used / (1024 * 1024), # MB
-                "Timestamp": datetime.now(datetime.timezone.utc).isoformat(), # Fixed Deprecation
+                "Timestamp": datetime.now(timezone.utc).isoformat(), # Fixed Deprecation
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 

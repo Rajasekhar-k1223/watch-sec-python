@@ -4,7 +4,7 @@ import psutil
 import requests
 import socketio
 import platform
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import sys
 import urllib3
@@ -109,7 +109,7 @@ except Exception as e:
     sys.exit(1)
 
 # Backend Configuration (User Defined Production URL)
-BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
+BACKEND_URL = config.get("BackendUrl", "https://api.monitorix.co.in")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
 
@@ -253,7 +253,7 @@ async def system_monitor_loop():
                 "Hostname": platform.node(),
                 "CpuUsage": cpu,
                 "MemoryUsage": mem.used / (1024 * 1024), # MB
-                "Timestamp": datetime.now(datetime.timezone.utc).isoformat(), # Fixed Deprecation
+                "Timestamp": datetime.now(timezone.utc).isoformat(), # Fixed Deprecation
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 

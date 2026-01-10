@@ -111,7 +111,7 @@ app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
 # Socket.IO (MOUNT LAST)
 # ======================================================
 from . import socket_events # Register Event Handlers
-app.mount("/socket.io", socketio.ASGIApp(sio))
+# app.mount("/socket.io", socketio.ASGIApp(sio)) # Redundant - Wrapped at bottom
 
 # ======================================================
 # Health
