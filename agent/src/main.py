@@ -238,6 +238,7 @@ async def system_monitor_loop():
     print("[Loop] Starting System Monitor Loop...")
     while True:
         try:
+            print("[Loop] System Monitor Loop...")
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             
@@ -258,14 +259,25 @@ async def system_monitor_loop():
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
                 "Gateway": "Unknown",
+                "Latitude": 0,
+                "Longitude": 0,
+                "Country": "Unknown", 
                 "PowerStatus": power_mon.get_status()
             }
-
+            print("[Loop] Sending Heartbeat...")
+            # Print valid JSON to confirm serialization is correct (Double Quotes)
+            try:
+                print(json.dumps(payload, default=str))
+            except Exception as e:
+                print(f"[Loop] JSON Serialization Log Error: {e}")
+                print(payload)
             try:
                 # Use async run_in_executor for request to avoid blocking
                 # verify=False bypasses SSL self-signed errors
                 # Use http_session for keep-alive and retries
+                print( f"{BACKEND_URL}/api/agent/heartbeat")
                 resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)
+                print(resp)
                 if resp.status_code == 200:
                     data = resp.json()
                     
