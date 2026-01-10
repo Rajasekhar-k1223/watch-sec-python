@@ -67,4 +67,18 @@ class ScreenshotDto(BaseModel):
 class AgentSettingsUpdate(BaseModel):
     ScreenshotQuality: Optional[int] = 80
     ScreenshotResolution: Optional[str] = "Original"
+    ScreenshotResolution: Optional[str] = "Original"
     MaxScreenshotSize: Optional[int] = 0
+
+class AgentHeartbeat(BaseModel):
+    AgentId: str
+    Status: str
+    Hostname: str
+    CpuUsage: float
+    MemoryUsage: float
+    Timestamp: datetime
+    TenantApiKey: str
+    InstalledSoftwareJson: Optional[str] = None
+    LocalIp: Optional[str] = None
+    Gateway: Optional[str] = None
+    PowerStatus: Optional[dict] = None

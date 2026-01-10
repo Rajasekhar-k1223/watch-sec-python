@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  monitorix-backend:
+    build: ./backend
+    container_name: monitorix-backend
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
+      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@host.docker.internal:37017/appdb
+      - HOST=0.0.0.0
+      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+      - SECRET_KEY=your-secret-key-here
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - PORT=8000
+    volumes:
+      - ./backend/storage:/app/storage
+
+  monitorix-celery:
+    build: ./backend
+    container_name: monitorix-celery
+    command: celery -A app.core.celery_app.celery_app worker --loglevel=info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
+      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@host.docker.internal:37017/appdb
+      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+    volumes:
+      - ./backend/storage:/app/storage
+
+  monitorix-frontend:
+    build: ../watch-sec-frontend
+    container_name: monitorix-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - monitorix-backend

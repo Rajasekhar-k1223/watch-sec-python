@@ -45,86 +45,65 @@ elif SYSTEM_OS == "Linux":
     except ImportError:
         pass
 
-class LASTINPUTINFO(ctypes.Structure):
-    _fields_ = [
-        ('cbSize', ctypes.wintypes.UINT),
-        ('dwTime', ctypes.wintypes.DWORD),
-    ]
+# Windows Idle Detection
+if platform.system() == "Windows":
+    import ctypes
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+    def get_idle_duration():
+        lastInputInfo = LASTINPUTINFO()
+        lastInputInfo.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lastInputInfo)):
+            millis = ctypes.windll.kernel32.GetTickCount() - lastInputInfo.dwTime
+            return millis / 1000.0
+        return 0
+elif platform.system() == "Linux":
+    def get_idle_duration():
+        try:
+            # Requires 'xprintidle' package
+            # Output is in milliseconds
+            result = subprocess.run(["xprintidle"], capture_output=True, text=True, timeout=1)
+            if result.returncode == 0:
+                return float(result.stdout.strip()) / 1000.0
+        except FileNotFoundError:
+            pass # xprintidle not installed
+        except Exception:
+            pass
+        return 0
+
+elif platform.system() == "Darwin": # macOS
+    def get_idle_duration():
+        try:
+            # ioreg returns HIDIdleTime in nanoseconds
+            cmd = "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF; exit}'"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1)
+            if result.returncode == 0 and result.stdout.strip():
+                ns = float(result.stdout.strip())
+                return ns / 1_000_000_000.0
+        except Exception:
+            pass
+        return 0
+
+else:
+    def get_idle_duration():
+        return 0
 
 class ActivityMonitor:
-    def __init__(self, agent_id, api_key, backend_url, interval=2.0):
+    def __init__(self, agent_id, api_key, backend_url, interval=5):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.interval = interval
         self.running = False
-        self._thread = None
-        self.current_window = {
-            "title": "",
-            "process": "",
-            "start_time": datetime.utcnow(),
-            "active_seconds": 0.0,
-            "idle_seconds": 0.0
-        }
+        self.thread = None
+        self.current_window = {"process": "", "title": "", "start_time": datetime.utcnow()} # Init generic
         
-        # Categorization Rules
-        self.categories = {
-            "Productive": ["visual studio", "code", "pycharm", "intellij", "eclipse", "slack", "teams", "outlook", "word", "excel", "powerpoint", "notion", "jira", "github"],
-            "Unproductive": ["steam", "discord", "spotify", "netflix", "youtube", "twitch", "game", "minecraft", "counter-strike", "valorant"],
-            "Neutral": ["chrome", "firefox", "edge", "explorer", "finder", "cmd", "powershell", "terminal"]
-        }
-
         # Robust Session initialization
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
-
-    def _get_idle_duration_linux(self):
-        try:
-            # Use xprintidle if available (standard on many distros or easily installable)
-            # Returns idle time in milliseconds
-            result = subprocess.run(['xprintidle'], capture_output=True, text=True, timeout=1)
-            if result.returncode == 0:
-                return float(result.stdout.strip()) / 1000.0
-        except:
-            pass
-        return 0.0
-
-    def _get_idle_duration_mac(self):
-        try:
-            # Use ioreg to get HIDIdleTime (nanoseconds)
-            cmd = "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF; exit}'"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1)
-            if result.returncode == 0:
-                nanos = int(result.stdout.strip())
-                return nanos / 1000000000.0
-        except:
-            pass
-        return 0.0
-
-    def _get_idle_duration(self):
-        if SYSTEM_OS == "Windows" and HAS_WIN32:
-            lii = LASTINPUTINFO()
-            lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-            if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-                millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
-                return millis / 1000.0
-        elif SYSTEM_OS == "Linux":
-            return self._get_idle_duration_linux()
-        elif SYSTEM_OS == "Darwin":
-            return self._get_idle_duration_mac()
-        return 0.0
-
-    def _get_category(self, process_name, window_title):
-        p = process_name.lower()
-        t = window_title.lower()
-        
-        for app in self.categories["Productive"]:
-            if app in p or app in t: return "Productive"
-        for app in self.categories["Unproductive"]:
-            if app in p or app in t: return "Unproductive"
-        return "Neutral"
 
     def start(self):
         if SYSTEM_OS == "Darwin" and not HAS_QUARTZ:
@@ -200,7 +179,9 @@ class ActivityMonitor:
             user32.GetWindowTextW(hwnd, buff, length + 1)
             title = buff.value
             
-            # Process Name
+            # Process Name (Simplified - real impl requires psutil/getting PID)
+            # For brevity/standard lib only, we might just return title twice or generic "WinApp"
+            # Ideally use psutil if available
             process = "Windows App" 
             try:
                 import psutil
@@ -217,7 +198,7 @@ class ActivityMonitor:
 
     # --- Linux ---
     def _get_active_window_linux(self):
-        # Fallback to xdotool
+        # Fallback to xdotool if Xlib not present roughly
         try:
              result = subprocess.run(['xdotool', 'getwindowfocus', 'getwindowname'], capture_output=True, text=True)
              if result.returncode == 0:
@@ -240,30 +221,25 @@ class ActivityMonitor:
             try:
                 proc, title = self._get_active_window()
                 
-                # Update Accumulators for CURRENT window
-                current_idle = self._get_idle_duration()
-                is_idle = current_idle > 60 # Idle threshold 60s
-                
-                if is_idle:
-                    self.current_window["idle_seconds"] += self.interval
-                else:
-                    self.current_window["active_seconds"] += self.interval
-
                 # Check for change
+                idle_sec = get_idle_duration()
+                
+                # Override: If idle > 300s (5 mins), consider "Idle"
+                if idle_sec > 300:
+                    proc = "System"
+                    title = "User Idle (Inactive)"
+                    # If we were already idle, do nothing (title matches)
+                    # If we were active, this triggers a "change" automatically because title != last_title
+
                 if proc != last_process or title != last_title:
                     now = datetime.utcnow()
                     
                     if last_process:
-                        total_active = self.current_window["active_seconds"]
-                        total_idle = self.current_window["idle_seconds"]
-                        duration = total_active + total_idle
-                        
-                        # Only send log if duration is significant (>1s)
+                        duration = (now - self.current_window["start_time"]).total_seconds()
                         if duration > 1.0: 
-                            category = self._get_category(last_process, last_title)
-                            self._send_log(last_process, last_title, duration, self.current_window["start_time"], last_url, category=category, idle_time=total_idle)
+                            self._send_log(last_process, last_title, duration, self.current_window["start_time"], last_url)
                     
-                    # URL Checking
+                    # URL Checking (macOS only currently for easy scripting, Windows needs UI Automation)
                     current_url = ""
                     if SYSTEM_OS == "Darwin":
                         current_url = self._get_browser_url_macos(proc)
@@ -271,14 +247,10 @@ class ActivityMonitor:
                     last_process = proc
                     last_title = title
                     last_url = current_url
-                    
-                    # Reset accumulators for NEW window
                     self.current_window = {
                         "process": proc,
                         "title": title,
-                        "start_time": now,
-                        "active_seconds": 0.0,
-                        "idle_seconds": 0.0
+                        "start_time": now
                     }
                     
             except Exception as e:
@@ -286,13 +258,8 @@ class ActivityMonitor:
             
             time.sleep(self.interval)
 
-    def _send_log(self, process, title, duration, timestamp, url="", activity_type="AppFocus", category="Neutral", idle_time=0.0):
+    def _send_log(self, process, title, duration, timestamp, url="", activity_type="AppFocus"):
         if url: activity_type = "Web"
-        
-        score = 0
-        if category == "Productive": score = 10
-        elif category == "Unproductive": score = -10
-        
         payload = {
             "AgentId": self.agent_id,
             "TenantApiKey": self.api_key,
@@ -301,9 +268,6 @@ class ActivityMonitor:
             "ProcessName": process,
             "Url": url,
             "DurationSeconds": float(f"{duration:.2f}"),
-            "IdleSeconds": float(f"{idle_time:.2f}"),
-            "Category": category,
-            "ProductivityScore": score,
             "Timestamp": timestamp.isoformat()
         }
         try:

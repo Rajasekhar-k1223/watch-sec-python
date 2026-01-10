@@ -45,6 +45,7 @@ class Agent(Base):
     InstalledSoftwareJson = Column(Text, nullable=True)
     LocalIp = Column(String(50), default="0.0.0.0")
     Gateway = Column(String(50), default="Unknown")
+    PowerStatusJson = Column(Text, nullable=True) # [NEW] Battery info
     
     # Screenshot Settings
     ScreenshotQuality = Column(Integer, default=80)

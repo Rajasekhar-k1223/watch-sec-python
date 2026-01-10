@@ -58,6 +58,33 @@ if platform.system() == "Windows":
             millis = ctypes.windll.kernel32.GetTickCount() - lastInputInfo.dwTime
             return millis / 1000.0
         return 0
+elif platform.system() == "Linux":
+    def get_idle_duration():
+        try:
+            # Requires 'xprintidle' package
+            # Output is in milliseconds
+            result = subprocess.run(["xprintidle"], capture_output=True, text=True, timeout=1)
+            if result.returncode == 0:
+                return float(result.stdout.strip()) / 1000.0
+        except FileNotFoundError:
+            pass # xprintidle not installed
+        except Exception:
+            pass
+        return 0
+
+elif platform.system() == "Darwin": # macOS
+    def get_idle_duration():
+        try:
+            # ioreg returns HIDIdleTime in nanoseconds
+            cmd = "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF; exit}'"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1)
+            if result.returncode == 0 and result.stdout.strip():
+                ns = float(result.stdout.strip())
+                return ns / 1_000_000_000.0
+        except Exception:
+            pass
+        return 0
+
 else:
     def get_idle_duration():
         return 0

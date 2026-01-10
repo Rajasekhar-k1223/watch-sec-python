@@ -63,21 +63,7 @@ class ProcessSecurity:
             except Exception as e:
                 print(f"[Sec] Registry Error: {e}")
         elif platform.system() == 'Darwin':
-            import subprocess
-            try:
-                # system_profiler SPApplicationsDataType -json
-                cmd = "system_profiler SPApplicationsDataType -json"
-                output = subprocess.check_output(cmd, shell=True).decode()
-                import json
-                data = json.loads(output)
-                apps = data.get('SPApplicationsDataType', [])
-                for app in apps:
-                    name = app.get('_name', 'Unknown')
-                    version = app.get('version', 'Unknown')
-                    software_list.append({"Name": name, "Version": version})
-            except Exception as e:
-                print(f"[Sec] Mac Software Scan Error: {e}")
-
+             pass # TODO: Implement Mac Software Scan
         else:
             # Linux (Debian/RPM)
             import subprocess

@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
                 ("UsbBlockingEnabled", "TINYINT(1) DEFAULT 0"),
                 ("NetworkMonitoringEnabled", "TINYINT(1) DEFAULT 0"),
                 ("FileDlpEnabled", "TINYINT(1) DEFAULT 0"),
+                ("PowerStatusJson", "TEXT"), # [NEW] Battery Data
             ]
             
             for col_name, col_type in new_columns:
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI):
 # FastAPI App
 # ======================================================
 app = FastAPI(
-    title="WatchSec Backend",
+    title="Monitorix Backend",
     version="2.1.0-FIXED",
     lifespan=lifespan,
 )

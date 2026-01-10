@@ -17,17 +17,17 @@ if sys.platform == "win32":
 bdist_msi_options = {
     "upgrade_code": "{E9A0C3B7-1F2A-4B3C-9D4E-5F6H7J8K9L0M}", # Fixed UUID for upgrades
     "add_to_path": True,
-    "initial_target_dir": r"[ProgramFilesFolder]\WatchSecAgent",
+    "initial_target_dir": r"[ProgramFilesFolder]\MonitorixAgent",
     "install_icon": "icon.ico" if "icon.ico" in build_exe_options["include_files"] else None,
 }
 
 setup(
-    name="WatchSecAgent",
+    name="MonitorixAgent",
     version="2.0.0",
-    description="WatchSec Enterprise Security Agent",
+    description="Monitorix Enterprise Security Agent",
     options={
         "build_exe": build_exe_options,
         "bdist_msi": bdist_msi_options
     },
-    executables=[Executable("src/main.py", base=base, target_name="WatchSecAgent.exe")]
+    executables=[Executable("src/main.py", base=base, target_name="MonitorixAgent.exe")]
 )

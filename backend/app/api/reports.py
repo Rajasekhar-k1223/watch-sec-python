@@ -73,9 +73,12 @@ class AgentReportDto(BaseModel):
     # [NEW] Agent-Reported Location
     Latitude: Optional[float] = 0.0
     Longitude: Optional[float] = 0.0
+    Latitude: Optional[float] = 0.0
+    Longitude: Optional[float] = 0.0
     Country: Optional[str] = None
+    PowerStatus: Optional[dict] = None # [NEW] Battery Data
 
-@router.post("/report")
+@router.post("/agent/heartbeat")
 async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession = Depends(get_db)):
     print(f"[API] Received Report from {dto.AgentId}")
 
@@ -227,6 +230,8 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
             agent.LocalIp = dto.LocalIp
         if dto.Gateway:
             agent.Gateway = dto.Gateway
+        if dto.PowerStatus:
+            agent.PowerStatusJson = json.dumps(dto.PowerStatus)
     
     await db.commit()
 

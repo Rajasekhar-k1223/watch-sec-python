@@ -64,6 +64,7 @@ try:
     from modules.mail_monitor import MailMonitor
     from modules.browser_enforcer import BrowserEnforcer
     from modules.remote_desktop import RemoteDesktopAgent
+    from modules.power_monitor import PowerMonitor
     from modules.webrtc_stream import WebRTCManager
     # DLP Modules (New)
     from modules.usb_monitor import UsbMonitor
@@ -211,13 +212,14 @@ screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 proc_sec = ProcessSecurity()
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
+power_mon = PowerMonitor()
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
 # DLP Modules
 fim_monitor = FileIntegrityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 net_scanner = NetworkScanner(AGENT_ID, API_KEY, BACKEND_URL)
-usb_ctrl = UsbControl()
+usb_ctrl = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 
 # --- Start Threads ---
 activity_mon.start()
@@ -251,18 +253,19 @@ async def system_monitor_loop():
                 "Hostname": platform.node(),
                 "CpuUsage": cpu,
                 "MemoryUsage": mem.used / (1024 * 1024), # MB
-                "Timestamp": datetime.utcnow().isoformat(),
+                "Timestamp": datetime.now(datetime.timezone.utc).isoformat(), # Fixed Deprecation
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
-                "Gateway": "Unknown"
+                "Gateway": "Unknown",
+                "PowerStatus": power_mon.get_status()
             }
 
             try:
                 # Use async run_in_executor for request to avoid blocking
                 # verify=False bypasses SSL self-signed errors
                 # Use http_session for keep-alive and retries
-                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
+                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     
@@ -296,21 +299,23 @@ async def system_monitor_loop():
                          cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
 
                     # [DLP] USB Control
-                    success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled)
-                    if not success and usb_blocking_enabled:
+                    policy = "Block" if usb_blocking_enabled else "Allow"
+                    usb_ctrl.set_policy(policy)
+                    # success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled) 
+                    # if not success and usb_blocking_enabled:
                          # [ERROR FEEDBACK] Report Failure to Backend
-                         try:
-                             print(f"[DLP ERROR] USB Block Failed: {msg}")
-                             err_payload = {
-                                 "AgentId": AGENT_ID,
-                                 "TenantApiKey": API_KEY,
-                                 "Type": "SystemError",
-                                 "Details": f"USB Blocking Failed: {msg}",
-                                 "Timestamp": datetime.utcnow().isoformat()
-                             }
-                             # Fire and forget error report
-                             asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
-                         except: pass
+                         # try:
+                         #     print(f"[DLP ERROR] USB Block Failed: {msg}")
+                         #     err_payload = {
+                         #         "AgentId": AGENT_ID,
+                         #         "TenantApiKey": API_KEY,
+                         #         "Type": "SystemError",
+                         #         "Details": f"USB Blocking Failed: {msg}",
+                         #         "Timestamp": datetime.utcnow().isoformat()
+                         #     }
+                         #     # Fire and forget error report
+                         #     asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
+                         # except: pass
                     if "ScreenshotQuality" in data:
                         screen_cap.set_config(
                             quality=data.get("ScreenshotQuality"), 
@@ -350,12 +355,19 @@ async def run_self_test():
     print(f"[Self-Test] WebSocket Target: {BACKEND_URL}")
 
     # 3. Module Status
-    print(f"[Self-Test] FIM: {'Active' if fim else 'Error'}")
+    # 3. Module Status
+    print(f"[Self-Test] FIM: {'Active' if fim_monitor.is_running else 'Inactive'}")
+    print(f"[Self-Test] MailMonitor: {'Active' if mail_mon.running else 'Inactive'}")
+    print(f"[Self-Test] UsbMonitor: {'Active' if usb_ctrl.running else 'Inactive'}")
+    print(f"[Self-Test] ScreenCapture: {'Active' if screen_cap.running else 'Inactive'}")
+    print(f"[Self-Test] ActivityMonitor: {'Active' if activity_mon.running else 'Inactive'}")
+    print(f"[Self-Test] RemoteDesktop: {'Active' if remote_desktop.running else 'Inactive (Missing Dependency?)'}")
+    print(f"[Self-Test] NetworkScanner: {'Active' if net_scanner.is_running else 'Inactive'}")
     print(f"[Self-Test] WebRTC: {'Ready' if webrtc_manager else 'Error'}")
     print("[Self-Test] --- Check Complete ---\n")
 
 async def main():
-    log_to_file(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    log_to_file(f"--- Monitorix Agent v2.0 ({platform.system()}) ---")
     
     # Run Diagnostics
     await run_self_test()
@@ -365,7 +377,8 @@ async def main():
         try:
             # IMPORTANT: Auth dict with 'room' ensures backend routes us correctly
             log_to_file(f"Connecting WebSocket to {BACKEND_URL}...")
-            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID})
+            # Try connecting with explicit namespace
+            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY}, namespaces=['/'])
             log_to_file("[WS] Connected to Backend Socket!")
             break
         except Exception as e:
@@ -378,10 +391,11 @@ async def main():
     # Start Security Modules
     log_to_file("Starting Security Modules...")
     try:
-        fim.start()
+        fim_monitor.start()
         screen_cap.start()
         activity_mon.start()
         mail_mon.start()
+        usb_ctrl.start()
         remote_desktop.start()
         log_to_file("Modules Started.")
     except Exception as e:

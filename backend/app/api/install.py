@@ -8,6 +8,7 @@ import json
 from ..db.session import get_db
 from ..db.models import Tenant, User
 from ..services.email_service import email_service
+from .deps import get_current_user
 
 router = APIRouter()
 

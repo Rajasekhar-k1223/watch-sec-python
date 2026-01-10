@@ -15,6 +15,8 @@ except ImportError:
     pyautogui = None 
 from datetime import datetime
 import os
+import platform
+import subprocess
 import requests
 import shutil
 
@@ -66,7 +68,7 @@ class RemoteDesktopAgent:
                 # Use aiohttp for WebSocket connection
                 headers = {
                     "Origin": "http://localhost:5173",
-                    "User-Agent": "WatchSec-Agent/1.0"
+                    "User-Agent": "Monitorix-Agent/1.0"
                 }
                 timeout = aiohttp.ClientTimeout(total=None) # No timeout for persistent connection
                 async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -198,9 +200,21 @@ class RemoteDesktopAgent:
     
                     elif cmd_type == "lock":
                         try:
-                            import ctypes
-                            ctypes.windll.user32.LockWorkStation()
-                            self.logger.info("Executed Lock Workstation command.")
+                            if os.name == 'nt':
+                                import ctypes
+                                ctypes.windll.user32.LockWorkStation()
+                                self.logger.info("Executed Lock Workstation (Windows).")
+                            elif platform.system() == "Linux":
+                                # Try standard xdg-screensaver
+                                subprocess.run(["xdg-screensaver", "lock"], check=False)
+                                self.logger.info("Executed Lock Workstation (Linux/XDG).")
+                            elif platform.system() == "Darwin":
+                                # MacOS Lock
+                                cmd = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession -suspend"
+                                subprocess.run(cmd, shell=True, check=False)
+                                self.logger.info("Executed Lock Workstation (macOS).")
+                            else:
+                                self.logger.info(f"Lock command not implemented for {platform.system()}")
                         except Exception as e:
                             self.logger.error(f"Failed to lock workstation: {e}")
     

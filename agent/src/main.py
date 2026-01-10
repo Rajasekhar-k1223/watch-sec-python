@@ -321,7 +321,7 @@ async def system_monitor_loop():
                 # Use async run_in_executor for request to avoid blocking
                 # verify=False bypasses SSL self-signed errors
                 # Use http_session for keep-alive and retries
-                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
+                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     
@@ -418,7 +418,7 @@ async def run_self_test():
     print("[Self-Test] --- Check Complete ---\n")
 
 async def main():
-    log_to_file(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    log_to_file(f"--- Monitorix Agent v2.0 ({platform.system()}) ---")
     
     # Run Diagnostics
     await run_self_test()

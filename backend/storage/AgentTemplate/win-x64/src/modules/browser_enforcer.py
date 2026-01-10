@@ -1,8 +1,7 @@
-
 import os
 import sys
-from win32com.client import Dispatch
 import logging
+import platform
 
 class BrowserEnforcer:
     def __init__(self):
@@ -17,6 +16,15 @@ class BrowserEnforcer:
         self.shortcuts_to_patch = ["Google Chrome.lnk", "Microsoft Edge.lnk", "Brave.lnk"]
 
     def enforce(self):
+        if platform.system() != "Windows":
+            return
+
+        try:
+            from win32com.client import Dispatch
+        except ImportError:
+            self.logger.warning("win32com not found. Browser enforcement disabled.")
+            return
+
         self.logger.info(f"Enforcing Browser Extension from: {self.ext_path}")
         
         if not os.path.exists(self.ext_path):

@@ -3,7 +3,7 @@ import os
 import shutil
 
 # Build Configuration
-AGENT_NAME = "watch-sec-agent"
+AGENT_NAME = "monitorix-agent"
 ENTRY_POINT = os.path.join("src", "main.py")
 
 print(f"Building {AGENT_NAME}...")

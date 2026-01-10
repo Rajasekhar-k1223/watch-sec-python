@@ -10,8 +10,6 @@ import sys
 import urllib3
 import warnings
 
-
-
 # Suppress insecure request warnings & pkg_resources deprecation
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module='pkg_resources')
@@ -63,11 +61,15 @@ try:
     from modules.security import ProcessSecurity
     from modules.screenshots import ScreenshotCapture
     from modules.activity_monitor import ActivityMonitor
-    from modules.usb_control import UsbControl
     from modules.mail_monitor import MailMonitor
     from modules.browser_enforcer import BrowserEnforcer
     from modules.remote_desktop import RemoteDesktopAgent
+    from modules.power_monitor import PowerMonitor
     from modules.webrtc_stream import WebRTCManager
+    # DLP Modules (New)
+    from modules.usb_monitor import UsbMonitor
+    from modules.network_monitor import NetworkMonitor
+    from modules.file_monitor import FileMonitor
     log_to_file("Modules Imported Successfully.")
 except Exception as e:
     log_to_file(f"CRITICAL IMPORT ERROR: {e}")
@@ -107,17 +109,9 @@ except Exception as e:
     sys.exit(1)
 
 # Backend Configuration (User Defined Production URL)
-BACKEND_URL = config.get("BackendUrl", "https://api.monitorix.co.in")
+BACKEND_URL = config.get("BackendUrl", "https://watch-sec-python-production.up.railway.app")
 API_KEY = config.get("TenantApiKey", "")
 AGENT_ID = config.get("AgentId", "")
-
-if not API_KEY or API_KEY == "CHANGE_ME" or len(API_KEY) < 10:
-    print("\n[CRITICAL ERROR] 'TenantApiKey' is missing or invalid in config.json.")
-    print(f"Please copy the correct API Key from your dashboard at {BACKEND_URL}")
-    print("Edit file: agent/config.json\n")
-    log_to_file("[CRITICAL] Missing TenantApiKey. Aborting.")
-    # We won't exit immediately to allow debugging, but we skip connection or loop warning
-    # sys.exit(1)
 
 # --- Dynamic Agent ID Logic ---
 current_hostname = platform.node()
@@ -192,25 +186,11 @@ sio = socketio.AsyncClient(logger=False, engineio_logger=False, ssl_verify=False
 async def on_uninstall(data):
     print("[Command] Received Remote Uninstall/Stop...")
     try:
-        # 1. Remove Persistence
+        # 1. Remove Persistence (Scheduled Task)
         if platform.system() == "Windows":
              import subprocess
-             print("[Uninstall] Removing Scheduled Task (Windows)...")
+             print("[Uninstall] Removing Scheduled Task...")
              subprocess.run(["schtasks", "/Delete", "/TN", "MonitorixAgent", "/F"], capture_output=True)
-             
-        elif platform.system() == "Linux":
-            print("[Uninstall] Removing Systemd Service (Linux)...")
-            subprocess.run(["systemctl", "disable", "--now", "monitorix"], capture_output=True)
-            if os.path.exists("/etc/systemd/system/monitorix.service"):
-                os.remove("/etc/systemd/system/monitorix.service")
-                subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-                
-        elif platform.system() == "Darwin":
-            print("[Uninstall] Removing LaunchAgent (macOS)...")
-            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.monitorix.agent.plist")
-            subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-            if os.path.exists(plist_path):
-                os.remove(plist_path)
         
         # 2. Stop Modules (Best Effort)
         try:
@@ -227,19 +207,19 @@ async def on_uninstall(data):
         print(f"[Command] Uninstall Failed: {e}")
 
 # --- Initialize Modules ---
-# --- Initialize Modules ---
 # Core Modules
 screen_cap = ScreenshotCapture(AGENT_ID, API_KEY, BACKEND_URL, interval=30)
 activity_mon = ActivityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 proc_sec = ProcessSecurity()
 mail_mon = MailMonitor(BACKEND_URL, AGENT_ID, API_KEY)
+power_mon = PowerMonitor()
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
 # DLP Modules
 fim_monitor = FileIntegrityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 net_scanner = NetworkScanner(AGENT_ID, API_KEY, BACKEND_URL)
-usb_ctrl = UsbControl()
+usb_ctrl = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 
 # --- Start Threads ---
 activity_mon.start()
@@ -247,23 +227,14 @@ screen_cap.start()
 
 # DLP Modules are started conditionally in the loop based on config, 
 # but we can ensure they are ready. They don't block.
-# Actually, their start() methods typically start a thread. 
-# We'll let the loop control start/stop to respect the flags immediately.
-# EXCEPT if they need to be running to receive config? No, main loop handles config.
 
 # Remote Desktop & WebRTC
 remote_desktop.start() 
 
-print("[Main] All Monitoring Modules Initialized.")
-
+print("[Main] All Monitoring Modules Initialized and Started.")
 
 
 async def system_monitor_loop():
-    # Location Cache
-    cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
-    last_location_check = datetime.min
-    location_enabled = False # Default OFF until authorized by backend
-    
     print("[Loop] Starting System Monitor Loop...")
     while True:
         try:
@@ -273,32 +244,8 @@ async def system_monitor_loop():
             # Periodic Software Scan (every hour approx)
             software_cache = []
             if datetime.now().minute == 0:
-                 # ... existing software scan logic logic handled by existing code path ...
-                 # Assuming logic flows here, but to avoid replacing too much I will keep it simple.
-                 pass
-
-            # [LOCATION] Agent-Side Self-Geolocation (Every 60 mins)
-            # This allows the Agent to report "Where I think I am"
-            # CHECK: Only run if authorized by backend
-            if location_enabled and (datetime.now() - last_location_check).total_seconds() > 3600:
-                 try:
-                     print("[Loc] Fetching current location...")
-                     geo_resp = await asyncio.to_thread(http_session.get, "http://ip-api.com/json/?fields=status,country,lat,lon", timeout=5)
-                     if geo_resp.status_code == 200:
-                         gdata = geo_resp.json()
-                         if gdata.get("status") == "success":
-                             cached_location["lat"] = gdata.get("lat")
-                             cached_location["lon"] = gdata.get("lon")
-                             cached_location["country"] = gdata.get("country")
-                             print(f"[Loc] Updated: {cached_location['country']}")
-                             last_location_check = datetime.now()
-                 except Exception as e:
-                     print(f"[Loc] Failed: {e}")
-
-            # Re-implement software scan logic as I'm replacing the block
-            if datetime.now().minute == 0 and datetime.now().second < 10:
-                 # Minimal check to avoid spamming validity
-                 software_cache = proc_sec.get_installed_software()
+                print("[Sec] Scanning Installed Software...")
+                software_cache = proc_sec.get_installed_software()
 
             payload = {
                 "AgentId": AGENT_ID,
@@ -306,22 +253,19 @@ async def system_monitor_loop():
                 "Hostname": platform.node(),
                 "CpuUsage": cpu,
                 "MemoryUsage": mem.used / (1024 * 1024), # MB
-                "Timestamp": datetime.utcnow().isoformat(),
+                "Timestamp": datetime.now(datetime.timezone.utc).isoformat(), # Fixed Deprecation
                 "TenantApiKey": API_KEY,
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
                 "Gateway": "Unknown",
-                # [NEW] Agent Self-Reported Location
-                "Latitude": cached_location["lat"],
-                "Longitude": cached_location["lon"],
-                "Country": cached_location["country"]
+                "PowerStatus": power_mon.get_status()
             }
 
             try:
                 # Use async run_in_executor for request to avoid blocking
                 # verify=False bypasses SSL self-signed errors
                 # Use http_session for keep-alive and retries
-                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/report", json=payload, timeout=10, verify=False)
+                resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)
                 if resp.status_code == 200:
                     data = resp.json()
                     
@@ -355,30 +299,28 @@ async def system_monitor_loop():
                          cached_location = {"lat": 0.0, "lon": 0.0, "country": "Unknown"}
 
                     # [DLP] USB Control
-                    success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled)
-                    if not success and usb_blocking_enabled:
+                    policy = "Block" if usb_blocking_enabled else "Allow"
+                    usb_ctrl.set_policy(policy)
+                    # success, msg = usb_ctrl.set_usb_write_protect(usb_blocking_enabled) 
+                    # if not success and usb_blocking_enabled:
                          # [ERROR FEEDBACK] Report Failure to Backend
-                         try:
-                             print(f"[DLP ERROR] USB Block Failed: {msg}")
-                             err_payload = {
-                                 "AgentId": AGENT_ID,
-                                 "TenantApiKey": API_KEY,
-                                 "Type": "SystemError",
-                                 "Details": f"USB Blocking Failed: {msg}",
-                                 "Timestamp": datetime.utcnow().isoformat()
-                             }
-                             # Fire and forget error report
-                             asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
-                         except: pass
-
-                    # Handle Quality/Res Settings
-                    
-                    # Handle Quality/Res Settings
-                    if "ScreenshotQuality" in config:
+                         # try:
+                         #     print(f"[DLP ERROR] USB Block Failed: {msg}")
+                         #     err_payload = {
+                         #         "AgentId": AGENT_ID,
+                         #         "TenantApiKey": API_KEY,
+                         #         "Type": "SystemError",
+                         #         "Details": f"USB Blocking Failed: {msg}",
+                         #         "Timestamp": datetime.utcnow().isoformat()
+                         #     }
+                         #     # Fire and forget error report
+                         #     asyncio.create_task(asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/events/report", json=err_payload, timeout=5, verify=False))
+                         # except: pass
+                    if "ScreenshotQuality" in data:
                         screen_cap.set_config(
-                            quality=config.get("ScreenshotQuality"), 
-                            resolution=config.get("ScreenshotResolution"), 
-                            max_size=config.get("MaxScreenshotSize")
+                            quality=data.get("ScreenshotQuality"), 
+                            resolution=data.get("ScreenshotResolution"), 
+                            max_size=data.get("MaxScreenshotSize")
                         )
                         
                     print(f"[Report] Sent: CPU {cpu}% | MEM {payload['MemoryUsage']:.1f}MB")
@@ -413,12 +355,19 @@ async def run_self_test():
     print(f"[Self-Test] WebSocket Target: {BACKEND_URL}")
 
     # 3. Module Status
-    print(f"[Self-Test] FIM: {'Active' if fim_monitor else 'Error'}")
+    # 3. Module Status
+    print(f"[Self-Test] FIM: {'Active' if fim_monitor.is_running else 'Inactive'}")
+    print(f"[Self-Test] MailMonitor: {'Active' if mail_mon.running else 'Inactive'}")
+    print(f"[Self-Test] UsbMonitor: {'Active' if usb_ctrl.running else 'Inactive'}")
+    print(f"[Self-Test] ScreenCapture: {'Active' if screen_cap.running else 'Inactive'}")
+    print(f"[Self-Test] ActivityMonitor: {'Active' if activity_mon.running else 'Inactive'}")
+    print(f"[Self-Test] RemoteDesktop: {'Active' if remote_desktop.running else 'Inactive (Missing Dependency?)'}")
+    print(f"[Self-Test] NetworkScanner: {'Active' if net_scanner.is_running else 'Inactive'}")
     print(f"[Self-Test] WebRTC: {'Ready' if webrtc_manager else 'Error'}")
     print("[Self-Test] --- Check Complete ---\n")
 
 async def main():
-    log_to_file(f"--- WatchSec Agent v2.0 ({platform.system()}) ---")
+    log_to_file(f"--- Monitorix Agent v2.0 ({platform.system()}) ---")
     
     # Run Diagnostics
     await run_self_test()
@@ -428,7 +377,8 @@ async def main():
         try:
             # IMPORTANT: Auth dict with 'room' ensures backend routes us correctly
             log_to_file(f"Connecting WebSocket to {BACKEND_URL}...")
-            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY})
+            # Try connecting with explicit namespace
+            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY}, namespaces=['/'])
             log_to_file("[WS] Connected to Backend Socket!")
             break
         except Exception as e:
@@ -445,6 +395,7 @@ async def main():
         screen_cap.start()
         activity_mon.start()
         mail_mon.start()
+        usb_ctrl.start()
         remote_desktop.start()
         log_to_file("Modules Started.")
     except Exception as e:
