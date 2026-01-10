@@ -78,6 +78,14 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
             with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                 for root, dirs, files in os.walk(template_path):
                     for file in files:
+                        # [Fixed] Exclude Binaries and Parts from Source Zip to keep it small
+                        if file.endswith(".part") or ".part" in file:
+                            continue
+                        if file.endswith(".exe") or file.endswith(".bin"):
+                            continue
+                        if file in ["monitorix-agent-linux", "monitorix-agent-mac"]:
+                            continue
+                        
                         file_path = os.path.join(root, file)
                         arcname = os.path.relpath(file_path, template_path)
                         zip_file.write(file_path, arcname)
@@ -95,22 +103,54 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
 
     if os_type.lower() in ["linux", "mac"]:
         # Bash Script Generation
-        # Construct payload URL to download the zip we defined above
-        payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type={os_type.lower()}&payload=true"
+        
+        # [Updated] Check if Binary Exists for Linux
+        # If so, serve Binary Payload instead of Source Zip
+        use_binary = False
+        binary_name = "monitorix-agent-linux" if os_type.lower() == "linux" else "monitorix-agent-mac"
+        
+        # Check if parts or file exist in template
+        # Re-resolve template path since it was local to function start
+        template_folder_map = {"linux": "linux-x64", "mac": "osx-x64", "windows": "win-x64"}
+        f_name = template_folder_map.get(os_type.lower(), "linux-x64")
+        t_path = os.path.join("storage", "AgentTemplate", f_name)
+        
+        if os.path.exists(os.path.join(t_path, f"{binary_name}.part0")) or os.path.exists(os.path.join(t_path, binary_name)):
+             # Binary Available!
+             use_binary = True
+        
+        if use_binary and os_type.lower() == "linux":
+             # Use the Payload endpoint (Direct Binary Download)
+             # payload=false uses 'get_payload_binary' logic which serves octet-stream
+             # We want the script to download THIS binary.
+             payload_url = f"{backend_url}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={os_type.lower()}"
+             # We need to unzip? No, payload is the BINARY file here if we use /public/payload
+             # Wait, the script below expects a ZIP.
+             # If we point to /public/payload, it downloads an exe/binary.
+             # The script does `unzip -o agent.zip`. This will FAIL if it's a binary.
+             # We need to adapt the script loop.
+        else:
+             # Fallback to Source Zip
+             use_binary = False
+             payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type={os_type.lower()}&payload=true"
 
         install_script = f"""#!/bin/bash
-# Monitorix Agent Installer (Source Mode)
+# Monitorix Agent Installer ({'Binary' if use_binary else 'Source'} Mode)
 API_KEY="{tenant.ApiKey}"
 BACKEND_URL="{backend_url}"
 PAYLOAD_URL="{payload_url}"
+IS_BINARY="{'true' if use_binary else 'false'}"
 
 echo "--- Monitorix Agent Installer (Cross-Platform) ---"
 
 # 0. Check Prerequisites
+# Only check python3 if we are doing source install (no binary found yet, but we don't know yet)
+# We'll check Python if we fail to download binary or if we default to source.
+# However, for simplicity, checking python3 is good practice as binary might fallback or need it for some plugins?
+# Actually binary is standalone.
+# But for now, let's keep requirement check loose or check inside logic.
 if ! command -v python3 &> /dev/null; then
-    echo "Error: python3 is required."
-    echo "Please install it (e.g., 'sudo apt install python3 python3-pip' or 'brew install python3')"
-    exit 1
+    echo "Note: python3 not found. If this is a source install, it will fail."
 fi
 
 echo "[1/5] Creating Directory..."
@@ -157,13 +197,24 @@ else
     exit 1
 fi
 
-echo "[3/5] Extracting..."
-if ! command -v unzip &> /dev/null; then
-    echo "Error: unzip is required. Please install it."
+else
+    echo "Error: curl or wget is required."
     exit 1
 fi
-unzip -o agent.zip -d "$dir_name" > /dev/null
-rm agent.zip
+
+echo "[3/5] Extracting..."
+if [ "$IS_BINARY" = "true" ]; then
+    # It is a raw binary, rename it
+    mv agent.zip monitorix-agent-linux
+    # No unzip needed
+else
+    if ! command -v unzip &> /dev/null; then
+        echo "Error: unzip is required. Please install it."
+        exit 1
+    fi
+    unzip -o agent.zip -d "$dir_name" > /dev/null
+    rm agent.zip
+fi
 
 echo "[4/5] Installing Dependencies..."
 if [ -f "$dir_name/requirements.txt" ]; then
@@ -171,7 +222,17 @@ if [ -f "$dir_name/requirements.txt" ]; then
     python3 -m pip install -r "$dir_name/requirements.txt" --break-system-packages 2>/dev/null || python3 -m pip install -r "$dir_name/requirements.txt"
 else
     echo "Warning: requirements.txt not found."
+else
+    echo "Warning: requirements.txt not found."
 fi
+
+# 4.5 Binary Permission (Linux)
+if [ -f "$dir_name/monitorix-agent-linux" ]; then
+    echo "Setting execute permissions for binary..."
+    chmod +x "$dir_name/monitorix-agent-linux"
+fi
+
+echo "[5/5] Configuring..."
 
 echo "[5/5] Configuring..."
 echo '{json.dumps(config_data)}' > "$dir_name/config.json"
@@ -188,6 +249,13 @@ if [ "$(uname)" = "Linux" ] && [ -d "/etc/systemd/system" ]; then
         SUDO=""
     fi
 
+    # Binary vs Source ExecStart
+    if [ -f "$dir_name/monitorix-agent-linux" ]; then
+        EXEC_CMD="$dir_name/monitorix-agent-linux"
+    else
+        EXEC_CMD="\$(which python3) $dir_name/src/main.py"
+    fi
+
     $SUDO bash -c "cat > $SERVICE_FILE" <<EOF
 [Unit]
 Description=Monitorix Security Agent
@@ -197,7 +265,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$dir_name
-ExecStart=$(which python3) $dir_name/src/main.py
+ExecStart=$EXEC_CMD
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -210,7 +278,7 @@ EOF
     $SUDO systemctl restart monitorix 2>/dev/null
     echo "Service installed and started!"
 
-# Create LaunchAgent (macOS)
+# Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
     PLIST_DIR="$HOME/Library/LaunchAgents"
     PLIST_FILE="$PLIST_DIR/com.monitorix.agent.plist"
@@ -246,11 +314,17 @@ EOF
     launchctl load "$PLIST_FILE"
     echo "Agent started via launchctl!"
 
-else
     echo "Manual Start Required:"
-    echo "  cd $dir_name"
-    echo "  python3 src/main.py"
+    # Detect if we installed source or binary
+    if [ -f "$dir_name/monitorix-agent-linux" ]; then
+         echo "  cd $dir_name"
+         echo "  ./monitorix-agent-linux"
+    else
+         echo "  cd $dir_name"
+         echo "  python3 src/main.py"
+    fi
 fi
+"""
 """
 
         # We still write script to disk because it's tiny and simpler for FileResponse
