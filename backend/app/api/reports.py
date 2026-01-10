@@ -135,9 +135,11 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
         pass
 
     # [LOCATION] Geolocation Logic 
+    lat, lon, country = 0.0, 0.0, "Unknown"
+    should_geolocate = False
+
     # Check Toggle First (User Consent)
-    if agent.LocationTrackingEnabled:
-        lat, lon, country = 0.0, 0.0, "Unknown"
+    if agent and agent.LocationTrackingEnabled:
         
         # 1. Check Agent Report
         if dto.Latitude and dto.Latitude != 0.0:
