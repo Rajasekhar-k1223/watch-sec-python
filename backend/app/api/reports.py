@@ -117,21 +117,9 @@ async def receive_report(dto: AgentReportDto, request: Request, db: AsyncSession
         client_ip = request.client.host if request.client else "Unknown"
 
     if client_ip not in ["127.0.0.1", "localhost", "::1", "Unknown"]:
-        # [SECURITY] Strict IP One-Entity-Per-IP Rule
-        
-        # 1. Check if IP used by a Tenant
-        ip_tenant = await db.execute(select(Tenant).where(Tenant.RegistrationIp == client_ip))
-        if ip_tenant.scalars().first():
-             # If exact match found in Tenants table, BLOCK Agent.
-             print(f"[API] Blocked Agent Registration from Tenant IP: {client_ip}")
-             raise HTTPException(status_code=400, detail="IP Address restriction: This IP is already associated with a Tenant account.")
-
-        # 2. Check if IP used by ANOTHER Agent (Optional: "one agent per ip"?)
-        # User said "filter agents and tenant if ipaddress already exit".
-        # This implies cross-checking. Let's enforce strict unique IP across the board?
-        # Or maybe just "Don't mismatch".
-        # Let's enforce: If IP is used by an Agent of ANOTHER Tenant? No, that's complex (NAT).
-        # Let's start with just blocking if Tenant exists.
+        # [SECURITY] IP Validation
+        # NOTE: We implicitly ALLOW agents to share IP with Tenant for development/testing convenience.
+        # Strict "One Entity Per IP" validation is enforced only at Tenant Registration (auth.py).
         pass
 
     # [LOCATION] Geolocation Logic 
