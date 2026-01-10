@@ -216,10 +216,15 @@ power_mon = PowerMonitor()
 remote_desktop = RemoteDesktopAgent(BACKEND_URL, AGENT_ID, API_KEY)
 webrtc_manager = WebRTCManager(sio, str(AGENT_ID))
 
+from modules.network_monitor import NetworkMonitor
+from modules.file_monitor import FileMonitor
+from modules.location_monitor import LocationMonitor
+
 # DLP Modules
 fim_monitor = FileIntegrityMonitor(AGENT_ID, API_KEY, BACKEND_URL)
 net_scanner = NetworkScanner(AGENT_ID, API_KEY, BACKEND_URL)
 usb_ctrl = UsbMonitor(AGENT_ID, API_KEY, BACKEND_URL)
+loc_mon = LocationMonitor()
 
 # --- Start Threads ---
 activity_mon.start()
@@ -229,7 +234,8 @@ screen_cap.start()
 # but we can ensure they are ready. They don't block.
 
 # Remote Desktop & WebRTC
-remote_desktop.start() 
+remote_desktop.start()
+loc_mon.start() 
 
 print("[Main] All Monitoring Modules Initialized and Started.")
 
@@ -259,9 +265,9 @@ async def system_monitor_loop():
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
                 "Gateway": "Unknown",
-                "Latitude": 0,
-                "Longitude": 0,
-                "Country": "Unknown", 
+                "Latitude": loc_mon.get_location()[0],
+                "Longitude": loc_mon.get_location()[1],
+                "Country": loc_mon.get_location()[2], 
                 "PowerStatus": power_mon.get_status()
             }
             print("[Loop] Sending Heartbeat...")
