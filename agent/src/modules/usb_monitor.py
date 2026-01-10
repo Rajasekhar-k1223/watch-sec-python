@@ -83,13 +83,27 @@ class WindowsUsbStrategy(UsbMonitorStrategy):
             winreg.SetValueEx(key, "Start", 0, winreg.REG_DWORD, req_value)
             winreg.CloseKey(key)
             self.logger.info(f"Registry Policy Applied: Start={req_value}")
+            self.logger.info(f"Registry Policy Applied: Start={req_value}")
         except PermissionError:
-            self.logger.warning("Failed to set Registry Policy: Access Denied. Please run the Agent as Administrator to enforce USB blocking.")
+            curr_state = self._read_current_policy()
+            self.logger.warning(f"Failed to set Registry Policy: Access Denied. (Run as Admin). Current System Policy: {curr_state}")
         except Exception as e:
             if "Access is denied" in str(e):
-                 self.logger.warning("Failed to set Registry Policy: Access Denied. Please run the Agent as Administrator.")
+                 curr_state = self._read_current_policy()
+                 self.logger.warning(f"Failed to set Registry Policy: Access Denied. (Run as Admin). Current System Policy: {curr_state}")
             else:
                  self.logger.error(f"Failed to set Registry Policy: {e}")
+
+    def _read_current_policy(self):
+        try:
+            key_path = r"SYSTEM\CurrentControlSet\Services\USBSTOR"
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ)
+            val, _ = winreg.QueryValueEx(key, "Start")
+            winreg.CloseKey(key)
+            # 3 = Enabled (Allowed), 4 = Disabled (Blocked)
+            return "BLOCKED" if val == 4 else "ALLOWED"
+        except Exception as e:
+            return f"Unknown ({e})"
 
     def _get_connected_drives(self, c):
         devices = []
