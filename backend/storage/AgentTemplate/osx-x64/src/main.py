@@ -258,6 +258,9 @@ async def system_monitor_loop():
                 "InstalledSoftwareJson": json.dumps(software_cache), 
                 "LocalIp": net_scanner.local_ip, 
                 "Gateway": "Unknown",
+                "Latitude": 0,
+                "Longitude": 0,
+                "Country": "Unknown",
                 "PowerStatus": power_mon.get_status()
             }
 
