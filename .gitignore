@@ -26,3 +26,7 @@ dist/
 **/*.log
 agent/dist/
 backend/storage/AgentTemplate/linux-x64/dist/
+*.db
+*.sqlite
+backend/watchsec.db
+backend/watch-sec.db
