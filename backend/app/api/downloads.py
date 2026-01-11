@@ -325,7 +325,6 @@ EOF
     fi
 fi
 """
-"""
 
         # We still write script to disk because it's tiny and simpler for FileResponse
         temp_dir = os.path.join(base_path, "temp")
@@ -516,13 +515,13 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
     
     if current_count >= tenant.AgentLimit:
         # Use a polite but firm error message
-        limit_script = f"""
+        limit_script = """
         Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
         Write-Error "INSTALLATION ABORTED: Agent Limit Reached for your plan."
-        Write-Host "Current Usage: {current_count} / {tenant.AgentLimit}" -ForegroundColor Red
+        Write-Host "Current Usage: {0} / {1}" -ForegroundColor Red
         Write-Host "Please contact your administrator to upgrade your license." -ForegroundColor Gray
         exit 1
-        """
+        """.format(current_count, tenant.AgentLimit)
         return Response(content=limit_script, media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="install.ps1"'})
     
     # 2. Generate PowerShell Stager

@@ -1,7 +1,7 @@
 
 // Watch-Sec Mail Interceptor - Content Script
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = "https://api.monitorix.co.in";
 // For now, hardcode API Key or fetch from local storage if managed.
 // In a real enterprise deployment, this would be injected via Managed Storage Policy.
 const TENANT_API_KEY = "e7cdae55-2e7e-467a-bdc5-3cbf5d321368"; // Correct Key

@@ -3,7 +3,7 @@ import json
 
 # Use the agent ID we know exists
 AGENT_ID = "EILT0094-32D62E1B"
-API_URL = "http://localhost:8000"
+API_URL = "https://api.monitorix.co.in"
 
 try:
     # Login first if needed, but for now assuming public or we can try.

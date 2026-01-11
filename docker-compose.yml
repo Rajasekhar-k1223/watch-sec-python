@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=mysql+aiomysql://root:Admin!123@db_sql:3306/watchsec
+      - DATABASE_URL=mysql+aiomysql://root:rootpassword@db_sql:3306/watchsec
       - MONGO_URL=mongodb://mongo:27017
       - HOST=0.0.0.0
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -19,12 +19,23 @@ services:
     volumes:
       - ./backend/storage:/app/storage
 
+  frontend:
+    build:
+      context: ../watch-sec-frontend
+      args:
+        VITE_API_URL: https://api.monitorix.co.in
+    container_name: watch-sec-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
   celery:
     build: ./backend
     container_name: watch-sec-celery
     command: celery -A app.worker.celery_app worker --loglevel=info
     environment:
-      - DATABASE_URL=mysql+aiomysql://root:Admin!123@db_sql:3306/watchsec
+      - DATABASE_URL=mysql+aiomysql://root:rootpassword@db_sql:3306/watchsec
       - MONGO_URL=mongodb://mongo:27017
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
