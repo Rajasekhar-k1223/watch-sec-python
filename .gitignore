@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyd
+
+# Environments & Large Binaries
+venv/
+.venv/
+build_env/
+build/
+dist/
+*.spec
+agent_backup_*/
+agent/wine_env/
+agent/venv/
+agent/build_mac/
+agent/build_linux/
+agent/dist_mac/
+agent/dist_linux/
+agent/dist_arm64/
+agent/releases/
+agent/obfuscated/
+
+# Storage & Templates
+backend/storage/
+backend/AgentTemplate/
+backend/app/api/all_endpoints.txt
+backend/app/scripts/sync_screenshots.py
+backend/check_*.py
+backend/*.py.bak
+backend/*.log
+*.log
+
+# Monitorix Specific Junk
+agent/monitorix.zip
+agent/monitorixagent.exe
+agent/monitorix-setup-v3.exe
+backend/monitorix-setup-v3.exe
+agent/python-*.exe
+agent/python-*.zip
+
+# Diagnostic Scripts
+*.py.bak
+backend/create_missing_tables.py
+backend/run_migration_*.py
+backend/sync_screenshots.py
+backend/trigger_report.py
+agent/hello.py
+
+# Certificates & Keys
+*.crt
+*.key
+*.pfx
+*.pem
+
+# Database
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS junk
+.DS_Store
+Thumbs.db

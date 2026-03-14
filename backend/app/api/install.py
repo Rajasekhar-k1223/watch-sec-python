@@ -1,0 +1,98 @@
+from fastapi import APIRouter, Depends, HTTPException, status # type: ignore
+from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from sqlalchemy.future import select # type: ignore
+from pydantic import BaseModel # type: ignore
+from typing import Optional, List # type: ignore
+import json # type: ignore
+
+from ..db.session import get_db # type: ignore
+from ..db.models import Tenant, User # type: ignore
+from ..services.email_service import email_service # type: ignore
+from .deps import get_current_user # type: ignore
+
+router = APIRouter()
+
+class ValidateRequest(BaseModel):
+    MachineName: str
+    Domain: str
+    IP: str
+    TenantApiKey: Optional[str] = None
+
+@router.post("/validate")
+async def validate_device(req: ValidateRequest, db: AsyncSession = Depends(get_db)):
+    print(f"[Install] Validating Device: {req.MachineName} | Domain: {req.Domain} | IP: {req.IP}")
+
+    tenant_name = "Unknown"
+    trusted_domains = []
+    trusted_ips = []
+    tenant = None
+
+    # 1. Resolve Tenant
+    if req.TenantApiKey:
+        result = await db.execute(select(Tenant).where(Tenant.ApiKey == req.TenantApiKey))
+        tenant = result.scalars().first()
+        
+        if tenant:
+            tenant_name = tenant.Name
+            try:
+                trusted_domains = json.loads(tenant.TrustedDomainsJson)
+            except:
+                trusted_domains = []
+            try:
+                trusted_ips = json.loads(tenant.TrustedIPsJson)
+            except:
+                trusted_ips = []
+    
+    # 2. Check Match
+    # Simple substring check for domains, exact match for IPs
+    is_domain_trusted = any(d.upper() in req.Domain.upper() for d in trusted_domains)
+    is_ip_trusted = req.IP in trusted_ips
+
+    if is_domain_trusted or is_ip_trusted:
+        return {"Status": "Trusted", "Message": f"Device Authorized for {tenant_name} via Policy."}
+
+    # --- UNTRUSTED DEVICE LOGIC ---
+    
+    # 3. Notify Tenant Admin if known Tenant
+    if tenant:
+        # Find Tenant Admin
+        # Logic: Find User with Role='TenantAdmin' and TenantId=tenant.Id
+        user_result = await db.execute(
+            select(User).where(User.TenantId == tenant.Id).where(User.Role == "TenantAdmin")
+        )
+        admin = user_result.scalars().first()
+        
+        if admin:
+             email_target = admin.Username if "@" in admin.Username else f"{admin.Username}@example.com"
+             
+             # Fire and forget email (async)
+             await email_service.send_email(
+                 email_target,
+                 "Installation Blocked: Authorization Required",
+                 f"""
+                    <h2>New Device Installation Attempt</h2>
+                    <p>A device outside your trusted network attempted to install the agent.</p>
+                    <ul>
+                        <li><b>Machine:</b> {req.MachineName}</li>
+                        <li><b>Domain:</b> {req.Domain}</li>
+                        <li><b>IP Address:</b> {req.IP}</li>
+                    </ul>
+                 """
+             )
+
+    return {"Status": "Authorization Required", "Message": "This device is not in the trusted network. Admin has been notified."}
+
+# [NEW] OTP Generation for Installation
+import random # type: ignore
+import string # type: ignore
+
+@router.post("/token")
+async def generate_install_token(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # Simple 6-digit OTP
+    otp = ''.join(random.choices(string.digits, k=6))
+    
+    # In a real app, store this in Redis or DB with expiration
+    # For now, we just return it to display in UI (stateless or assume valid for short time)
+    # Ideally, save to Tenant.InstallToken or similar if needed for validation
+    
+    return {"token": otp}

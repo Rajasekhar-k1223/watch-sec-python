@@ -1,0 +1,33 @@
+requests==2.31.0
+urllib3<2.0
+psutil==5.9.8
+python-socketio[client]==5.10.0
+watchdog==3.0.0
+mss==9.0.1
+pyinstaller==6.3.0
+aiohttp>=3.9.0
+Pillow==10.2.0
+aiortc
+av
+numpy<2.0.0
+sounddevice==0.4.6
+pyarmor==8.5.8
+pyperclip==1.8.2
+pynput==1.7.6
+
+
+# Build Dependencies (Fixes for PyInstaller/pkg_resources)
+jaraco.classes
+jaraco.stream
+jaraco.text
+jaraco.context
+jaraco.functools
+keyring
+platformdirs
+
+# OS Specific
+pywin32; sys_platform == 'win32'
+pypiwin32; sys_platform == 'win32'
+wmi; sys_platform == 'win32'
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+python-xlib; sys_platform == 'linux'

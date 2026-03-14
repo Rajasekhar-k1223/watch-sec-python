@@ -1,0 +1,48 @@
+# Build for ARM64 Linux
+FROM --platform=linux/arm64 python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    python3-dev \
+    libpq-dev \
+    binutils \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
+    libopus-dev \
+    libvpx-dev \
+    pkg-config \
+    libx11-dev \
+    libxtst-dev \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install build tools
+RUN pip install --no-cache-dir pyinstaller==6.3.0
+
+# Install dependencies first for caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
+COPY src/ ./src/
+COPY chrome_ext/ ./chrome_ext/
+
+# Build standalone binary
+# Use a spec file or direct call
+RUN pyinstaller --noconfirm --onefile --windowed \
+    --name "monitorix-agent-linux" \
+    --add-data "chrome_ext:chrome_ext" \
+    --hidden-import "pynput.keyboard._xorg" \
+    --hidden-import "pynput.mouse._xorg" \
+    --hidden-import "engineio.async_drivers.threading" \
+    src/main.py
+
+# Output will be in /app/dist/monitorix-agent-linux

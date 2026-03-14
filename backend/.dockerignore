@@ -1,0 +1,20 @@
+# Exclude storage (mounted volume)
+storage/
+storage/
+backend/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.env
+monitorix-stub.exe
+monitorix-signed-installer.exe
+installer.nsi
+node_modules/
+dist/
+build/
+*.log
+*.sqlite
+*.db
+

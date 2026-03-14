@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: watch-sec-backend
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@watch-sec-mongo:27017/appdb?authSource=admin
+      - HOST=0.0.0.0
+      - BACKEND_CORS_ORIGINS=["*"]
+      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend:/app
+    networks:
+      - watch-sec-network
+
+  frontend:
+    build:
+      context: ../watch-sec-frontend
+      args:
+        VITE_API_URL: /api
+    container_name: watch-sec-frontend
+    ports:
+      - "8080:80"
+    networks:
+      - watch-sec-network
+
+  celery:
+    build: ./backend
+    container_name: watch-sec-celery
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@watch-sec-mongo:27017/appdb?authSource=admin
+      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+    volumes:
+      - ./backend:/app
+      - ./backend/storage:/app/storage
+    networks:
+      - watch-sec-network
+
+networks:
+  watch-sec-network:
+    external: true
+    name: watch-sec-network
