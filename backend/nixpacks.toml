@@ -1,0 +1,13 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc", "mysql-client", "git-lfs"]
+
+[phases.build]
+cmds = [
+    "git lfs install",
+    "git lfs pull",
+    "pip install -r requirements.txt", 
+    "pip install pymysql cryptography"
+]
+
+[start]
+cmd = "sh start.sh"

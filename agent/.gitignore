@@ -1,0 +1,11 @@
+config.json
+dist/
+build/
+__pycache__/
+*.spec
+*.log
+*.zip
+*.part*
+mnitortixagent.exe
+*.lock
+*.tmp

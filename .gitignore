@@ -22,16 +22,23 @@ agent/dist_linux/
 agent/dist_arm64/
 agent/releases/
 agent/obfuscated/
+agent/installer/
+agent/demo_tools/
+agent/build_staging/
+agent/agent/
+backend/bin/
 
 # Storage & Templates
 backend/storage/
 backend/AgentTemplate/
 backend/app/api/all_endpoints.txt
 backend/app/scripts/sync_screenshots.py
-backend/check_*.py
-backend/*.py.bak
 backend/*.log
 *.log
+*.txt
+*.xlsx
+*.csv
+mem_report.txt
 
 # Monitorix Specific Junk
 agent/monitorix.zip
@@ -40,14 +47,55 @@ agent/monitorix-setup-v3.exe
 backend/monitorix-setup-v3.exe
 agent/python-*.exe
 agent/python-*.zip
+backend/celerybeat-schedule
+.env
+backend/.env
 
-# Diagnostic Scripts
+# Diagnostic & Maintenance Scripts
 *.py.bak
+backend/*.py.bak
+backend/check_*.py
+backend/debug_*.py
+backend/diagnose_*.py
+backend/dump_*.py
+backend/fetch_*.py
+backend/fix_*.py
+backend/generate_*.py
+backend/get_*.py
+backend/inspect_*.py
+backend/list_*.py
+backend/repair_*.py
+backend/reset_*.py
+backend/seed_*.py
+backend/sim_*.py
+backend/start.sh
+backend/supervisord.conf
+backend/test_*.py
+backend/update_*.py
+backend/upgrade_*.py
+backend/verify_*.py
 backend/create_missing_tables.py
 backend/run_migration_*.py
 backend/sync_screenshots.py
 backend/trigger_report.py
+
+# root diagnostic scripts
+check_*.py
+get_key.py
+simulate_activity.py
+verify_*.py
+inspect_*.py
+task.md
+
+# agent diagnostic
 agent/hello.py
+agent/Dockerfile.linux.agent
+agent/build_linux_docker.sh
+agent/build.py
+agent/build_agent.bat
+agent/build_mac.sh
+agent/build_win_on_linux.sh
+agent/test_auth.py
 
 # Certificates & Keys
 *.crt

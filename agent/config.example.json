@@ -1,0 +1,5 @@
+{
+    "BackendUrl": "https://api.monitorix.co.in",
+    "TenantApiKey": "25005e1c-4dc5-459b-9599-db6ed09c9ad2",
+    "AgentId": "Hostname-Username-UniqueId"
+}
