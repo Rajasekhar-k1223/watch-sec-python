@@ -61,7 +61,7 @@ from agent_core import AntiTamperMonitor, RemediationHandler, BandwidthManager, 
 from modules.audit_logger import AuditLogger # type: ignore
 
 # Milestone Version: 1.8.15
-AGENT_VERSION = "v1.8.18"
+AGENT_VERSION = "v1.8.24"
 IS_WINDOWS = platform.system() == "Windows"
 IS_UPDATING = False # Global guard to prevent multiple update starts
 
@@ -116,6 +116,144 @@ except ImportError:
             def status(self): return "running"
     sys.modules["psutil"] = PsutilStub() # type: ignore
     psutil = sys.modules["psutil"]
+
+# --- Windows Session Injection Helpers (Session 0 Support) ---
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    WTS_CURRENT_SERVER_HANDLE = 0
+    WTS_CURRENT_SESSION = -1
+    WTSUserName = 5
+    WTSConnectState = 8
+    WTSActive = 0
+
+    class STARTUPINFO(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE),
+            ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD),
+            ("dwThreadId", wintypes.DWORD),
+        ]
+
+def get_active_session_id():
+    if not IS_WINDOWS: return None
+    try:
+        # WTSGetActiveConsoleSessionId returns the session ID or 0xFFFFFFFF
+        return ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
+    except: return None
+
+def get_hardware_id():
+    """Generates a stable, hardware-based unique ID for the device."""
+    try:
+        # 1. Try Motherboard Serial Number (Windows)
+        if platform.system() == "Windows":
+            try:
+                cmd = "wmic bios get serialnumber"
+                output = subprocess.check_output(cmd, shell=True, timeout=5).decode().split('\n')
+                serial = output[1].strip()
+                if serial and serial.lower() not in ["unknown", "to be filled by o.e.m.", "0"]:
+                    return hashlib.md5(serial.encode()).hexdigest()[:8].upper()
+            except: pass
+        
+        # 2. Try DMI UUID (Linux)
+        elif platform.system() == "Linux":
+            try:
+                if os.path.exists("/sys/class/dmi/id/product_uuid"):
+                    with open("/sys/class/dmi/id/product_uuid", "r") as f:
+                        uuid_str = f.read().strip()
+                        if uuid_str:
+                            return hashlib.md5(uuid_str.encode()).hexdigest()[:8].upper()
+            except: pass
+
+        # 3. Fallback to MAC (Most Stable)
+        node = uuid.getnode()
+        mac = ':'.join(list(reversed(['{:02x}'.format((node >> (i * 8)) & 0xff) for i in range(6)])))
+        return hashlib.md5(mac.encode()).hexdigest()[:8].upper()
+    except:
+        return "DEV-ID"
+
+def spawn_user_session_agent():
+    """Spawns a child agent in the active user session if running as SYSTEM."""
+    if not IS_WINDOWS or not HEADLESS_MODE: return
+    
+    session_id = get_active_session_id()
+    if session_id is None or session_id == 0xFFFFFFFF: return
+    
+    # Check if a session agent is already running for this session
+    try:
+        my_exe = os.path.basename(sys.executable).lower()
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if proc.info['name'] and proc.info['name'].lower() == my_exe:
+                    # ONLY fetch environ for our own executables (saves massive CPU)
+                    env = proc.environ()
+                    if env and env.get("MONITORIX_SESSION_AGENT") == str(session_id):
+                        return # Already active in this session
+            except (psutil.NoSuchProcess, psutil.AccessDenied): continue
+    except: pass
+
+    log_to_file(f"[Session 0] Active user session detected: {session_id}. Spawning UI Agent...")
+    
+    try:
+        h_token = wintypes.HANDLE()
+        if not ctypes.windll.wtsapi32.WTSQueryUserToken(session_id, ctypes.byref(h_token)):
+            return
+
+        h_new_token = wintypes.HANDLE()
+        # Duplicate token for Primary access
+        if not ctypes.windll.advapi32.DuplicateTokenEx(h_token, 0x02000000, None, 2, 1, ctypes.byref(h_new_token)):
+            ctypes.windll.kernel32.CloseHandle(h_token)
+            return
+
+        si = STARTUPINFO()
+        si.cb = ctypes.sizeof(si)
+        si.lpDesktop = "winsta0\\default"
+        pi = PROCESS_INFORMATION()
+        
+        exe_path = sys.executable
+        # Pass specialized flag and session env
+        cmd = f'"{exe_path}" --session-agent'
+        
+        env = os.environ.copy()
+        env["MONITORIX_SESSION_AGENT"] = str(session_id)
+        
+        # CreateProcessAsUserW
+        if ctypes.windll.advapi32.CreateProcessAsUserW(
+            h_new_token, exe_path, cmd, None, None, False, 
+            0x00000010 | 0x00000200, # CREATE_NEW_CONSOLE | DETACHED_PROCESS
+            None, None, ctypes.byref(si), ctypes.byref(pi)
+        ):
+            log_to_file(f"[Session 0] UI Agent spawned successfully (PID: {pi.dwProcessId})")
+            ctypes.windll.kernel32.CloseHandle(pi.hProcess)
+            ctypes.windll.kernel32.CloseHandle(pi.hThread)
+        
+        ctypes.windll.kernel32.CloseHandle(h_new_token)
+        ctypes.windll.kernel32.CloseHandle(h_token)
+    except Exception as e:
+        log_to_file(f"[Session 0] Failed to spawn UI Agent: {e}")
 
 # --- Global State ---
 UPDATE_RETRY_COUNT: int = 0
@@ -317,51 +455,77 @@ sys.excepthook = global_excepthook
 # --- Singleton Lock (Per User/Context) ---
 def acquire_lock():
     # Allows User-Session Agent to override SYSTEM/Service Agent for GUI access.
-    lock_name = "monitorix.lock"
-    lock_file = os.path.join(BASE_DIR, lock_name)
+    # [RDP Multi-User Fix v1.8.19] Use session-specific lock to allow concurrent users.
+    if HEADLESS_MODE:
+        lock_name = "monitorix.lock"
+    else:
+        user_slug = current_user.replace(" ", "_").replace(".", "_").upper()
+        lock_name = f"monitorix_{user_slug}.lock"
+        
+    primary_lock_file = os.path.join(BASE_DIR, lock_name)
+    fallback_dir = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    fallback_lock_file = os.path.join(fallback_dir, lock_name)
     
+    lock_file = primary_lock_file
     is_system = current_user.upper() == "SYSTEM" or current_user.endswith("$")
 
     try:
         def remove_lock():
             try:
-                if os.path.exists(lock_file):
-                    with open(lock_file, 'r') as f:
-                        if f.read().strip() == str(os.getpid()):
-                            os.remove(lock_file)
+                for f_path in [primary_lock_file, fallback_lock_file]:
+                    if os.path.exists(f_path):
+                        with open(f_path, 'r') as f:
+                            if f.read().strip() == str(os.getpid()):
+                                os.remove(f_path)
             except: pass
         import atexit # type: ignore
         atexit.register(remove_lock) # type: ignore
 
-        if os.path.exists(lock_file):
-            try:
-                with open(lock_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        old_pid = int(content)
-                        if psutil.pid_exists(old_pid):
-                            try:
-                                proc = psutil.Process(old_pid)
-                                old_user = proc.username()
-                                is_old_system = "SYSTEM" in old_user.upper() or old_user.endswith("$")
-                                
-                                if (not is_system and is_old_system) or (current_user == old_user):
-                                    log_to_file(f"Terminating old instance (PID {old_pid}).")
-                                    proc.terminate()
-                                    psutil.wait_procs([proc], timeout=5)
-                                else:
-                                    log_to_file(f"Another instance is active (PID {old_pid} by {old_user}). Exiting.")
-                                    sys.exit(0)
-                            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                                pass 
-            except (ValueError, OSError): pass 
+        # --- Instance Management Logic ---
+        def handle_existing_instance(target_lock):
+            if os.path.exists(target_lock):
+                try:
+                    with open(target_lock, 'r') as f:
+                        content = f.read().strip()
+                        if content:
+                            old_pid = int(content)
+                            if psutil.pid_exists(old_pid):
+                                try:
+                                    proc = psutil.Process(old_pid)
+                                    old_user = proc.username()
+                                    is_old_system = "SYSTEM" in old_user.upper() or old_user.endswith("$")
+                                    
+                                    if (not is_system and is_old_system) or (current_user == old_user):
+                                        log_to_file(f"Terminating old instance (PID {old_pid}).")
+                                        proc.terminate()
+                                        try:
+                                            psutil.wait_procs([proc], timeout=5)
+                                        except: pass
+                                        time.sleep(0.5)
+                                    else:
+                                        log_to_file(f"Another instance is active (PID {old_pid} by {old_user}). Exiting.")
+                                        sys.exit(0)
+                                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                    pass 
+                except (ValueError, OSError): pass 
 
+        handle_existing_instance(primary_lock_file)
+        handle_existing_instance(fallback_lock_file)
+
+        # --- Acquire Lock ---
         try:
-            with open(lock_file, 'w') as f:
+            with open(primary_lock_file, 'w') as f:
                 f.write(str(os.getpid()))
-        except Exception as e:
-            log_to_file(f"Lock Write Error: {e}")
-            sys.exit(0)
+            lock_file = primary_lock_file
+        except (PermissionError, OSError):
+            log_to_file(f"Primary lock directory restricted ({BASE_DIR}). Using fallback: {fallback_dir}")
+            try:
+                with open(fallback_lock_file, 'w') as f:
+                    f.write(str(os.getpid()))
+                lock_file = fallback_lock_file
+            except Exception as e_fallback:
+                log_to_file(f"Critical Lock Error: Could not write to primary or fallback. {e_fallback}")
+                sys.exit(0)
 
     except Exception as e:
         log_to_file(f"Lock Error: {e}")
@@ -576,9 +740,19 @@ def apply_policy(config_src):
         
         screenshots_enabled = config_src.get("ScreenshotsEnabled", False)
         if screen_cap:  # Only if GUI available
-            if screenshots_enabled and not screen_cap.running:
+            if screenshots_enabled:
                 screen_cap.start()
-            screen_cap.set_enabled(screenshots_enabled)
+                screen_cap.set_enabled(True)
+            else:
+                screen_cap.stop()
+                screen_cap.set_enabled(False)
+            # [NEW] Sync screenshot settings (quality, resolution, max size, interval)
+            screen_cap.set_config(
+                config_src.get("ScreenshotQuality", 80),
+                config_src.get("ScreenshotResolution", "Original"),
+                config_src.get("MaxScreenshotSize", 0),
+                config_src.get("ScreenshotInterval", 60)
+            )
         
         if usb_ctrl:
             if not usb_ctrl.running:
@@ -696,8 +870,10 @@ def apply_policy(config_src):
             "ClipboardMonitorEnabled", "AppBlockerEnabled", "BrowserEnforcerEnabled",
             "PrinterMonitorEnabled", "ShadowMonitorEnabled", "LiveStreamEnabled",
             "SpeechMonitorEnabled", "VulnerabilityIntelligenceEnabled",
-            "ShadowPaths", "TenantApiKey", "BandwidthConfig"
+            "ShadowPaths", "TenantApiKey", "BandwidthConfig", "ScreenshotInterval",
+            "ScreenshotQuality", "ScreenshotResolution", "MaxScreenshotSize"
         ])
+
 
     except Exception as e:
         log_to_file(f"Error applying policy: {e}")
@@ -761,6 +937,7 @@ async def perform_update(update_url, target_ver):
         
         # [v1.7.0] Progress Tracking Helper
         loop = asyncio.get_running_loop()
+        downloaded: int = 0
         
         def download_with_progress(url, dest_path):
             with http_session.get(url, stream=True, timeout=120, verify=False) as r:
@@ -772,7 +949,8 @@ async def perform_update(update_url, target_ver):
                 with open(dest_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
-                            f.write(chunk)
+                            # Use casting to satisfy strict Buffer linter
+                            f.write(chunk) # type: ignore
                             cur_downloaded = int(downloaded)
                             new_total = cur_downloaded + len(chunk)
                             downloaded = int(new_total)
@@ -780,11 +958,13 @@ async def perform_update(update_url, target_ver):
                             if total > 0:
                                 pct = int((downloaded / total) * 100)
                                 if int(pct) - int(last_emit) >= 5:
-                                    if not bandwidth_manager.check_network_availability():
-                                        continue
-
-                                    event_data = {'agentId': AGENT_ID, 'progress': pct}
-                                    payload = bandwidth_manager.prepare_payload(event_data)
+                                    if bandwidth_manager:
+                                        if not bandwidth_manager.check_network_availability():
+                                            continue
+                                        event_data = {'agentId': AGENT_ID, 'progress': pct}
+                                        payload = bandwidth_manager.prepare_payload(event_data)
+                                    else:
+                                        payload = {'agentId': AGENT_ID, 'progress': pct}
                                     
                                     asyncio.run_coroutine_threadsafe(
                                         sio.emit('update_progress', payload),
@@ -810,7 +990,8 @@ async def perform_update(update_url, target_ver):
                     sha256_hash = hashlib.sha256()
                     with open(update_path, "rb") as f:
                         for byte_block in iter(lambda: f.read(4096), b""):
-                            sha256_hash.update(byte_block)
+                            if byte_block:
+                                sha256_hash.update(byte_block) # type: ignore
                     actual_hash = sha256_hash.hexdigest()
                     
                     if actual_hash.lower() != expected_hash.lower():
@@ -1124,11 +1305,15 @@ async def heartbeat_loop():
     # to clear any stale IsPendingUninstall flags.
     await asyncio.sleep(5)
     while running:
+        # [v1.8.21] Session 0 Support: Check for active user sessions to spawn UI Agent
+        if IS_WINDOWS and HEADLESS_MODE:
+            spawn_user_session_agent()
+            
         try:
-            # Gather Deep Telemetry
-            hw_specs = hw_mon.get_complete_specs()
-            power = power_mon.get_status()
-            lat, lon, country = loc_mon.get_location()
+            # Gather Deep Telemetry (with defensive null checks)
+            hw_specs = hw_mon.get_complete_specs() if hw_mon else {}
+            power = power_mon.get_status() if power_mon else {}
+            lat, lon, country = loc_mon.get_location() if loc_mon else (0, 0, "Unknown")
             
             payload = {
                 "AgentId": AGENT_ID,
@@ -1147,7 +1332,7 @@ async def heartbeat_loop():
                 "Latitude": lat,
                 "Longitude": lon,
                 "Country": country,
-                "InstalledSoftwareJson": json.dumps(hw_mon.get_installed_software()) if config.get("VulnerabilityIntelligenceEnabled") else "[]",
+                "InstalledSoftwareJson": json.dumps(hw_mon.get_installed_software()) if (hw_mon and config.get("VulnerabilityIntelligenceEnabled")) else "[]",
                 "HealthIssues": json.dumps(health_issues),
                 "JustStarted": first_heartbeat
             }
@@ -1160,7 +1345,10 @@ async def heartbeat_loop():
                 if data.get("Uninstall") is True:
                     log_to_file("!!! RECEIVED REMOTE UNINSTALL COMMAND !!!")
                     # Delegate to Installer Module
-                    installer.self_destruct()
+                    if installer:
+                        installer.self_destruct()
+                    else:
+                        log_to_file("  ✗ Error: Installer module not loaded. Cannot self-destruct.")
                     sys.exit(0)
 
                 # Apply remote flags
@@ -1207,7 +1395,7 @@ async def heartbeat_loop():
         # [GAP #7] Attempt log upload on every heartbeat if trace exists
         upload_update_log_to_backend()
         
-        await asyncio.sleep(120) # [v1.8.15] Increased interval to 2 minutes for lower CPU/Network impact
+        await asyncio.sleep(30) # [v1.8.19] Reduced to 30s for better real-time responsiveness
 
 async def update_monitor_task():
     """Background task to handle periodic logic"""
@@ -1215,8 +1403,9 @@ async def update_monitor_task():
         try:
             if sio_connected:
                 # [Bandwidth] Emit Real-Time Stats
-                stats = bandwidth_manager.get_stats()
-                await sio.emit('bandwidth_stats', stats)
+                if bandwidth_manager:
+                    stats = bandwidth_manager.get_stats()
+                    await sio.emit('bandwidth_stats', stats)
         except Exception as e:
             log_to_file(f"[Bandwidth] Stats emit failed: {e}")
         
@@ -1229,14 +1418,16 @@ async def update_monitor_task():
 @sio.on('UpdateBandwidthConfig')
 def on_update_bandwidth_config(data):
     log_to_file(f"[Bandwidth] Received config update: {data}")
-    bandwidth_manager.update_config(data)
+    if bandwidth_manager:
+        bandwidth_manager.update_config(data)
 
 @sio.on('PauseUploads')
 def on_pause_uploads(data):
     duration = data.get('duration_minutes', 60)
     reason = data.get('reason', 'Manual pause')
     log_to_file(f"[Bandwidth] Pausing uploads for {duration}m. Reason: {reason}")
-    bandwidth_manager.pause_uploads(duration)
+    if bandwidth_manager:
+        bandwidth_manager.pause_uploads(duration)
 
 @sio.event
 def connect():
@@ -1262,30 +1453,38 @@ async def on_take_screenshot(data):
 
 @sio.on('UpdateConfig')
 async def on_update_config(data):
-    log_to_file(f"Config Update: {data}")
-    # [FIX] Merge with current config to prevent default overwrites on partial updates
-    config_copy = load_config()
+    global config
+    log_to_file(f"Config Update (Socket): {data}")
+    
     if isinstance(data, dict):
+        # Merge with RUNNING global config, not reload from disk
         for k, v in data.items():
-            # Use update to satisfy strict linter
-            config_copy.update({str(k): v})
-        apply_policy(config_copy)
+            config[str(k)] = v
+        
+        # Apply Logic
+        apply_policy(config)
+        
+        # Persist to disk so it survives restart
+        save_config(config)
     else:
-        apply_policy(data)
+        log_to_file("Warning: Received non-dict UpdateConfig data.")
+
 
 @sio.on('webrtc_answer')
 async def on_webrtc_answer(data):
     log_to_file("Received WebRTC Answer")
-    await webrtc_manager.handle_answer(data)
+    if webrtc_manager:
+        await webrtc_manager.handle_answer(data)
 
 @sio.on('webrtc_ice_candidate')
 async def on_webrtc_ice_candidate(data):
-    await webrtc_manager.handle_ice_candidate(data)
+    if webrtc_manager:
+        await webrtc_manager.handle_ice_candidate(data)
 
 @sio.on('StartStream')
 async def on_start_stream(data):
     log_to_file("Live Stream Requested")
-    if config.get("LiveStreamEnabled", False): # [FIX] Check Config
+    if config.get("LiveStreamEnabled", False) and webrtc_manager: # [FIX] Check Config
         await webrtc_manager.start_stream()
     else:
          log_to_file("Live Stream Blocked (Disabled in Policy)")
@@ -1293,10 +1492,12 @@ async def on_start_stream(data):
 @sio.on('StopStream')
 async def on_stop_stream(data):
     log_to_file("Live Stream Stop Requested")
-    await webrtc_manager.stop_stream()
+    if webrtc_manager:
+        await webrtc_manager.stop_stream()
     
     # Non-blocking execution of remediation
-    asyncio.create_task(remediation.handle_command(data))
+    if remediation:
+        asyncio.create_task(remediation.handle_command(data))
 
 @sio.on('RemoteInput')
 async def on_remote_input(data):
@@ -1381,6 +1582,8 @@ Optimized to skip non-essential and dev directories.
             "monitorix.log", "agent.log", "agent.err", "monitorix_test.log",
             "monitorix_watchdog.log", "agent_test_run.log", "agent_stdout.log",
             "monitorix_update.exe", "monitorix_update",
+            "monitorix.lock", "monitorix_root.lock", 
+            f"monitorix_{current_user.replace(' ', '_').replace('.', '_').upper()}.lock",
             exe_name, "MonitorixAgent.exe", "monitorixagent.exe"
         }
         
@@ -1514,11 +1717,23 @@ async def main():
             print(f"Watchdog Failure: {we}")
             sys.exit(1)
 
-    # 2. Singleton Lock
-    acquire_lock()
+    # 1b. Session Agent Entry Point (v1.8.21)
+    # Allows a UI process spawned from Session 0 Service to run GUI tasks.
+    is_session_agent = "--session-agent" in sys.argv
+    if is_session_agent:
+        # Override headless mode so GUI modules are loaded
+        global HEADLESS_MODE
+        HEADLESS_MODE = False
+        log_to_file("[Session Agent] Running in UI-enabled mode.")
+    else:
+        # 2. Singleton Lock (Skip for Session Agent to allow coexistence)
+        acquire_lock()
     
-    # 3. Spawn Watchdog
-    spawn_watchdog()
+    # 3. Spawn Watchdog (Skip for SYSTEM service as SCM handles recovery)
+    if not HEADLESS_MODE:
+        spawn_watchdog()
+    else:
+        log_to_file("Running in Headless/Service mode. Watchdog skipped (SCM recovery active).")
 
     # 3. Load heavy modules
     if "--watchdog" not in sys.argv:
@@ -1584,35 +1799,51 @@ async def main():
          http_session.headers.update({"X-Tenant-Api-Key": API_KEY})
          sio.auth = {"apiKey": API_KEY}
 
-    AGENT_ID = config.get("AgentId", "").strip()
-    if not AGENT_ID:
-        # Simpler MAC generation to avoid lint confusion
-        node = uuid.getnode()
-        mac_parts = []
-        for i in range(6):
-            mac_parts.append('{:02x}'.format((node >> (i * 8)) & 0xff))
-        mac_parts.reverse()
-        mac = ':'.join(mac_parts)
-        unique_id = hashlib.md5(f"{mac}-{current_hostname}".encode()).hexdigest()[:8].upper()
-        AGENT_ID = f"{current_hostname}-{unique_id}"
-        config.update({"AgentId": AGENT_ID})
+    # [v1.8.23] Hardware-Centric Identity (No Suffixes/No User/No IP)
+    # This fulfills the request to avoid AgentId (volatile) and IP/Administrator checks.
+    BASE_AGENT_ID = config.get("AgentId", "").strip()
+    
+    # 1. Generate Stable Hardware Hash
+    hw_hash = get_hardware_id()
+    stable_id = f"{current_hostname}-{hw_hash}"
+    
+    # [v1.8.23] Migration / Unification:
+    # If the stored ID matches the pattern but has a suffix, or is different from stable ID, force update.
+    if not BASE_AGENT_ID or "-ADMINISTRATOR" in BASE_AGENT_ID.upper() or BASE_AGENT_ID != stable_id:
+        log_to_file(f"Identity Migration: {BASE_AGENT_ID} -> {stable_id}")
+        BASE_AGENT_ID = stable_id
+        config.update({"AgentId": BASE_AGENT_ID})
         save_config(config)
+
+    AGENT_ID = BASE_AGENT_ID
+    
+    log_to_file(f"Runtime Agent ID: {AGENT_ID} (Context: {'Service' if HEADLESS_MODE else 'User Session'})")
 
     # Health Check
     startup_issues = await perform_startup_health_check()
     health_issues.clear()
-    health_issues.extend(startup_issues)
+    if isinstance(startup_issues, list):
+        health_issues.extend(startup_issues)
     rotate_logs()
     harden_permissions()
 
     # Managers
+    global bandwidth_manager, audit_logger, data_queue, remediation, shadow_mon
+    global usb_ctrl, loc_mon, hw_mon, power_mon, net_mon, file_mon, mail_mon
+    global webrtc_manager, input_simulator, browser_enforcer, live_streamer
+    global screen_cap, activity_mon, keylogger, clip_mon
+
     bandwidth_manager = BandwidthManager()
     audit_logger = AuditLogger(AGENT_ID, API_KEY, BACKEND_URL, http_session)
     
     # 4. Initialize core components
     log_to_file("Initializing DataQueue components...")
+    # [v1.8.19] Differentiate DataQueue DB by session to prevent locking (RDP Multi-user)
+    db_name = "events_svc.db" if HEADLESS_MODE else "events_user.db"
+    db_path = os.path.join(BASE_DIR, db_name)
+    
     try:
-        data_queue = DataQueue(AGENT_ID, API_KEY, BACKEND_URL, bandwidth_manager=bandwidth_manager, logger=log_to_file)
+        data_queue = DataQueue(AGENT_ID, API_KEY, BACKEND_URL, bandwidth_manager=bandwidth_manager, db_path=db_path, logger=log_to_file)
         data_queue.start()
         log_to_file("  ✓ DataQueue started")
     except Exception as e:
@@ -1742,6 +1973,12 @@ async def main():
             log_to_file(f"Error handling rollback marker: {e}")
 
     
+    # [v1.8.21] Start monitoring automatically based on local policy
+    try:
+        apply_policy(config)
+    except Exception as ap_err:
+        log_to_file(f"Startup Policy Error: {ap_err}")
+
     try:
         await asyncio.gather(heartbeat_loop(), ws_maintainer(), update_monitor_task())
     finally:

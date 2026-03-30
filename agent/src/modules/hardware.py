@@ -11,6 +11,9 @@ class HardwareMonitor:
         self.cpu_cores = psutil.cpu_count(logical=False)
         self.cpu_threads = psutil.cpu_count(logical=True)
         self.ram_total = psutil.virtual_memory().total
+        # [v1.8.21] Resource Optimization Cache
+        self._serial_cache = None
+        self._gpu_cache = None
 
     def _get_cpu_model(self):
         system = platform.system()
@@ -172,6 +175,12 @@ class HardwareMonitor:
             disk_total = 0
             disk_free = 0
 
+        # [v1.8.21] Use Cached values for expensive shell/WMI calls
+        if not self._serial_cache:
+            self._serial_cache = self._get_serial_number()
+        if not self._gpu_cache:
+            self._gpu_cache = self._get_gpu_details()
+
         return {
             "CpuModel": self.cpu_model,
             "CpuCores": self.cpu_cores,
@@ -182,6 +191,6 @@ class HardwareMonitor:
             "RamPercent": mem.percent,
             "DiskTotalGB": disk_total,
             "DiskFreeGB": disk_free,
-            "SerialNumber": self._get_serial_number(),
-            "GpuModel": self._get_gpu_details()
+            "SerialNumber": self._serial_cache,
+            "GpuModel": self._gpu_cache
         }

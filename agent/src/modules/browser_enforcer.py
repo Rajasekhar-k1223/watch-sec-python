@@ -10,18 +10,29 @@ class BrowserEnforcer:
         self.logger = logging.getLogger("BrowserEnforcer")
         self.os_type = platform.system()
         
-        # Get absolute path of this file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        # Go up two levels to agent root
-        agent_root = os.path.dirname(os.path.dirname(current_dir))
-        self.ext_path = os.path.join(agent_root, "chrome_ext")
+        # 1. Resolve Persistent Extension Path
+        # The Installer copies the extension to this location for persistence
+        if self.os_type == "Windows":
+            pf = os.environ.get("ProgramFiles", "C:\\Program Files")
+            self.ext_path = os.path.join(pf, "Monitorix", "Extension")
+        elif self.os_type == "Darwin":
+            self.ext_path = "/Library/Application Support/Monitorix/Extension"
+        else: # Linux
+            self.ext_path = "/var/lib/monitorix/extension"
+
+        # 2. Fallback to Extraction/Local Dir if persistent not found
+        if not os.path.exists(self.ext_path):
+            if hasattr(sys, '_MEIPASS'):
+                # Running as PyInstaller OneFile - check internal bundle
+                self.ext_path = os.path.join(getattr(sys, '_MEIPASS'), "chrome_ext")
+            else:
+                # Running from source - check relative to this file
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                # agent_root/src/modules/browser_enforcer.py -> agent_root/chrome_ext
+                agent_root = os.path.dirname(os.path.dirname(current_dir))
+                self.ext_path = os.path.join(agent_root, "chrome_ext")
         
-        # Extension ID calculation is complex without key, assuming unpacked path used for now.
-        # Ideally we install .crx, but unpacked load requires CLI flags or Policy.
-        # Policy requires Extension ID for "ExtensionInstallForcelist".
-        # For this implementation, we will stick to CLI flags/Shortcut patching on Windows
-        # And Managed Policies on Linux/Mac if checking for unpacked path isn't feasible directly.
-        # Actually, "ExtensionInstallLoadList" allows paths on Linux/Mac policies.
+        # Extension ID calculation is complex without key...
         
         self.shortcuts_to_patch = ["Google Chrome.lnk", "Microsoft Edge.lnk", "Brave.lnk"]
 

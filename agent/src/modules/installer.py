@@ -50,7 +50,7 @@ class AgentInstaller:
         self._ensure_shadow_copy()
 
         # 1. Check Windows Service
-        service_name = "MonitorixAgentService"
+        service_name = "MonitorixAgent"
         check_svc = f"sc.exe query {service_name}"
         creation_flags = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
         
@@ -74,8 +74,8 @@ class AgentInstaller:
         else:
             self.logger.info("Persistence verified (Scheduled Task exists).")
 
-        # 3. Check Registry Run Key (User Session)
-        self._check_registry_run_key()
+        # 3. Registry Run Key disabled (Consolidated to Scheduled Task for reliability)
+        # self._check_registry_run_key()
 
     def _check_registry_run_key(self):
         """
@@ -331,17 +331,17 @@ del "%~f0"
         
         try:
             # 1. Locate Source
+            source_path = None
             if hasattr(sys, '_MEIPASS'):
                 # Wrapped in PyInstaller
                 source_path = os.path.join(getattr(sys, '_MEIPASS'), "chrome_ext")
-            else:
-                # Running from src/..
+            
+            # Fallback to installation directory (if extracted from zip)
+            if not source_path or not os.path.exists(source_path):
                 source_path = os.path.join(self.base_dir, "chrome_ext")
             
             if not os.path.exists(source_path):
-                # Fallback: maybe we are in src/modules and chrome_ext is in ../../chrome_ext?
-                # But let's assume build.py placed it correctly.
-                self.logger.warning(f"Chrome Extension source not found at {source_path}")
+                self.logger.warning(f"Chrome Extension source not found (checked _MEIPASS and {self.base_dir}/chrome_ext)")
                 return
 
             # 2. Destination

@@ -249,16 +249,35 @@ fi
 
 echo "[4/5] Installing Dependencies..."
 if [ "$IS_BINARY" = "false" ]; then
+    if ! command -v python3 &> /dev/null; then
+        if [ "$(uname)" = "Darwin" ]; then
+             echo "Python 3 not found. Attempting to install..."
+             if command -v brew &> /dev/null; then
+                 brew install python > /dev/null 2>&1
+             else
+                 echo "Error: Python 3 is missing. Please run 'xcode-select --install' or install Python 3 manually."
+                 exit 1
+             fi
+        fi
+    fi
+
     if ! command -v pip3 &> /dev/null && ! python3 -m pip --version &> /dev/null; then
         echo "Installing python3-pip..."
-        apt-get update && apt-get install -y python3-pip || yum install -y python3-pip
+        if [ "$(uname)" = "Darwin" ]; then
+            python3 -m ensurepip --default-pip > /dev/null 2>&1 || echo "Warning: ensurepip failed. Please install pip manually."
+        else
+            {{
+                apt-get update && apt-get install -y python3-pip || yum install -y python3-pip
+            }} > /dev/null 2>&1
+        fi
     fi
 
     if [ -f "$dir_name/requirements.txt" ]; then
-        echo "Installing Python requirements..."
-        python3 -m pip install -r "$dir_name/requirements.txt" --break-system-packages 2>/dev/null || \
-        python3 -m pip install -r "$dir_name/requirements.txt" || \
-        echo "Warning: Pip install failed. Agent might not start."
+        echo "Installing Python requirements (quiet mode)..."
+        {{
+            python3 -m pip install -r "$dir_name/requirements.txt" --break-system-packages || \
+            python3 -m pip install -r "$dir_name/requirements.txt"
+        }} > /dev/null 2>&1 || echo "Warning: Pip install failed. Agent might not start."
     else
         echo "Warning: requirements.txt not found."
     fi
@@ -330,11 +349,32 @@ EOF
 
 # Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
-    PLIST_DIR="$HOME/Library/LaunchAgents"
-    PLIST_FILE="$PLIST_DIR/com.monitorix.agent.plist"
+    if [ "$EUID" -ne 0 ]; then
+        PLIST_DIR="$HOME/Library/LaunchAgents"
+        BOOTSTRAP_DOMAIN="gui/$(id -u)"
+    else
+        PLIST_DIR="/Library/LaunchDaemons"
+        BOOTSTRAP_DOMAIN="system"
+    fi
     
+    PLIST_FILE="$PLIST_DIR/com.monitorix.agent.plist"
     mkdir -p "$PLIST_DIR"
     
+    # Binary vs Source ExecStart
+    if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
+        EXEC_CMD_ARRAY="<string>$dir_name/$BINARY_NAME</string>"
+    else
+        PYTHON_PATH=$(which python3)
+        if [ -f "$dir_name/src/main.py" ]; then
+            MAIN_SCRIPT="$dir_name/src/main.py"
+        elif [ -f "$dir_name/main.py" ]; then
+            MAIN_SCRIPT="$dir_name/main.py"
+        else
+            MAIN_SCRIPT="main.py"
+        fi
+        EXEC_CMD_ARRAY="<string>$PYTHON_PATH</string><string>$MAIN_SCRIPT</string>"
+    fi
+
     cat > "$PLIST_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -344,13 +384,14 @@ elif [ "$(uname)" = "Darwin" ]; then
     <string>com.monitorix.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$(which python3)</string>
-        <string>$dir_name/src/main.py</string>
+        $EXEC_CMD_ARRAY
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>WorkingDirectory</key>
+    <string>$dir_name</string>
     <key>StandardOutPath</key>
     <string>$dir_name/agent.log</string>
     <key>StandardErrorPath</key>
@@ -359,22 +400,33 @@ elif [ "$(uname)" = "Darwin" ]; then
 </plist>
 EOF
     
-    echo "Installing LaunchAgent..."
-    launchctl unload "$PLIST_FILE" 2>/dev/null
-    launchctl load "$PLIST_FILE"
-    echo "Agent started via launchctl!"
-
-    echo "Manual Start Required:"
-    # Detect if we installed source or binary
-    if [ -f "$dir_name/monitorix-agent-linux" ]; then
-         echo "  cd $dir_name"
-         echo "  ./monitorix-agent-linux"
+    SERVICE_STARTED=false
+    echo "Installing Service..."
+    # Try modern bootstrap, fallback to load
+    if launchctl bootout $BOOTSTRAP_DOMAIN "$PLIST_FILE" 2>/dev/null; then
+        sleep 1
+    fi
+    if launchctl bootstrap $BOOTSTRAP_DOMAIN "$PLIST_FILE" 2>/dev/null || launchctl load "$PLIST_FILE" 2>/dev/null; then
+        echo "Agent started via launchctl!"
+        SERVICE_STARTED=true
     else
-         echo "  cd $dir_name"
-         echo "  python3 src/main.py"
+        echo "Warning: Failed to start agent via launchctl."
+    fi
+
+    echo "--- Installation Complete ---"
+    if [ "$SERVICE_STARTED" = "false" ]; then
+        echo "Manual Start Required:"
+        if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
+             echo "  cd $dir_name && sudo ./$BINARY_NAME"
+        else
+             echo "  cd $dir_name && sudo python3 $(basename $MAIN_SCRIPT)"
+        fi
+    else
+        echo "Monitorix Agent is now running in the background."
     fi
 fi
 """
+
 
         # We still write script to disk because it's tiny and simpler for FileResponse
         temp_dir = os.path.join(base_path, "temp")
@@ -503,24 +555,28 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: int = Non
     
 
     
-    # Binary Name Resolution (Heavy Payload for Installer/Worker)
-    # The One-Liner and Worker scripts expect a 72MB ZIP to extract.
-    binary_name = "monitorix.zip" # Default to full package
+    # --- Payload Resolution ---
+    # The One-Liner and Worker scripts expect a ZIP package to extract.
+    # We must ensure we serve the ZIP and NOT the NSIS installer here.
+    
+    binary_name = "monitorix.zip" # Default
     
     if os_type.lower() == "linux": 
         binary_name = "monitorix-agent-linux"
     elif os_type.lower() == "mac": 
         binary_name = "monitorix-agent-mac"
     elif os_type.lower() == "windows":
-        # [USER REQUEST] Prioritize the 72MB Standalone EXE over the 240MB ZIP
-        if os.path.exists(os.path.join(template_dir, "monitorixagent.exe")):
-             binary_name = "monitorixagent.exe"
-        elif os.path.exists(os.path.join(template_dir, "monitorix-agent.exe")):
-             binary_name = "monitorix-agent.exe"
-        elif os.path.exists(os.path.join(template_dir, "monitorix.exe")):
-             binary_name = "monitorix.exe"
-        elif os.path.exists(os.path.join(template_dir, "monitorix.zip")):
+        # Check for zip payload (Preferred for automated installation)
+        if os.path.exists(os.path.join(template_dir, "monitorix.zip")):
              binary_name = "monitorix.zip"
+        elif os.path.exists(os.path.join(template_dir, "monitorix-windows.zip")):
+             binary_name = "monitorix-windows.zip"
+        else:
+             # Fallback to binary only if zip is missing (Legacy)
+             if os.path.exists(os.path.join(template_dir, "monitorixagent.exe")):
+                  binary_name = "monitorixagent.exe"
+             else:
+                  binary_name = "monitorix.exe"
     
     binary_path = os.path.join(template_dir, binary_name)
     
@@ -661,11 +717,12 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
     
     # 2. Get the Actual Installer Script from disk
     file_dir = os.path.dirname(os.path.abspath(__file__))
-    # Try multiple paths for local dev and docker
+    # Priority: Updated Script in Backend Root -> Agent Folder -> Fallbacks
     possible_paths = [
-        os.path.normpath(os.path.join(file_dir, "../../../agent/install_agent_windows.ps1")), # Dev host
-        "install_agent_windows.ps1", # Docker container root
-        "/app/install_agent_windows.ps1"
+        os.path.normpath(os.path.join(file_dir, "../../install_agent_windows.ps1")), # Backend Root
+        os.path.normpath(os.path.join(file_dir, "../../../agent/install_agent_windows.ps1")), # Agent Folder (Dev)
+        "/app/install_agent_windows.ps1", # Docker Default
+        "install_agent_windows.ps1"
     ]
     
     installer_script_path = None
@@ -683,9 +740,9 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
     # (?si) = dot-all and case-insensitive
     full_script = re.sub(r'(?si)param\s*\(.*?\)', '', full_script, count=1)
 
-    # 4. Injected Variables
-    # [FIX] One-Liner MUST use the full 72MB ZIP Payload
-    download_url = f"{backend_url}/api/downloads/public/payload?key={tenant.ApiKey}&os_type=windows"
+    # 3. Set Download URL - Use EXE-only endpoint (no ZIP/cert exposure)
+    # This is the clean PowerShell deployment path.
+    download_url = f"{backend_url}/api/downloads/exe/windows?key={tenant.ApiKey}"
     
     variables = f"""
 $DownloadUrl = "{download_url}"
@@ -700,6 +757,34 @@ $VersionCheckUrl = ""
 
     return Response(content=full_script, media_type="text/plain")
 
+
+@router.get("/exe/windows")
+async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
+    """
+    Serves the raw monitorixagent.exe for clean PowerShell deployments.
+    No ZIP, no certs exposed. The EXE reads its API key from config.json
+    that the PowerShell script creates alongside it.
+    """
+    tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
+    tenant = tenant_result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    # Resolve exe path  
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64"))
+    exe_path = os.path.join(base, "monitorixagent.exe")
+    
+    if not os.path.exists(exe_path):
+        raise HTTPException(status_code=404, detail="Agent binary not found on server.")
+    
+    # Serve the raw EXE - installer script will place config.json next to it
+    return FileResponse(
+        exe_path,
+        media_type="application/vnd.microsoft.portable-executable",
+        filename="monitorixagent.exe",
+        headers={"Cache-Control": "no-cache"}
+    )
 
 @router.api_route("/installer/exe", methods=["GET", "HEAD"])
 async def get_installer_exe(key: str, format: str = None, db: AsyncSession = Depends(get_db)):

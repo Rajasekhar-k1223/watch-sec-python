@@ -119,7 +119,7 @@ class DataQueue:
             except Exception as e:
                 self._log(f"Flush Error: {e}")
             
-            time.sleep(5) 
+            time.sleep(2) # [v1.8.19] Reduced from 5s for better responsiveness
 
     def _flush(self):
         items = []

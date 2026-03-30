@@ -57,7 +57,7 @@ elif SYSTEM_OS == "Linux":
 
 
 class ActivityMonitor:
-    def __init__(self, agent_id, api_key, backend_url, data_queue=None, interval=1.0, logger=None):
+    def __init__(self, agent_id, api_key, backend_url, data_queue=None, interval=3.0, logger=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
@@ -66,6 +66,7 @@ class ActivityMonitor:
         self.logger = logger
         self.running = False
         self._thread = None
+        self._process_cache = {} # [v1.8.21] pid -> psutil.Process cache
         self.current_window = {
             "title": "",
             "process": "",
@@ -123,6 +124,10 @@ class ActivityMonitor:
         if SYSTEM_OS == "Windows" and HAS_WIN32:
             lii = LASTINPUTINFO()
             lii.cbSize = ctypes.sizeof(LASTINPUTINFO) # type: ignore
+            # [v1.8.21] Session Check: if Session 0, idle duration is irrelevant for GUI
+            if self._get_session_id() == 0:
+                return 0.0
+            
             if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)): # type: ignore
                 millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime # type: ignore
                 return millis / 1000.0
@@ -131,6 +136,17 @@ class ActivityMonitor:
         elif SYSTEM_OS == "Darwin":
             return self._get_idle_duration_mac()
         return 0.0
+
+    def _get_session_id(self):
+        """Returns the Windows Session ID of the current process."""
+        if SYSTEM_OS != "Windows": return 1 # Default for Unix
+        try:
+            import os # type: ignore
+            session_id = ctypes.c_uint32()
+            if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session_id)):
+                return session_id.value
+        except: pass
+        return 1 # Fallback
 
     def _get_category(self, process_name, window_title):
         p = process_name.lower()
@@ -144,16 +160,24 @@ class ActivityMonitor:
 
     def start(self):
         if self.running: return
+        self.running = True
+        
+        # [v1.8.21] Re-initialize session if it was purged
+        if not hasattr(self, 'session') or self.session is None:
+            self.session = requests.Session()
+            self.session.headers.update({"X-Tenant-Api-Key": self.api_key})
+            adapter = requests.adapters.HTTPAdapter(max_retries=3)
+            self.session.mount('https://', adapter)
+            self.session.mount('http://', adapter)
         
         if SYSTEM_OS == "Darwin" and not HAS_QUARTZ:
              print("[ActivityMonitor] Skipped: macOS requires pyobjc-framework-Quartz/ApplicationServices.")
              return
         
-        self.running = True
         self._thread = threading.Thread(target=self._loop, daemon=True) # type: ignore
         self._thread.start()
         print(f"[ActivityMonitor] Started for {SYSTEM_OS}.")
-        self._send_log("Usage", "Agent Started", 0.0, datetime.now(timezone.utc), activity_type="System")
+        self._send_log("Usage", "Module Started", 0.0, datetime.now(timezone.utc), activity_type="System")
 
         if SYSTEM_OS == "Darwin" and HAS_QUARTZ and AXIsProcessTrusted:
             is_trusted = AXIsProcessTrusted()
@@ -163,9 +187,18 @@ class ActivityMonitor:
         if not self.running: return
         self.running = False
         if self._thread:
-            self._thread.join(timeout=2) # type: ignore
+            # We don't join with long timeout to avoid blocking policy sync
+            self._thread.join(timeout=0.5) 
             self._thread = None
-        self._send_log("Usage", "Agent Stopped", 0.0, datetime.now(timezone.utc), activity_type="System")
+        
+        # [v1.8.21] Aggressive Memory Purge
+        self._process_cache.clear()
+        if hasattr(self, 'session') and self.session:
+            try: self.session.close()
+            except: pass
+            self.session = None
+            
+        self._send_log("Usage", "Module Stopped (Memory Purged)", 0.0, datetime.now(timezone.utc), activity_type="System")
 
     # --- macOS ---
     def _get_active_window_macos(self):
@@ -229,8 +262,17 @@ class ActivityMonitor:
                         pid = ctypes.c_ulong()
                         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                         if pid.value > 0:
-                            p = psutil.Process(pid.value)
+                            # [v1.8.21] Resource Optimization: Cache psutil.Process objects
+                            if pid.value not in self._process_cache:
+                                # Simple cache cleanup (keep it small)
+                                if len(self._process_cache) > 50: self._process_cache.clear()
+                                self._process_cache[pid.value] = psutil.Process(pid.value)
+                            
+                            p = self._process_cache[pid.value]
                             process = p.name()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        # Clear stale cache entry
+                        self._process_cache.pop(pid.value, None)
                     except Exception as e:
                         print(f"[ActivityMonitor] PID Error: {e}")
                         pass
@@ -238,7 +280,10 @@ class ActivityMonitor:
                     return process, title
 
             # --- Service Mode / Session 0 Fallback ---
-            return "System Service", "Running as Service (No Desktop Access)"
+            if self._get_session_id() == 0:
+                return "System Service", "Monitorix Service (Session 0)"
+            
+            return "User Session", "Desktop Inaccessible (Locked or Logged Out)"
 
         except Exception as e:
             return "Error", str(e)
@@ -336,8 +381,8 @@ class ActivityMonitor:
                 now_ts = time.time()
                 # [OPTIMIZATION] Hybrid Event-Driven + Heartbeat Strategy
                 # 1. Trigger immediately on window change (Event-driven)
-                # 2. Trigger every 60s for long-running apps (Heartbeat) - Changed from 30s to reduce DB load
-                if proc != last_process or title != last_title or (now_ts - last_flush) > 60:
+                # 2. Trigger every 20s for long-running apps (Heartbeat) - [v1.8.19] Reduced from 60s
+                if proc != last_process or title != last_title or (now_ts - last_flush) > 20:
                     now = datetime.now(timezone.utc)
                     
                     if last_process:
@@ -347,9 +392,19 @@ class ActivityMonitor:
                         
                         # Only send log if duration is significant (>1s)
                         if duration > 1.0: 
-                            category = self._get_category(last_process, last_title)
-                            # If it was a periodic flush, we send the log but KEEP the window state (just reset timers)
-                            self._send_log(last_process, last_title, duration, self.current_window["start_time"], last_url, category=category, idle_time=total_idle)
+                            # [v1.8.21] Robust Session Suppression
+                            # Strictly suppress "No Desktop Access" from Session 0 (Services)
+                            # to avoid overwriting legitimate user activity in the dashboard.
+                            sid = self._get_session_id()
+                            is_headless_fallback = "No Desktop Access" in str(last_title)
+                            
+                            if sid == 0 and is_headless_fallback:
+                                # self._log("Skipping 'No Desktop Access' report from Session 0 (Service).")
+                                pass
+                            else:
+                                category = self._get_category(last_process, last_title)
+                                # If it was a periodic flush, we send the log but KEEP the window state (just reset timers)
+                                self._send_log(last_process, last_title, duration, self.current_window["start_time"], last_url, category=category, idle_time=total_idle)
                     
                     # URL Checking
                     current_url = ""

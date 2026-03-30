@@ -115,6 +115,7 @@ class Agent(Base):
     ScreenshotQuality = Column(Integer, default=80)
     ScreenshotResolution = Column(String(50), default="Original")
     MaxScreenshotSize = Column(Integer, default=0) # KB, 0=Unlimited
+    ScreenshotInterval = Column(Integer, default=60) # [NEW] v1.8.20
     
     # Deletion State
     IsPendingUninstall = Column(Boolean, default=False)
@@ -161,6 +162,7 @@ class Policy(Base):
     BlockedWebsitesJson = Column(Text, default="[]")
     RemediationJson = Column(Text, default="[]") # [NEW] Automated response playbooks
     BandwidthJson = Column(Text, default="{}") # [NEW] Policy-Based Bandwidth Control
+    ScreenshotInterval = Column(Integer, default=60) # [NEW] v1.8.20
     CreatedAt = Column(DateTime, default=datetime.utcnow)
 
 class SystemSetting(Base):

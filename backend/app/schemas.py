@@ -73,6 +73,7 @@ class AgentSettingsUpdate(BaseModel):
     MaxScreenshotSize: Optional[int] = 0
     BlockedApps: Optional[List[str]] = [] # [NEW]
     ShadowPaths: Optional[List[str]] = [] # [NEW] Enterprise Shadow Vault
+    ScreenshotInterval: Optional[int] = 60 # [NEW] v1.8.20
 
 class AgentHeartbeat(BaseModel):
     AgentId: str

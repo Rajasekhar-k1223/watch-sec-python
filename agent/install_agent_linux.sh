@@ -25,7 +25,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Check both dist_linux and root for the binary
 if [ -f "$SCRIPT_DIR/dist_linux/$BINARY_NAME" ]; then
     SOURCE_BIN="$SCRIPT_DIR/dist_linux/$BINARY_NAME"
-elif [ -f "$SOURCE_BIN" ]; then
+elif [ -f "$SCRIPT_DIR/$BINARY_NAME" ]; then
     SOURCE_BIN="$SCRIPT_DIR/$BINARY_NAME"
 else
     echo -e "${RED}Error: Could not find binary '$BINARY_NAME' in '$SCRIPT_DIR' or '$SCRIPT_DIR/dist_linux'.${NC}"
@@ -79,5 +79,5 @@ systemctl daemon-reload
 systemctl enable $SERVICE_NAME
 systemctl start $SERVICE_NAME
 
-echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.18 is now active.${NC}"
+echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.23 is now active.${NC}"
 systemctl status $SERVICE_NAME --no-pager

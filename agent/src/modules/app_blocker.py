@@ -7,7 +7,7 @@ from typing import Optional # type: ignore
 import os # type: ignore
 
 class AppBlocker:
-    def __init__(self, agent_id, api_key, backend_url, data_queue=None, interval=3):
+    def __init__(self, agent_id, api_key, backend_url, data_queue=None, interval=10.0):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
@@ -40,23 +40,41 @@ class AppBlocker:
             self.thread = None
             
     def _loop(self):
+        known_pids = {}
         while self.running:
             if not self.blocked_apps:
                 time.sleep(self.interval)
                 continue
                 
             try:
-                for proc in psutil.process_iter(['pid', 'name']):
+                # O(1) PID caching to prevent 200+ WMI queries every loop
+                current_pids = set(psutil.pids())
+                new_pids = current_pids - set(known_pids.keys())
+                dead_pids = set(known_pids.keys()) - current_pids
+                
+                for pid in dead_pids:
+                    del known_pids[pid]
+                    
+                for pid in new_pids:
                     try:
-                        pname = proc.info['name'].lower()
-                        if pname in self.blocked_apps:
-                            # Kill it
-                            proc.kill()
-                            print(f"[AppBlocker] KILLED: {pname} (PID: {proc.info['pid']})")
-                            
-                            self._send_alert("APP_BLOCKED", f"Terminated prohibited application: {pname}")
+                        p = psutil.Process(pid)
+                        name = p.name().lower()
+                        known_pids[pid] = name
                     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                         pass
+                
+                # Check known_pids against blocked_apps
+                blocked_set = set(self.blocked_apps)
+                for pid, pname in list(known_pids.items()):
+                    if pname in blocked_set:
+                        try:
+                            psutil.Process(pid).kill()
+                            print(f"[AppBlocker] KILLED: {pname} (PID: {pid})")
+                            self._send_alert("APP_BLOCKED", f"Terminated prohibited application: {pname}")
+                            del known_pids[pid]
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                            
             except Exception as e:
                 print(f"[AppBlocker] Error: {e}")
                 

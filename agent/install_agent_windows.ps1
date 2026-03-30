@@ -325,7 +325,7 @@ try {
     # Only start the service. The service recovery and Run keys will take it from here.
     # Starting it manually here creates a "third" instance that conflicts with the service.
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.18 Service is now starting." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.20 Service is now starting." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent service automatically. Please start '$ServiceName' in services.msc"
 }

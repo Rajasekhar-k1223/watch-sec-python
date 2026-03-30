@@ -1,6 +1,6 @@
 import fastapi # type: ignore # pyre-ignore
-from fastapi import APIRouter, Depends, HTTPException, status, Response # type: ignore # pyre-ignore
-from fastapi.responses import FileResponse # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query # type: ignore
+from fastapi.responses import FileResponse, JSONResponse # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from pydantic import BaseModel # type: ignore
@@ -12,7 +12,7 @@ from ..db.session import get_db # type: ignore
 from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant # type: ignore
 from .deps import get_current_user, get_tenant_by_key # type: ignore
 from ..socket_instance import sio # type: ignore
-from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat # type: ignore
+from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate # type: ignore
 
 router = APIRouter()
 
@@ -94,70 +94,101 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, Query #
 async def get_agents(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db),
+    tenantId: Optional[int] = Query(None), # [NEW] Support explicit tenant filtering
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    query = select(Agent).where(Agent.IsPendingUninstall == False)
-    
-    # Filter by Tenant for non-SuperAdmin
-    if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId:
-            return []
-        query = query.where(Agent.TenantId == current_user.TenantId)
-    
-    query = query.order_by(Agent.LastSeen.desc())
-    query = query.limit(limit).offset(offset)
+    try:
+        query = select(Agent)
         
-    result = await db.execute(query)
-    agents = result.scalars().all()
-    
-    # [FIX] Compute dynamic status for each agent
-    from datetime import datetime, timedelta # type: ignore
-    now = datetime.utcnow()
-    
-    response = []
-    for a in agents:
-        status = "Offline"
-        if a.LastSeen and (now - a.LastSeen).total_seconds() < 120:
-            status = "Online"
+        # [ROBUSTNESS] Handle missing IsPendingUninstall column if migration hasn't run yet
+        try:
+            query = query.where(Agent.IsPendingUninstall == False)
+        except Exception:
+            print("[Agents] WARNING: IsPendingUninstall column missing. Skipping filter.")
+
+        # Filter by Tenant for non-SuperAdmin or if tenantId provided
+        effective_tenant_id = current_user.TenantId
+        if current_user.Role == "SuperAdmin" and tenantId is not None:
+            effective_tenant_id = tenantId
+
+        if effective_tenant_id:
+            query = query.where(Agent.TenantId == effective_tenant_id)
+        elif current_user.Role != "SuperAdmin":
+            return [] # Non-SuperAdmin with no tenant access
         
-        # Merge model with dynamic fields
-        response.append({
-            "id": a.Id,
-            "agentId": a.AgentId,
-            "tenantId": a.TenantId,
-            "hostname": a.Hostname,
-            "status": status,
-            "cpuUsage": a.CpuUsage,
-            "memoryUsage": a.MemoryUsage,
-            "lastSeen": a.LastSeen.isoformat() if a.LastSeen else None,
-            "localIp": a.LocalIp,
-            "screenshotsEnabled": a.ScreenshotsEnabled,
-            "locationTrackingEnabled": a.LocationTrackingEnabled,
-            "usbBlockingEnabled": a.UsbBlockingEnabled,
-            "networkMonitoringEnabled": a.NetworkMonitoringEnabled,
-            "fileDlpEnabled": a.FileDlpEnabled,
-            "activityMonitorEnabled": a.ActivityMonitorEnabled,
-            "keyloggerEnabled": a.KeyloggerEnabled,
-            "clipboardMonitorEnabled": a.ClipboardMonitorEnabled,
-            "appBlockerEnabled": a.AppBlockerEnabled,
-            "browserEnforcerEnabled": a.BrowserEnforcerEnabled,
-            "printerMonitorEnabled": a.PrinterMonitorEnabled,
-            "shadowMonitorEnabled": a.ShadowMonitorEnabled,
-            "liveStreamEnabled": a.LiveStreamEnabled,
-            "remoteShellEnabled": a.RemoteShellEnabled,
-            "mailMonitorEnabled": a.MailMonitorEnabled,
-            "powerStatusJson": a.PowerStatusJson,
-            "hardwareJson": a.HardwareJson,
-            "version": a.Version,
-            "targetVersion": a.TargetVersion,
-            "updateStatus": a.UpdateStatus,
-            "updateFailureReason": a.UpdateFailureReason,
-            "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if a.LastUpdateAttempt else None,
-            "policyId": a.PolicyId # [NEW]
-        })
+        query = query.order_by(Agent.LastSeen.desc())
+        query = query.limit(limit).offset(offset)
+            
+        result = await db.execute(query)
+        agents = result.scalars().all()
         
-    return response
+        # [FIX] Compute dynamic status for each agent
+        from datetime import datetime, timedelta # type: ignore
+        now = datetime.utcnow()
+        
+        response = []
+        for a in agents:
+            status = "Offline"
+            if a.LastSeen and (now - a.LastSeen).total_seconds() < 120:
+                status = "Online"
+            
+            # [SAFE ACCESS] Use getattr to handle potentially missing columns before migration
+            # This prevents 500 errors if the code is deployed before the DB schema update
+            def get_safe(obj, attr, default=None):
+                try:
+                    return getattr(obj, attr, default)
+                except Exception:
+                    return default
+
+            # Merge model with dynamic fields
+            response.append({
+                "id": a.Id,
+                "agentId": a.AgentId,
+                "tenantId": a.TenantId,
+                "hostname": a.Hostname,
+                "status": status,
+                "cpuUsage": a.CpuUsage,
+                "memoryUsage": a.MemoryUsage,
+                "lastSeen": a.LastSeen.isoformat() if a.LastSeen else None,
+                "localIp": a.LocalIp,
+                "screenshotsEnabled": a.ScreenshotsEnabled,
+                "locationTrackingEnabled": a.LocationTrackingEnabled,
+                "usbBlockingEnabled": a.UsbBlockingEnabled,
+                "networkMonitoringEnabled": a.NetworkMonitoringEnabled,
+                "fileDlpEnabled": a.FileDlpEnabled,
+                "activityMonitorEnabled": a.ActivityMonitorEnabled,
+                "keyloggerEnabled": a.KeyloggerEnabled,
+                "clipboardMonitorEnabled": a.ClipboardMonitorEnabled,
+                "appBlockerEnabled": a.AppBlockerEnabled,
+                "browserEnforcerEnabled": a.BrowserEnforcerEnabled,
+                "printerMonitorEnabled": a.PrinterMonitorEnabled,
+                "shadowMonitorEnabled": a.ShadowMonitorEnabled,
+                "liveStreamEnabled": a.LiveStreamEnabled,
+                "remoteShellEnabled": a.RemoteShellEnabled,
+                "mailMonitorEnabled": a.MailMonitorEnabled,
+                "powerStatusJson": a.PowerStatusJson,
+                "hardwareJson": a.HardwareJson,
+                "version": a.Version,
+                "targetVersion": a.TargetVersion,
+                "updateStatus": a.UpdateStatus,
+                "updateFailureReason": a.UpdateFailureReason,
+                "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if a.LastUpdateAttempt else None,
+                "policyId": get_safe(a, "PolicyId"),
+                "screenshotInterval": get_safe(a, "ScreenshotInterval", 60)
+            })
+            
+        return response
+    except Exception as e:
+        import traceback # type: ignore
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500, 
+            content={
+                "detail": f"Internal Server Error: {str(e)}", 
+                "trace": traceback.format_exc()
+            }
+        )
 
 class AgentUpdateLogRequest(BaseModel):
     AgentId: str
@@ -309,6 +340,7 @@ agent_router = APIRouter()
 class AgentEvent(BaseModel):
     EventType: str
     Message: str
+    TenantApiKey: Optional[str] = None # Support backward compatibility
     Timestamp: Optional[str] = None
 
 
@@ -360,8 +392,13 @@ async def agent_heartbeat(
     Compatible with Windows, Linux, and macOS agents.
     """
     try:
-        # [SEC] The get_tenant_by_key dependency already validates the API Key from the Header.
-        # We can still check payload.TenantApiKey if we want, but Header is the primary now.
+        # 1. Backward Compatibility for API Key
+        if not tenant:
+            # Fallback to payload's TenantApiKey if header is missing
+            result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey))
+            tenant = result_tenant.scalars().first()
+            if not tenant:
+                raise HTTPException(status_code=401, detail="Invalid API Key")
 
         # 2. Find Agent
         result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
@@ -392,6 +429,11 @@ async def agent_heartbeat(
                 req_level = FEATURE_TIERS.get(key, 3)
                 return default_val if plan_level >= req_level else False
             
+            # [v1.8.16] Truncate software inventory to 64KB for safety
+            safe_software = payload.InstalledSoftwareJson
+            if safe_software and len(safe_software) > 64000:
+                safe_software = safe_software[:64000] + "]"
+
             # Initialize New Agent object
             agent = Agent(
                 AgentId=payload.AgentId,
@@ -399,7 +441,7 @@ async def agent_heartbeat(
                 Hostname=payload.Hostname,
                 LocalIp=payload.LocalIp or "0.0.0.0",
                 Gateway=payload.Gateway or "Unknown",
-                InstalledSoftwareJson=payload.InstalledSoftwareJson,
+                InstalledSoftwareJson=safe_software,
                 LastSeen=datetime.utcnow(),
                 ScreenshotsEnabled=check_feat("ScreenshotsEnabled", False),
                 UsbBlockingEnabled=check_feat("UsbBlockingEnabled", True),
@@ -425,8 +467,16 @@ async def agent_heartbeat(
                 Country=payload.Country
             )
             db.add(agent)
-            await db.commit()
-            await db.refresh(agent)
+            try:
+                await db.commit()
+                await db.refresh(agent)
+            except Exception as e:
+                await db.rollback()
+                print(f"[HEARTBEAT] New Agent Commit Failed: {e}")
+                # Retry with minimal fields
+                agent.InstalledSoftwareJson = None
+                await db.commit()
+                await db.refresh(agent)
         else:
             # Update Existing Agent
             agent.LastSeen = datetime.utcnow()
@@ -440,15 +490,26 @@ async def agent_heartbeat(
             # Version & Update Status Tracking
             if payload.Version:
                 if agent.Version != payload.Version:
-                    if payload.Version != agent.TargetVersion:
-                        agent.TargetVersion = payload.Version
-                    else:
+                    # If agent just updated to target, clear status
+                    if payload.Version == agent.TargetVersion:
                         agent.UpdateStatus = "idle"
                         agent.UpdateFailureReason = None
+                
                 agent.Version = payload.Version
-                # Maintain target version if already at latest
-                if agent.Version == LATEST_AGENT_VERSION and agent.TargetVersion != LATEST_AGENT_VERSION:
-                    agent.TargetVersion = agent.Version
+
+                # [v1.8.21] Automated Update Logic:
+                # If agent version is lagging behind LATEST, set TargetVersion to trigger update
+                # except if a custom TargetVersion is already set (and isn't LATEST).
+                if agent.Version != LATEST_AGENT_VERSION:
+                    if agent.TargetVersion != LATEST_AGENT_VERSION:
+                        # Only auto-target if not already in a custom update state
+                        if not agent.TargetVersion or agent.TargetVersion == agent.Version:
+                            agent.TargetVersion = LATEST_AGENT_VERSION
+                else:
+                    # If already at latest, ensure TargetVersion matches
+                    if agent.TargetVersion != LATEST_AGENT_VERSION:
+                        agent.TargetVersion = LATEST_AGENT_VERSION
+                        agent.UpdateStatus = "idle"
 
             # Ensure TenantId is correct
             if agent.TenantId != tenant.Id:
@@ -456,10 +517,10 @@ async def agent_heartbeat(
             
             # Inventory & Vulnerability Scanning
             if payload.InstalledSoftwareJson and len(payload.InstalledSoftwareJson) > 2:
-                # [v1.8.15] Ensure we don't crash if encoding/size is extreme
+                # [v1.8.16] Aggressive truncation to 64KB for safety (fits in all TEXT types)
                 safe_json = payload.InstalledSoftwareJson
-                if len(safe_json) > 1000000: # 1MB safety gap for LONGTEXT
-                    safe_json = safe_json[:1000000] + "]"
+                if len(safe_json) > 64000:
+                    safe_json = safe_json[:64000] + "]"
                 
                 agent.InstalledSoftwareJson = safe_json
                 try:
@@ -474,23 +535,45 @@ async def agent_heartbeat(
                 
             agent.CpuUsage = payload.CpuUsage
             agent.MemoryUsage = payload.MemoryUsage
-            await db.commit()
+            
+            try:
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                # Log to dedicated crash file
+                error_log = f"[HEARTBEAT RETRY] Data truncation issue detected for {agent.AgentId}: {e}\n"
+                try:
+                    with open("heartbeat_crash.log", "a") as f:
+                        f.write(error_log)
+                except: pass
+                
+                # RECOVERY: Clear the heavy JSON fields and commit again to save the heartbeat (LastSeen)
+                agent.InstalledSoftwareJson = None
+                agent.HardwareJson = None
+                await db.commit()
 
         # --- CRITICAL: Ensure agent is not None before proceeding ---
         if not agent:
              raise HTTPException(status_code=500, detail="Internal Error: Failed to retrieve or create agent record.")
 
-        # 3. Resolve Bandwidth Configuration
+        # 3. Resolve Configuration (Bandwidth & Screenshot Interval)
         bandwidth_config = tenant.bandwidth_config or {}
-        # Check for Policy-specific bandwidth overrides
+        screenshot_interval = agent.ScreenshotInterval
+        
+        # Check for Policy-specific overrides
         if hasattr(agent, 'PolicyId') and agent.PolicyId:
             p_res = await db.execute(select(Policy).where(Policy.Id == agent.PolicyId))
             policy = p_res.scalars().first()
-            if policy and policy.BandwidthJson:
-                try:
-                    pol_bw = json.loads(policy.BandwidthJson)
-                    if pol_bw: bandwidth_config = pol_bw
-                except: pass
+            if policy:
+                # Override Bandwidth
+                if policy.BandwidthJson:
+                    try:
+                        pol_bw = json.loads(policy.BandwidthJson)
+                        if pol_bw: bandwidth_config = pol_bw
+                    except: pass
+                # Override Screenshot Interval
+                if policy.ScreenshotInterval is not None:
+                    screenshot_interval = policy.ScreenshotInterval
 
         # 4. Check for Remote Updates
         update_required = False
@@ -498,7 +581,7 @@ async def agent_heartbeat(
         if agent.Version != agent.TargetVersion:
             if is_in_maintenance_window(tenant):
                 update_required = True
-                backend_url = os.getenv("APP_BACKEND_URL") or "https://api.monitorix.co.in"
+                backend_url = os.getenv("APP_BACKEND_URL") or os.getenv("MONITORIX_BASE_URL") or "https://api.monitorix.co.in"
                 # Determine OS type and Architecture for update payload
                 os_type = "windows"
                 arch = "x64"
@@ -621,6 +704,7 @@ async def agent_heartbeat(
                 "ScreenshotQuality": agent.ScreenshotQuality,
                 "ScreenshotResolution": agent.ScreenshotResolution,
                 "MaxScreenshotSize": agent.MaxScreenshotSize,
+                "ScreenshotInterval": screenshot_interval,
                 "BlockedApps": agent.BlockedAppsJson or "[]",
                 "ShadowPaths": agent.ShadowPathsJson or "[]",
                 "BandwidthConfig": bandwidth_config
@@ -648,6 +732,15 @@ async def report_agent_event(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_tenant_by_key)
 ):
+    # Backward Compatibility for API Key
+    if not tenant:
+        if not payload.TenantApiKey:
+             raise HTTPException(status_code=401, detail="API Key required")
+        result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey))
+        tenant = result_tenant.scalars().first()
+        if not tenant:
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+
     # 1. Find Agent & Verify Tenant Ownership
     result = await db.execute(
         select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id)
@@ -796,6 +889,63 @@ async def toggle_screenshots(
     await sio.emit('UpdateConfig', {'ScreenshotsEnabled': enabled}, room=agent_string_id)
     
     return {"AgentId": agent.AgentId, "ScreenshotsEnabled": agent.ScreenshotsEnabled}
+
+@router.post("/{agent_id}/screenshot-settings")
+async def update_screenshot_settings(
+    agent_id: str,
+    payload: AgentSettingsUpdate,
+    current_user: User = Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    # Find Agent
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Check Tenant Scoping
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+             raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Update Fields
+    if payload.ScreenshotQuality is not None:
+        agent.ScreenshotQuality = payload.ScreenshotQuality
+    if payload.ScreenshotInterval is not None:
+        agent.ScreenshotInterval = payload.ScreenshotInterval
+    if payload.ScreenshotResolution is not None:
+        agent.ScreenshotResolution = payload.ScreenshotResolution
+    if payload.MaxScreenshotSize is not None:
+        agent.MaxScreenshotSize = payload.MaxScreenshotSize
+        
+    # [AUDIT]
+    from datetime import datetime # type: ignore
+    audit = AuditLog(
+        TenantId=current_user.TenantId or 0,
+        Actor=current_user.Username,
+        Action="Update Screenshot Settings",
+        Target=f"{agent.Hostname} ({agent.AgentId})",
+        Details=f"Interval: {agent.ScreenshotInterval}, Quality: {agent.ScreenshotQuality}",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    
+    await db.commit()
+    
+    # [REAL-TIME SYNC]
+    await sio.emit('UpdateConfig', {
+        'ScreenshotInterval': agent.ScreenshotInterval,
+        'ScreenshotQuality': agent.ScreenshotQuality,
+        'ScreenshotResolution': agent.ScreenshotResolution,
+        'MaxScreenshotSize': agent.MaxScreenshotSize
+    }, room=agent.AgentId)
+    
+    return {
+        "AgentId": agent.AgentId, 
+        "ScreenshotInterval": agent.ScreenshotInterval,
+        "ScreenshotQuality": agent.ScreenshotQuality
+    }
 
 @router.post("/{agent_string_id}/toggle-location")
 async def toggle_location(
@@ -1179,14 +1329,21 @@ async def update_settings(
         if not current_user.TenantId or agent.TenantId != current_user.TenantId:
              raise HTTPException(status_code=403, detail="Not authorized")
 
-    agent.ScreenshotQuality = settings.ScreenshotQuality
-    agent.ScreenshotResolution = settings.ScreenshotResolution
-    agent.MaxScreenshotSize = settings.MaxScreenshotSize
+    # Partial Updates: only change fields if they are explicitly sent
+    if settings.ScreenshotQuality is not None:
+        agent.ScreenshotQuality = settings.ScreenshotQuality
+    if settings.ScreenshotResolution is not None:
+        agent.ScreenshotResolution = settings.ScreenshotResolution
+    if settings.MaxScreenshotSize is not None:
+        agent.MaxScreenshotSize = settings.MaxScreenshotSize
+    if settings.ScreenshotInterval is not None:
+        agent.ScreenshotInterval = settings.ScreenshotInterval # [NEW]
     
     # [NEW] Enforce Plan Limits
     from ..db.models import Tenant # type: ignore
     t_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
     tenant = t_res.scalars().first()
+
     
     if settings.BlockedApps is not None:
          # Check Plan
@@ -1207,7 +1364,7 @@ async def update_settings(
         Actor=current_user.Username,
         Action="Update Agent Settings",
         Target=f"{agent.Hostname} ({agent.AgentId})",
-        Details=f"Quality: {settings.ScreenshotQuality}, Blocked: {len(settings.BlockedApps or [])}",
+        Details=f"Quality: {settings.ScreenshotQuality}, Interval: {settings.ScreenshotInterval}s, Blocked: {len(settings.BlockedApps or [])}",
         Timestamp=datetime.utcnow()
     )
     db.add(audit)
@@ -1216,10 +1373,14 @@ async def update_settings(
     
     # Notify Agent
     await sio.emit('UpdateConfig', {
-        'ScreenshotQuality': settings.ScreenshotQuality,
-        'BlockedApps': settings.BlockedApps or [],
-        'ShadowPaths': settings.ShadowPaths or []
+        'ScreenshotQuality': agent.ScreenshotQuality,
+        'ScreenshotResolution': agent.ScreenshotResolution,
+        'MaxScreenshotSize': agent.MaxScreenshotSize,
+        'ScreenshotInterval': agent.ScreenshotInterval,
+        'BlockedApps': settings.BlockedApps if settings.BlockedApps is not None else json.loads(agent.BlockedAppsJson),
+        'ShadowPaths': settings.ShadowPaths if settings.ShadowPaths is not None else json.loads(agent.ShadowPathsJson)
     }, room=agent_string_id)
+
     
     return {"status": "Updated", "settings": settings}
 

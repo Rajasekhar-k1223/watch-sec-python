@@ -1,3 +1,4 @@
+from typing import Optional # type: ignore
 from fastapi import Depends, HTTPException, status, Header # type: ignore
 from fastapi.security import OAuth2PasswordBearer # type: ignore
 from jose import JWTError, jwt # type: ignore
@@ -37,7 +38,9 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
         raise HTTPException(status_code=403, detail="User not assigned to any tenant")
     return current_user
 
-async def get_tenant_by_key(x_tenant_api_key: str = Header(..., alias="X-Tenant-Api-Key"), db: AsyncSession = Depends(get_db)):
+async def get_tenant_by_key(x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"), db: AsyncSession = Depends(get_db)):
+    if not x_tenant_api_key:
+        return None
     result = await db.execute(select(Tenant).where(Tenant.ApiKey == x_tenant_api_key))
     tenant = result.scalars().first()
     if not tenant:

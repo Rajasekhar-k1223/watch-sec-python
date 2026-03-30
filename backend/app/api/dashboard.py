@@ -26,7 +26,12 @@ async def get_dashboard_status(
         # This prevents loading 100k+ reports into Python memory.
         
         # 1. Fetch Agents
-        agent_query = select(Agent).where(Agent.IsPendingUninstall == False)
+        agent_query = select(Agent)
+        try:
+            agent_query = agent_query.where(Agent.IsPendingUninstall == False)
+        except Exception:
+            pass # Handle missing column gracefully
+
         if tenantId:
             agent_query = agent_query.where(Agent.TenantId == tenantId)
         
@@ -49,9 +54,10 @@ async def get_dashboard_status(
             subq = subq.where(AgentReportEntity.TenantId == tenantId)
         
         # Now join back to get full row
+        report_subq = subq.subquery()
         latest_reports_query = select(AgentReportEntity).join(
-            subq.subquery(), 
-            AgentReportEntity.Id == subq.subquery().c.max_id
+            report_subq, 
+            AgentReportEntity.Id == report_subq.c.max_id
         )
         
         res = await db.execute(latest_reports_query)
@@ -180,7 +186,12 @@ async def get_dashboard_stats(
         online_agents = 0
         
         # 1. Agent Stats
-        q_total = select(func.count(Agent.Id)).where(Agent.IsPendingUninstall == False)
+        q_total = select(func.count(Agent.Id))
+        try:
+             q_total = q_total.where(Agent.IsPendingUninstall == False)
+        except Exception:
+             pass
+
         if tenantId: q_total = q_total.where(Agent.TenantId == tenantId)
         total_res = await db.execute(q_total)
         total_agents = total_res.scalar() or 0
@@ -189,8 +200,12 @@ async def get_dashboard_stats(
         # [FIX] Join Agent to filter out pending uninstalls
         q_online = select(func.count(func.distinct(AgentReportEntity.AgentId)))\
             .join(Agent, Agent.AgentId == AgentReportEntity.AgentId)\
-            .where(AgentReportEntity.Timestamp >= threshold_online)\
-            .where(Agent.IsPendingUninstall == False)
+            .where(AgentReportEntity.Timestamp >= threshold_online)
+        
+        try:
+            q_online = q_online.where(Agent.IsPendingUninstall == False)
+        except Exception:
+            pass
             
         if tenantId: q_online = q_online.where(AgentReportEntity.TenantId == tenantId)
         online_res = await db.execute(q_online)

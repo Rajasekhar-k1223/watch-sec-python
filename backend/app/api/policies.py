@@ -6,8 +6,9 @@ from typing import Optional, List # type: ignore
 from datetime import datetime # type: ignore
 
 from ..db.session import get_db # type: ignore
-from ..db.models import Policy, User # type: ignore
+from ..db.models import Policy, User, Agent # type: ignore
 from .deps import get_current_user # type: ignore
+from ..socket_instance import sio # type: ignore
 import json # type: ignore
 
 router = APIRouter()
@@ -15,13 +16,21 @@ router = APIRouter()
 class PolicyDto(BaseModel):
     Id: Optional[int]
     Name: str
-    RulesJson: str
-    Actions: str
-    IsActive: bool
-    BlockedAppsJson: str
-    BlockedWebsitesJson: str
-    RemediationJson: str
-    BandwidthJson: str = "{}" # [NEW]
+class PolicyDto(BaseModel):
+    id: Optional[int] = None
+    name: str
+    rulesJson: str
+    actions: str
+    isActive: bool
+    tenantId: int
+    blockedAppsJson: str
+    blockedWebsitesJson: str
+    remediationJson: str
+    bandwidthJson: str = "{}" # [NEW]
+    screenshotInterval: Optional[int] = 60
+    screenshotQuality: Optional[int] = 80
+    screenshotsEnabled: Optional[bool] = False
+    activityMonitorEnabled: Optional[bool] = True
 
 @router.get("/", response_model=List[PolicyDto])
 async def get_policies(
@@ -39,15 +48,19 @@ async def get_policies(
     
     return [
         PolicyDto(
-            Id=p.Id,
-            Name=p.Name,
-            RulesJson=p.RulesJson,
-            Actions=p.Actions,
-            IsActive=p.IsActive,
-            BlockedAppsJson=p.BlockedAppsJson,
-            BlockedWebsitesJson=p.BlockedWebsitesJson,
-            RemediationJson=p.RemediationJson,
-            BandwidthJson=p.BandwidthJson
+            id=p.Id,
+            name=p.Name,
+            rulesJson=p.RulesJson,
+            actions=p.Actions,
+            isActive=p.IsActive,
+            blockedAppsJson=p.BlockedAppsJson,
+            blockedWebsitesJson=p.BlockedWebsitesJson,
+            remediationJson=p.RemediationJson,
+            bandwidthJson=p.BandwidthJson,
+            screenshotInterval=p.ScreenshotInterval,
+            screenshotQuality=p.ScreenshotQuality or 80,
+            screenshotsEnabled=p.ScreenshotsEnabled,
+            activityMonitorEnabled=p.ActivityMonitorEnabled
         ) for p in policies
     ]
 
@@ -65,14 +78,18 @@ async def create_policy(
 
     new_policy = Policy(
         TenantId=current_user.TenantId,
-        Name=dto.Name,
-        RulesJson=dto.RulesJson,
-        Actions=dto.Actions,
-        IsActive=dto.IsActive,
-        BlockedAppsJson=dto.BlockedAppsJson,
-        BlockedWebsitesJson=dto.BlockedWebsitesJson,
-        RemediationJson=dto.RemediationJson,
-        BandwidthJson=dto.BandwidthJson, # [NEW]
+        Name=dto.name,
+        RulesJson=dto.rulesJson,
+        Actions=dto.actions,
+        IsActive=dto.isActive,
+        BlockedAppsJson=dto.blockedAppsJson,
+        BlockedWebsitesJson=dto.blockedWebsitesJson,
+        RemediationJson=dto.remediationJson,
+        BandwidthJson=dto.bandwidthJson,
+        ScreenshotInterval=dto.screenshotInterval or 60,
+        ScreenshotQuality=dto.screenshotQuality or 80,
+        ScreenshotsEnabled=dto.screenshotsEnabled or False,
+        ActivityMonitorEnabled=dto.activityMonitorEnabled or True,
         CreatedAt=datetime.utcnow()
     )
     
@@ -114,15 +131,38 @@ async def update_policy(
     if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
         raise HTTPException(status_code=403, detail="Not authorized (ReadOnly)")
 
-    policy.Name = dto.Name
-    policy.RulesJson = dto.RulesJson
-    policy.Actions = dto.Actions
-    policy.IsActive = dto.IsActive
-    policy.BlockedAppsJson = dto.BlockedAppsJson
-    policy.BlockedWebsitesJson = dto.BlockedWebsitesJson
-    policy.RemediationJson = dto.RemediationJson
-    policy.BandwidthJson = dto.BandwidthJson # [NEW]
+    policy.Name = dto.name
+    policy.RulesJson = dto.rulesJson
+    policy.Actions = dto.actions
+    policy.IsActive = dto.isActive
+    policy.BlockedAppsJson = dto.blockedAppsJson
+    policy.BlockedWebsitesJson = dto.blockedWebsitesJson
+    policy.RemediationJson = dto.remediationJson
+    policy.BandwidthJson = dto.bandwidthJson
+    policy.ScreenshotInterval = dto.screenshotInterval if dto.screenshotInterval is not None else 60
+    policy.ScreenshotQuality = dto.screenshotQuality if dto.screenshotQuality is not None else 80
+    policy.ScreenshotsEnabled = dto.screenshotsEnabled if dto.screenshotsEnabled is not None else False
+    policy.ActivityMonitorEnabled = dto.activityMonitorEnabled if dto.activityMonitorEnabled is not None else True
     
+    # [REAL-TIME SYNC] Notify Agents assigned to this policy
+    agent_query = select(Agent).where(Agent.PolicyId == id)
+    agent_res = await db.execute(agent_query)
+    agents = agent_res.scalars().all()
+    
+    for agent in agents:
+        try:
+            # Emit to agent's specific room
+            await sio.emit('UpdateConfig', {
+                "ScreenshotInterval": policy.ScreenshotInterval,
+                "ScreenshotQuality": policy.ScreenshotQuality,
+                "ScreenshotsEnabled": policy.ScreenshotsEnabled,
+                "ActivityMonitorEnabled": policy.ActivityMonitorEnabled,
+                "BandwidthConfig": json.loads(policy.BandwidthJson) if policy.BandwidthJson else {}
+            }, room=agent.AgentId)
+            print(f"[Policy Sync] Pushed v1.8.20 config to Agent: {agent.AgentId}")
+        except Exception as e:
+            print(f"[Policy Sync] Failed to push to {agent.AgentId}: {e}")
+
     # [AUDIT]
     from ..db.models import AuditLog # type: ignore
     audit = AuditLog(
@@ -130,7 +170,7 @@ async def update_policy(
         Actor=current_user.Username,
         Action="Update Policy",
         Target=policy.Name,
-        Details="Policy settings updated",
+        Details=f"Policy updated (Quality: {policy.ScreenshotQuality}, Interval: {policy.ScreenshotInterval})",
         Timestamp=datetime.utcnow()
     )
     db.add(audit)

@@ -82,5 +82,5 @@ chmod 644 "$PLIST_DEST"
 echo "[*] Loading Agent..."
 launchctl load "$PLIST_DEST"
 
-echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.14 is now active.${NC}"
+echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.23 is now active.${NC}"
 echo "Logs: $INSTALL_DIR/agent.log"

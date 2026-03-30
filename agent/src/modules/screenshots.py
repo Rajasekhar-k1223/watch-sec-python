@@ -28,23 +28,45 @@ class ScreenshotCapture:
         self.session.mount('http://', adapter)
         self.last_capture_time = 0
 
-    def set_config(self, quality, resolution, max_size):
-        self.quality = int(quality) if quality else 80
-        self.resolution = str(resolution) if resolution else "Original"
-        self.max_size = int(max_size) if max_size else 0
-        print(f"[Screens] Config Updated: Q={self.quality}, Res={self.resolution}, Max={self.max_size}KB")
+    def set_config(self, quality, resolution, max_size, interval=None):
+        self.quality = int(quality) if quality is not None else 80
+        self.resolution = str(resolution) if resolution is not None else "Original"
+        self.max_size = int(max_size) if max_size is not None else 0
+        if interval is not None:
+             self.interval = int(interval)
+        print(f"[Screens] Config Updated: Q={self.quality}, Res={self.resolution}, Max={self.max_size}KB, Int={self.interval}s")
 
     def start(self):
+        if self.running: return
         self.running = True
+        
+        # [v1.8.21] Re-initialize session if it was purged
+        if not hasattr(self, 'session') or self.session is None:
+            self.session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(max_retries=3)
+            self.session.mount('https://', adapter)
+            self.session.mount('http://', adapter)
+            if self.api_key:
+                self.session.headers.update({"X-Tenant-Api-Key": self.api_key})
+
         self.thread = threading.Thread(target=self._loop) # type: ignore
         self.thread.daemon = True # type: ignore
         self.thread.start() # type: ignore
         print("[Screens] Module Started (Background Loop)")
 
     def stop(self):
+        if not self.running: return
         self.running = False
         if self.thread:
             self.thread.join(timeout=1) # type: ignore
+            self.thread = None
+        
+        # [v1.8.21] Aggressive Memory Purge
+        if hasattr(self, 'session') and self.session:
+            try: self.session.close()
+            except: pass
+            self.session = None
+        print("[Screens] Module Stopped (Memory Purged)")
 
     def set_enabled(self, enabled: bool):
         if self.enabled != enabled:
@@ -76,9 +98,11 @@ class ScreenshotCapture:
             if self.enabled and not self.paused:
                 self.capture_now()
             
-            # Sleep in chunks to allow quick shutdown
-            for _ in range(self.interval):
-                if not self.running: 
+            # [v1.8.19] Reactive Wait: Sleep in 1s increments to respond to interval changes or shutdown
+            start_wait = time.time()
+            while self.running:
+                elapsed = time.time() - start_wait
+                if elapsed >= self.interval:
                     break
                 time.sleep(1)
 
