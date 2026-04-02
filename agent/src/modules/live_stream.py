@@ -61,7 +61,7 @@ class LiveStreamer:
                     
                     # 3. Compress to WebP
                     bio = BytesIO()
-                    img.save(bio, format="WEBP", quality=50) # Quality 50 for speed
+                    img.save(bio, format="JPEG", quality=50) # Quality 50 for speed
                     b64_data = base64.b64encode(bio.getvalue()).decode('utf-8')
                     
                     if self.frames_sent == 0:

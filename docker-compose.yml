@@ -4,8 +4,34 @@ services:
   backend:
     build: ./backend
     container_name: watch-sec-backend
+    command: uvicorn app.main_dashboard:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@watch-sec-mongo:27017/appdb?authSource=admin
+      - HOST=0.0.0.0
+      - BACKEND_CORS_ORIGINS=["*"]
+      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@watch-sec-redis:6379/0
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend:/app
+    networks:
+      - watch-sec-network
+
+  agent-gateway:
+    build: ./backend
+    container_name: watch-sec-agent-gateway
+    command: uvicorn app.main_agent:app --host 0.0.0.0 --port 8005
+    ports:
+      - "8005:8005"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:

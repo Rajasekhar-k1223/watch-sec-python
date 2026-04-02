@@ -149,6 +149,12 @@ class ScreenshotCapture:
         # ensure it matches the BGRX raw decoder.
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         
+        # [NEW] Skip 100% black images (locked/headless)
+        extrema = img.convert("L").getextrema()
+        if extrema == (0, 0):
+            print("[Screens] Image is completely black. Skipping upload (Session Locked).")
+            return
+        
         # 1. Resize Logic
         if self.resolution != "Original":
             w, h = img.size

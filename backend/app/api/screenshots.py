@@ -42,7 +42,9 @@ async def list_screenshots(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=100), # [NEW] Pagination
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
 ):
     # Tenant Check
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
@@ -56,13 +58,24 @@ async def list_screenshots(
             raise HTTPException(status_code=403, detail="Access denied")
 
     # [OPTIMIZED] Query Database instead of scanning Disk
-    query = (
-        select(Screenshot)
-        .where(Screenshot.AgentId == agent_id)
-        .order_by(Screenshot.Timestamp.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    query = select(Screenshot).where(Screenshot.AgentId == agent_id)
+    
+    if start_date:
+        try:
+            dt = datetime.fromisoformat(start_date)
+            query = query.where(Screenshot.Timestamp >= dt)
+        except ValueError:
+            pass
+            
+    if end_date:
+        try:
+            dt = datetime.fromisoformat(end_date)
+            query = query.where(Screenshot.Timestamp <= dt)
+        except ValueError:
+            pass
+            
+    query = query.order_by(Screenshot.Timestamp.desc()).limit(limit).offset(offset)
+    
     res = await db.execute(query)
     screenshots = res.scalars().all()
     
@@ -79,8 +92,48 @@ async def list_screenshots(
     ]
 
 
-# --- Empty space to prevent conflict ---
+# --- Bulk Delete ---
+class BulkDeleteRequest(BaseModel):
+    AgentId: str
+    Filenames: List[str]
 
+@router.delete("/bulk")
+async def bulk_delete_screenshots(
+    request: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.execute(select(Agent).where(Agent.AgentId == request.AgentId))
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if current_user.Role != "SuperAdmin":
+        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    deleted_count = 0
+    for filename in request.Filenames:
+        res = await db.execute(select(Screenshot).where(
+            Screenshot.AgentId == request.AgentId,
+            Screenshot.Filename == filename
+        ))
+        s = res.scalars().first()
+        if s:
+            try:
+                main_path = os.path.join(STORAGE_BASE, request.AgentId, s.DateFolder, filename)
+                thumb_path = os.path.join(THUMBNAIL_BASE, request.AgentId, s.DateFolder, filename)
+                if os.path.exists(main_path): os.remove(main_path)
+                if os.path.exists(thumb_path): os.remove(thumb_path)
+            except Exception as e:
+                print(f"File delete error: {e}")
+            
+            await db.delete(s)
+            deleted_count += 1
+            
+    await db.commit()
+    return {"status": "Success", "deleted": deleted_count}
 @router.post("/upload")
 async def upload_screenshot(
     file: UploadFile = File(...),

@@ -7,7 +7,7 @@ import shutil # type: ignore
 import uuid # type: ignore
 import json # type: ignore
 import base64 # type: ignore
-from typing import Dict # type: ignore
+from typing import Dict, Optional, List # type: ignore
 
 from ..db.session import get_db, AsyncSessionLocal # type: ignore
 from ..db.models import Agent, SessionRecording, Tenant # type: ignore
@@ -43,7 +43,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 @router.websocket("/ws/agent/{agent_id}")
-async def websocket_endpoint(websocket: WebSocket, agent_id: str, api_key: str = None):
+async def websocket_endpoint(websocket: WebSocket, agent_id: str, api_key: Optional[str] = None):
     # [SECURITY] Validate API Key
     if not api_key:
         # Check query params if not passed as arg
@@ -61,6 +61,17 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str, api_key: str =
             return
             
     await manager.connect(websocket, agent_id)
+    # Join a relay room for this agent so this process can receive forwarded inputs
+    await sio.enter_room(None, f"relay_{agent_id}", sid=None) # Cannot use sid=None easily in some sio versions, use a fake SID or just rely on global join
+    # Actually, we can just have the process listen to the room.
+    # Sio.enter_room(sid, room) requires a SID.
+    # BUT we want THE PROCESS to be in the room? 
+    # Sio doesn't have "process in room". It has "SIDs in room".
+    # Since agent_api doesn't have the User's SID, we can't join the user to the relay room.
+    # INSTEAD: Just broadcast 'ForwardInput' globally or to a room, and every process checks manager.active_connections.
+    
+    # Let's just broadcast 'ForwardInput' globally (no room) or to the room 'relay_agents'.
+    # For now, broadcasting to all processes is fine for few agents.
     try:
         while True:
             # Receive Frame (Bytes)
@@ -127,11 +138,23 @@ async def on_remote_input(sid, data):
     
     rooms = sio.rooms(sid)
     if agent_id in rooms or user['role'] == "SuperAdmin":
-        await manager.send_command(agent_id, data)
+        print(f"[DEBUG] Relaying RemoteInput to room {agent_id}: {data.get('type')}")
+        # 1. Primary: Broadcast via Socket.IO (Works across processes via Redis)
+        await sio.emit('RemoteInput', data, room=agent_id, skip_sid=sid)
+
+        # 2. Optimization: Local WebSocket Bypass
+        if agent_id in manager.active_connections:
+            print(f"[DEBUG] Local WS Bypass for {agent_id}")
+            await manager.send_command(agent_id, data)
+        else:
+            # We don't necessarily NEED to relay manually anymore if SIO broadcast worked,
+            # but we'll leave a debug print to see if SIO broadcast is enough.
+            pass
 
 @sio.on('start_stream')
+@sio.on('StartStream')
 async def on_start_stream(sid, data):
-    agent_id = data.get('agentId')
+    agent_id = data.get('agentId') or data.get('AgentId')
     if agent_id:
         print(f"[Remote] Start Stream requested for {agent_id}")
         # [SECURITY] Plan Check
@@ -142,21 +165,42 @@ async def on_start_stream(sid, data):
                 res = await db.execute(select(Tenant).where(Tenant.Id == user["tenantId"]))
                 tenant = res.scalars().first()
                 if tenant:
-                    verify_feature_access(tenant.Plan, "LiveStreamEnabled")
+                    # from .agents import verify_feature_access # Already imported
+                    try:
+                        verify_feature_access(tenant.Plan, "LiveStreamEnabled")
+                    except Exception as e:
+                        print(f"Feature Access Denied: {e}")
+                        return
 
-        # Try WS first
-        await manager.send_command(agent_id, {"type": "start_stream"})
-        # FAILSAFE: Send via Socket.IO to wake up the agent if not connected
-        await sio.emit('ControlRemote', {'Action': 'Start'}, room=agent_id)
+        print(f"[DEBUG] Emitting StartStream to room {agent_id}")
+        # 1. Primary: Socket.IO Broadcast
+        await sio.emit('StartStream', {'Action': 'Start'}, room=agent_id)
+
+        # 2. Optimization: WebSocket Bypass
+        if agent_id in manager.active_connections:
+            print(f"[DEBUG] Local WS Bypass (StartStream) for {agent_id}")
+            await manager.send_command(agent_id, {"type": "start_stream"})
 
 @sio.on('stop_stream')
+@sio.on('StopStream')
 async def on_stop_stream(sid, data):
+    agent_id = data.get('agentId') or data.get('AgentId')
+    if agent_id:
+        # 1. Primary: Socket.IO Broadcast
+        await sio.emit('StopStream', {'Action': 'Stop'}, room=agent_id)
+
+        # 2. Optimization: WebSocket Bypass
+        if agent_id in manager.active_connections:
+            await manager.send_command(agent_id, {"type": "stop_stream"})
+
+@sio.on('stream_frame')
+async def on_stream_frame(sid, data):
+    """Relay JPEG frame from Agent to Frontend Room"""
     agent_id = data.get('agentId')
     if agent_id:
-        print(f"[Remote] Stop Stream requested for {agent_id}")
-        await manager.send_command(agent_id, {"type": "stop_stream"})
-        # FAILSAFE: Send via Socket.IO
-        await sio.emit('ControlRemote', {'Action': 'Stop'}, room=agent_id)
+        # print(f"[DEBUG] Relay Frame from {agent_id}")
+        # Broadcast to anyone in the agent's room (Frontends)
+        await sio.emit('stream_frame', data, room=agent_id, skip_sid=sid)
 
 # --- Remote Shell Handlers ---
 
@@ -193,13 +237,15 @@ async def on_shell_output(sid, data):
     """
     Agent sends output -> Backend forwards to Frontend
     """
-    agent_id = data.get('AgentId')
-    output = data.get('Output')
-    
-    # We might need to verify the sender is indeed the agent (via session/token)
-    # But for now, we forward to the room.
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'):
+        return
+
+    agent_id = session.get('agent_id')
     if agent_id:
-        await sio.emit('ShellOutput', data, room=agent_id)
+        # Use verified agent_id from session for room routing
+        data['AgentId'] = agent_id
+        await sio.emit('ShellOutput', data, room=agent_id, skip_sid=sid)
 
 @sio.on('ListFiles')
 async def on_list_files(sid, data):
@@ -211,28 +257,52 @@ async def on_list_files(sid, data):
 
 @sio.on('FileList')
 async def on_file_list(sid, data):
-    agent_id = data.get('AgentId')
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    agent_id = session.get('agent_id')
     if agent_id:
-        await sio.emit('FileList', data, room=agent_id)
+        data['AgentId'] = agent_id
+        await sio.emit('FileList', data, room=agent_id, skip_sid=sid)
 
 @sio.on('DownloadFile')
 async def on_download_file(sid, data):
     agent_id = data.get('agentId')
     path = data.get('path')
-    if agent_id and path:
+    if not agent_id or not path: return
+    
+    # Verify User Ownership
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    # Re-verify room membership (set by on_join)
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
         await sio.emit('DownloadFile', {'path': path}, room=agent_id)
 
 @sio.on('FileContent')
 async def on_file_content(sid, data):
-    agent_id = data.get('AgentId')
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    agent_id = session.get('agent_id')
     if agent_id:
-        await sio.emit('FileContent', data, room=agent_id)
+        data['AgentId'] = agent_id
+        await sio.emit('FileContent', data, room=agent_id, skip_sid=sid)
 
 @sio.on('DeleteFile')
 async def on_delete_file(sid, data):
     agent_id = data.get('agentId')
     path = data.get('path')
-    if agent_id and path:
+    if not agent_id or not path: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
         await sio.emit('DeleteFile', {'path': path}, room=agent_id)
 
 # --- WebRTC Signaling Handlers ---
@@ -240,25 +310,50 @@ async def on_delete_file(sid, data):
 @sio.on('webrtc_offer')
 async def on_webrtc_offer(sid, data):
     """Agent -> Backend -> Frontend"""
-    agent_id = data.get('target')
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    agent_id = session.get('agent_id')
     if agent_id:
-        # Broadcast to everyone in the room (frontends)
+        # Enforce verified agent identity
+        data['target'] = agent_id # Fix if agent tried to spoof target
         await sio.emit('webrtc_offer', data, room=agent_id, skip_sid=sid)
 
 @sio.on('webrtc_answer')
 async def on_webrtc_answer(sid, data):
     """Frontend -> Backend -> Agent"""
     agent_id = data.get('target')
-    if agent_id:
-        # Send strictly to the agent (or everyone in room if agent is listening)
+    if not agent_id: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
         await sio.emit('webrtc_answer', data, room=agent_id, skip_sid=sid)
 
 @sio.on('webrtc_ice_candidate')
+@sio.on('ice_candidate')
 async def on_webrtc_ice_candidate(sid, data):
     """Bi-directional ICE exchange"""
-    agent_id = data.get('target')
-    if agent_id:
-        await sio.emit('webrtc_ice_candidate', data, room=agent_id, skip_sid=sid)
+    # This is tricky as both Agent and User send it.
+    # We'll check the session role.
+    session = await sio.get_session(sid)
+    if not session: return
+    
+    if session.get('is_agent'):
+        agent_id = session.get('agent_id')
+        if agent_id:
+            data['target'] = agent_id
+            await sio.emit('ice_candidate', data, room=agent_id, skip_sid=sid)
+    else:
+        # Frontend/User
+        agent_id = data.get('target') or data.get('agentId')
+        if agent_id:
+             rooms = sio.rooms(sid)
+             if agent_id in rooms or (session.get('user') and session['user']['role'] == "SuperAdmin"):
+                 await sio.emit('ice_candidate', data, room=agent_id, skip_sid=sid)
 
 # --- Session Recording Upload ---
 

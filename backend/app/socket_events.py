@@ -69,18 +69,15 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
                     await sio.save_session(sid, {
                         'role': 'Agent',
                         'tenantId': tenant.Id,
-                        'username': f"Agent-{sid}",
+                        'username': agent_id,
                         'is_agent': True,
                         'agent_id': agent_id 
                     })
-                    print(f"[Socket.IO] Agent Connected for Tenant: {tenant.Name} (ID: {tenant.Id})")
+                    print(f"[Socket.IO] Agent Connected: {agent_id} (Tenant: {tenant.Id})")
                     
-                    # Agent-Specific Room Join Logic
-                    # If Agent sends room in auth, we honor it (usually AgentId)
-                    if auth and 'room' in auth:
-                        room = auth['room']
-                        await sio.enter_room(sid, room)
-                        print(f"[Socket.IO] Agent joined own room: {room}")
+                    # [FIX] Always join own agent room to ensure receipt of control commands
+                    await sio.enter_room(sid, agent_id)
+                    print(f"[Socket.IO] Agent strictly joined room: {agent_id}")
                     
                     return True
                 else:
@@ -212,20 +209,19 @@ async def on_agent_event(sid: str, data: Dict[str, Any]):
     Receive generic events from agents (USB, Network, Security)
     and broadcast them to the dashboard.
     """
-    # print(f"[Event] {data.get('type')} from {data.get('agent_id')}: {data.get('details')}")
-    # Broadcast to specific tenant room if provided in data
-    # The agent should send TenantId or we lookup. Assuming Agent sends for now or we just use global if missing (backward compat)
-    # BUT we want to fix leaks. So if no TenantId, we might log it but not broadcast to all.
-    # Ideally Agent sends "TenantId" in the event payload.
+    session = await sio.get_session(sid)
+    if not session:
+        return
+
+    # [SECURITY] Use tenantId from session, NOT from client payload
+    tenant_id = session.get('tenantId')
     
-    tenant_id = data.get('tenantId') or data.get('TenantId')
     if tenant_id:
         room = f"tenant_{tenant_id}"
+        # Ensure the data contains the correct tenantId for the frontend
+        data['tenantId'] = tenant_id
         await sio.emit('new_alert', data, room=room)
     else:
-        # Fallback only for SuperAdmins listening on 'admin_global' if we implemented it, 
-        # or just drop to prevent leak.
-        pass
-        # await sio.emit('new_alert', data, room='dashboard') # DISABLED LEAK
+        print(f"[Socket.IO] [WARNING] Agent event from {sid} ignored: No TenantId in session.")
 
 

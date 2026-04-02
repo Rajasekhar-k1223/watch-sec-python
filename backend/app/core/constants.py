@@ -7,7 +7,7 @@ import os # type: ignore
 # 1=Starter, 2=Pro, 3=Enterprise
 
 # [v1.7.0] UX & Reliability Hardening
-LATEST_AGENT_VERSION = os.getenv("LATEST_AGENT_VERSION", "v1.8.24")
+LATEST_AGENT_VERSION = os.getenv("LATEST_AGENT_VERSION", "v1.8.26")
 
 FEATURE_TIERS = {
     "ActivityMonitorEnabled": 1,

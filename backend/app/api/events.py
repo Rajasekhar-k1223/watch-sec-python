@@ -209,7 +209,19 @@ async def report_event(
     if ts_naive.tzinfo is not None:
         ts_naive = ts_naive.astimezone(None).replace(tzinfo=None)
 
-    # 2. Log to SQL
+    # 2. [SECURITY] Verify Agent Ownership
+    from ..db.models import Agent # type: ignore
+    res_a = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
+    agent = res_a.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if agent.TenantId != tenant.Id:
+        print(f"[SECURITY] Conflict: Agent {dto.AgentId} reported under Tenant {tenant.Id} but belongs to {agent.TenantId}")
+        raise HTTPException(status_code=403, detail="Agent does not belong to this tenant")
+
+    # 3. Log to SQL
     event = EventLog(
         AgentId=dto.AgentId,
         Type=dto.Type,
@@ -226,22 +238,27 @@ async def report_event(
         collection = db_mongo["security_events"]
         
         event_doc = dto.model_dump()
-        event_doc["TenantId"] = tenant.Id
+        event_doc["TenantId"] = tenant.Id # Use DB TenantId
         event_doc["Timestamp"] = ts_naive # Motor handles datetime
         
         await collection.insert_one(event_doc)
     except Exception as e:
         print(f"Error logging security event to Mongo: {e}")
     
-    # 3. Realtime Alert via Socket
+    # 4. Realtime Alert via Socket
     # Broadcast to specific Tenant Room
-    if tenant:
-        await sio.emit('ReceiveEvent', {
-            'agentId': dto.AgentId,
-            'type': dto.Type, 
-            'details': dto.Details,
-            'timestamp': dto.Timestamp.isoformat()
-        }, room=f"tenant_{tenant.Id}")
+    # [SECURITY] Isolate sensitive event types (like Clipboard) to the specific agent room
+    # instead of broadcasting to the entire tenant feed.
+    target_room = f"tenant_{tenant.Id}"
+    if dto.Type.lower() == "clipboard":
+        target_room = str(dto.AgentId)
+        
+    await sio.emit('ReceiveEvent', {
+        'agentId': dto.AgentId,
+        'type': dto.Type, 
+        'details': dto.Details,
+        'timestamp': dto.Timestamp.isoformat()
+    }, room=target_room)
     
     return {"status": "Logged"}
 
@@ -363,19 +380,19 @@ async def log_activity(
     tenant = result.scalars().first()
     
     if not tenant:
-        # [FALLBACK] Legacy/Bootsrap Agent Support
-        # If API Key is missing or invalid, check if AgentId exists.
-        from ..db.models import Agent # type: ignore
-        result_agent = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
-        agent_obj = result_agent.scalars().first()
+        raise HTTPException(status_code=401, detail="Unauthorized Tenant")
+
+    # [SECURITY] Resolve Agent and Verify Ownership
+    from ..db.models import Agent # type: ignore
+    result_agent = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
+    agent_obj = result_agent.scalars().first()
+    
+    if not agent_obj:
+        raise HTTPException(status_code=404, detail="Agent not found")
         
-        if agent_obj:
-            # Found Agent -> Get Tenant
-            result_tenant = await db.execute(select(Tenant).where(Tenant.Id == agent_obj.TenantId))
-            tenant = result_tenant.scalars().first()
-        
-        if not tenant:
-             raise HTTPException(status_code=401, detail="Unauthorized Tenant")
+    if agent_obj.TenantId != tenant.Id:
+        print(f"[SECURITY] Activity Conflict: Agent {dto.AgentId} (Tenant {agent_obj.TenantId}) reported as Tenant {tenant.Id}")
+        raise HTTPException(status_code=403, detail="Agent does not belong to this tenant")
 
     # Perform Analysis
     risk_score, risk_level = analyze_risk(dto.WindowTitle, dto.ProcessName, dto.Url or "")
@@ -386,16 +403,9 @@ async def log_activity(
         ts_naive = ts_naive.astimezone(None).replace(tzinfo=None)
     
     # Insert Record (SQL)
-    # [HYBRID STRATEGY] 
-    # Activity Logs -> MongoDB is Primary for Logs.
-    # SQL -> Optional or for high-level summaries. User asked implicitly for "Best DB".
-    # Recommendation was MySQL for Audit/Alerts, Mongo for Volume.
-    # We will CONTINUE writing to SQL for now to be safe (unless user says stop).
-    # But filtering out high-volume might be desired later. 
-    
     sql_activity = ActivityLogModel(
         AgentId=dto.AgentId,
-        TenantId=tenant.Id,
+        TenantId=tenant.Id, # Use DB/Verified TenantId
         ActivityType=dto.ActivityType,
         ProcessName=dto.ProcessName,
         WindowTitle=dto.WindowTitle,
@@ -417,24 +427,16 @@ async def log_activity(
         db_mongo = mongo_client["watchsec"]
         collection = db_mongo["activity"]
         
-        # [CHANGE] DISABLED CONSOLIDATION LOGIC
-        # User wants "Raw Logs" / "All Logs". 
-        # We always Insert. No Update/Merge.
-        
         log_entry = dto.model_dump()
-        log_entry["TenantId"] = tenant.Id
+        log_entry["TenantId"] = tenant.Id # Use DB Verified TenantId
         log_entry["RiskScore"] = risk_score
         log_entry["RiskLevel"] = risk_level
-        
-        # Ensure timestamp compatibility
         log_entry["Timestamp"] = ts_naive 
         
         await collection.insert_one(log_entry)
         
     except Exception as e:
         print(f"Error logging activity to Mongo: {e}")
-        # Note: We still proceed to commit SQL if Mongo fails, or vice versa? 
-        # For reliability, we commit SQL now.
     
     try:
         await db.commit()
@@ -444,8 +446,11 @@ async def log_activity(
 
     # Broadcast via Socket.IO -> TENANT ROOM
     if tenant:
+        # [SECURITY] Isolate sensitive activity types (Clipboard) to prevent cross-agent leakage
         room_name = f"tenant_{tenant.Id}"
-        
+        if dto.ActivityType.lower() == "clipboard":
+            room_name = str(dto.AgentId)
+            
         await sio.emit('ReceiveEvent', {
             'agentId': dto.AgentId,
             'title': dto.ActivityType,
@@ -455,9 +460,8 @@ async def log_activity(
             'IdleSeconds': dto.IdleSeconds
         }, room=room_name)
         
-        # Broadcast Detailed Activity for Realtime Logs -> TENANT ROOM ONLY
-        # The frontend ActivityLogViewer joins "tenant_{tenantId}" and listens for "new_client_activity".
-        # We don't need to emit to the agent room specifically as it causes duplicates if a user is in both.
+        # Broadcast Detailed Activity for Realtime Logs -> Correct Room
+        # Use isolated room_name derived above
         print(f"[Socket.IO] Emitting new_client_activity to {room_name} for Agent {dto.AgentId}")
         await sio.emit('new_client_activity', {
             'AgentId': dto.AgentId,

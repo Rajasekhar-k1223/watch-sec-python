@@ -3,7 +3,7 @@
 
 set -e
 
-INSTALL_DIR="/opt/monitorix"
+INSTALL_DIR="/var/lib/monitorix"
 BINARY_NAME="monitorix-agent-linux"
 SERVICE_NAME="monitorix-agent"
 
@@ -45,10 +45,12 @@ chmod +x "$INSTALL_DIR/$BINARY_NAME"
 # Copy Config if exists
 if [ -f "$SCRIPT_DIR/config.json" ]; then
     cp "$SCRIPT_DIR/config.json" "$INSTALL_DIR/config.json"
-    echo "    [+] Config installed from root."
+    chmod 400 "$INSTALL_DIR/config.json"
+    echo "    [+] Config installed and locked (400)."
 elif [ -f "$SCRIPT_DIR/dist_linux/config.json" ]; then
     cp "$SCRIPT_DIR/dist_linux/config.json" "$INSTALL_DIR/config.json"
-    echo "    [+] Config installed from dist_linux."
+    chmod 400 "$INSTALL_DIR/config.json"
+    echo "    [+] Config installed and locked (400)."
 fi
 
 # 4. Create Systemd Service

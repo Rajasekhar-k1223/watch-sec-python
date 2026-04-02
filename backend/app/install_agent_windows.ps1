@@ -1,15 +1,22 @@
 <#
 .SYNOPSIS
-WatchSec Agent Installer for Windows
-Automatically handles Windows Defender Exclusions to prevent installation corruption.
+Monitorix Agent - Silent Windows Installer
+Downloads and installs the Monitorix Agent as a Windows Service via PowerShell.
 
 .DESCRIPTION
 This script:
-1. Checks for Administrator privileges (required for Service/Exclusion).
-2. Adds a Windows Defender Exclusion for the installation directory.
-3. Installs the WatchSec Agent.
-4. Sets up persistence via Scheduled Task.
-5. Supports downloading from URL and handling split archives.
+1. Checks for Administrator privileges.
+2. Adds a Windows Defender exclusion for the install directory.
+3. Downloads only the standalone EXE (no ZIP, no certs exposed).
+4. Installs it as a native Windows Service with auto-restart recovery.
+5. Adds Registry persistence so the agent also runs in the user session.
+
+.EXAMPLE
+# One-liner silent install (run in elevated PowerShell):
+iex (irm 'https://agent-api.monitorix.co.in/api/deploy/script/windows?apiKey=YOUR_KEY')
+
+# Or with explicit params:
+.\install_agent_windows.ps1 -DownloadUrl 'https://agent-api.monitorix.co.in/api/downloads/exe/windows-x64' -ApiKey 'YOUR_KEY' -BackendUrl 'https://agent-api.monitorix.co.in'
 #>
 
 param (
@@ -159,20 +166,16 @@ if (-not $success) {
     exit 1
 }
 
-# 4. Deployment Logic
+# 4. Deployment Logic (EXE-Only: No ZIP extraction, no certs)
 $ExePath = Join-Path $InstallDir $ExeName
 $ConfigPath = Join-Path $InstallDir "config.json"
 
-# Check if the downloaded file is a ZIP or EXE
+# Detect file type by magic bytes (MZ = EXE, PK = ZIP)
 try {
-    $bytes = [System.IO.File]::ReadAllBytes($TempFile)
-    if ($bytes.Length -lt 2) {
-        throw "File too small to identify."
-    }
-    $magic = $bytes[0..1]
-    $isZip = ($magic[0] -eq 0x50 -and $magic[1] -eq 0x4B) # PK
-    $isExe = ($magic[0] -eq 0x4D -and $magic[1] -eq 0x5A) # MZ
-    
+    $headerBytes = [System.IO.File]::ReadAllBytes($TempFile)
+    if ($headerBytes.Length -lt 2) { throw "File too small to identify." }
+    $isZip = ($headerBytes[0] -eq 0x50 -and $headerBytes[1] -eq 0x4B)
+    $isExe = ($headerBytes[0] -eq 0x4D -and $headerBytes[1] -eq 0x5A)
     Write-Host "File Type Detection: Zip=$isZip, Exe=$isExe"
 } catch {
     Write-Error "Failed to detect file type: $_"
@@ -182,30 +185,26 @@ try {
 
 Write-Host "[*] Installing files to $InstallDir..."
 try {
-    if ($isZip) {
-        Write-Host "[*] Extracting Agent Archive..."
-        
-        # [FIX] Expand-Archive requires the .zip extension to function correctly
+    if ($isExe) {
+        # *** PRIMARY PATH: Clean EXE-only deployment (no ZIP, no cert exposure) ***
+        Write-Host "[*] Deploying Standalone Executable (EXE-only mode)..."
+        if (Test-Path $ExePath) { Remove-Item $ExePath -Force }
+        Move-Item -Path $TempFile -Destination $ExePath -Force
+        Unblock-File -Path $ExePath -ErrorAction SilentlyContinue
+        Write-Host "    [+] Executable deployed and unblocked: $ExePath" -ForegroundColor Green
+    } elseif ($isZip) {
+        # Fallback: Handle ZIP payload (legacy support)
+        Write-Host "[*] Extracting Agent Archive (ZIP mode)..."
         $ZipFile = "$TempFile.zip"
         if (Test-Path $ZipFile) { Remove-Item $ZipFile -Force }
         Rename-Item -Path $TempFile -NewName (Split-Path $ZipFile -Leaf)
-        
         if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $ExtractPath | Out-Null
-        
-        Write-Host "    Extracting to $ExtractPath..."
         Expand-Archive -Path $ZipFile -DestinationPath $ExtractPath -Force
-        
-        Write-Host "    Copying to $InstallDir..."
         Copy-Item -Path "$ExtractPath\*" -Destination $InstallDir -Recurse -Force
         Write-Host "    [+] Archive extracted and deployed." -ForegroundColor Green
         if (Test-Path $ZipFile) { Remove-Item $ZipFile -Force }
-    } elseif ($isExe) {
-        Write-Host "[*] Deploying Standalone Executable..."
-        Move-Item -Path $TempFile -Destination $ExePath -Force
-        Write-Host "    [+] Executable deployed." -ForegroundColor Green
     } else {
-        # Fallback if magic check fails (file extension or something else)
         Write-Warning "Unknown file format. Attempting direct deployment as executable..."
         Move-Item -Path $TempFile -Destination $ExePath -Force
     }
@@ -319,15 +318,22 @@ try {
     Write-Error "Failed to register persistence: $_"
 }
 
-# 6. Start Agent (Through Service ONLY)
-Write-Host "[*] Starting Monitorix Agent Service..."
+# 6. Start Agent (Service + User Instance)
+Write-Host "[*] Starting Monitorix Agent Mechanisms..."
 try {
-    # Only start the service. The service recovery and Run keys will take it from here.
-    # Starting it manually here creates a "third" instance that conflicts with the service.
+    # A. Start the Windows Service (Session 0)
+    Write-Host "    [*] Starting System Service..."
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.18 Service is now starting." -ForegroundColor Cyan
+    
+    # B. Start User Instance (Current Session)
+    # This is CRITICAL for immediate GUI/Activity tracking after installation.
+    # We use Start-Process to launch it in the current interactive session.
+    Write-Host "    [*] Launching interactive agent for current user..."
+    Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
+    
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.23 is now running (Service + User Instance)." -ForegroundColor Cyan
 } catch {
-    Write-Warning "Installation complete, but could not start the agent service automatically. Please start '$ServiceName' in services.msc"
+    Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }
 
 # Cleanup

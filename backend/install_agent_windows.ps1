@@ -13,10 +13,10 @@ This script:
 
 .EXAMPLE
 # One-liner silent install (run in elevated PowerShell):
-iex (irm 'https://api.monitorix.co.in/api/deploy/script/windows?apiKey=YOUR_KEY')
+iex (irm 'https://agent-api.monitorix.co.in/api/deploy/script/windows?apiKey=YOUR_KEY')
 
 # Or with explicit params:
-.\install_agent_windows.ps1 -DownloadUrl 'https://api.monitorix.co.in/api/downloads/exe/windows-x64' -ApiKey 'YOUR_KEY' -BackendUrl 'https://api.monitorix.co.in'
+.\install_agent_windows.ps1 -DownloadUrl 'https://agent-api.monitorix.co.in/api/downloads/exe/windows-x64' -ApiKey 'YOUR_KEY' -BackendUrl 'https://agent-api.monitorix.co.in'
 #>
 
 param (
@@ -190,7 +190,8 @@ try {
         Write-Host "[*] Deploying Standalone Executable (EXE-only mode)..."
         if (Test-Path $ExePath) { Remove-Item $ExePath -Force }
         Move-Item -Path $TempFile -Destination $ExePath -Force
-        Write-Host "    [+] Executable deployed to $ExePath" -ForegroundColor Green
+        Unblock-File -Path $ExePath -ErrorAction SilentlyContinue
+        Write-Host "    [+] Executable deployed and unblocked: $ExePath" -ForegroundColor Green
     } elseif ($isZip) {
         # Fallback: Handle ZIP payload (legacy support)
         Write-Host "[*] Extracting Agent Archive (ZIP mode)..."

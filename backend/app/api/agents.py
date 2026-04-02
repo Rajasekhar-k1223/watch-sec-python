@@ -9,7 +9,7 @@ import os # type: ignore
 from datetime import datetime, timedelta # type: ignore
 
 from ..db.session import get_db # type: ignore
-from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant # type: ignore
+from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog # type: ignore
 from .deps import get_current_user, get_tenant_by_key # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate # type: ignore
@@ -581,7 +581,7 @@ async def agent_heartbeat(
         if agent.Version != agent.TargetVersion:
             if is_in_maintenance_window(tenant):
                 update_required = True
-                backend_url = os.getenv("APP_BACKEND_URL") or os.getenv("MONITORIX_BASE_URL") or "https://api.monitorix.co.in"
+                backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
                 # Determine OS type and Architecture for update payload
                 os_type = "windows"
                 arch = "x64"

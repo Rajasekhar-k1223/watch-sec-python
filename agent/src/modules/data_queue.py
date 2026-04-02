@@ -28,7 +28,19 @@ class DataQueue:
 
     def _init_db(self):
         try:
+            # Ensure directory exists and is writable
+            db_dir = os.path.dirname(os.path.abspath(self.db_path))
+            if db_dir and not os.path.exists(db_dir):
+                try:
+                    os.makedirs(db_dir, exist_ok=True)
+                except: pass
+
             with sqlite3.connect(self.db_path) as conn:
+                # [v1.8.26] Enable Write-Ahead Logging for better concurrency
+                # Synchronous=NORMAL is recommended for WAL mode for better performance.
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+
                 # Create table if not exists
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS queue (

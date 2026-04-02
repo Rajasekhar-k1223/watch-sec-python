@@ -2,6 +2,7 @@ import os # type: ignore
 import sys # type: ignore
 import time # type: ignore
 import logging # type: ignore
+import threading # type: ignore
 import platform # type: ignore
 import subprocess # type: ignore
 from watchdog.observers import Observer # type: ignore
@@ -79,6 +80,8 @@ class AntiTamperMonitor:
         self.base_dir = base_dir
         self.log_func = log_func
         self.observer: Any = None
+        self._ignored_files = set()
+        self._lock = threading.Lock()
 
     def start(self):
         try:
@@ -97,8 +100,27 @@ class AntiTamperMonitor:
             self.observer.join()
             self.observer = None
 
+    def ignore_next_modification(self, filename):
+        """Temporary ignore the next modification event for a file (self-update)."""
+        with self._lock:
+            self._ignored_files.add(filename)
+
+    def is_ignored(self, filename):
+        """Check and consume ignore flag."""
+        with self._lock:
+            if filename in self._ignored_files:
+                self._ignored_files.remove(filename)
+                return True
+        return False
+
     def report_tamper(self, tamper_type, details):
         """Public method to report tamper events from self or children."""
+        # Check for ignored files
+        for f in ["config.json", "monitorixagent.exe", "monitorix-agent"]:
+            if f in details and self.is_ignored(f):
+                self.log_func(f"[TAMPER] Ignoring expected modification: {f}")
+                return
+
         self.log_func(f"[TAMPER] {tamper_type}: {details}")
         
         current_api_key = self._get_latest_api_key()

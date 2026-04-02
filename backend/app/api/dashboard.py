@@ -95,7 +95,8 @@ async def get_dashboard_status(
                 "memoryUsage": mem,
                 "timestamp": ts.isoformat() + "Z",
                 "hostname": agent.Hostname or "Unknown",
-                "hardwareJson": agent.HardwareJson
+                "hardwareJson": agent.HardwareJson,
+                "powerStatusJson": agent.PowerStatusJson
             })
 
         return results

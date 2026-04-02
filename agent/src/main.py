@@ -61,7 +61,7 @@ from agent_core import AntiTamperMonitor, RemediationHandler, BandwidthManager, 
 from modules.audit_logger import AuditLogger # type: ignore
 
 # Milestone Version: 1.8.15
-AGENT_VERSION = "v1.8.24"
+AGENT_VERSION = "v1.8.26"
 IS_WINDOWS = platform.system() == "Windows"
 IS_UPDATING = False # Global guard to prevent multiple update starts
 
@@ -329,6 +329,14 @@ def load_config():
 
 def save_config(new_config):
     try:
+        # [v1.8.26] Mute Anti-Tamper for self-initiated config updates
+        # Ensure we don't trigger the monitor we just started
+        global tamper_mon
+        if 'tamper_mon' in globals() and tamper_mon:
+            try:
+                tamper_mon.ignore_next_modification("config.json")
+            except: pass
+
         if os.path.exists(CONFIG_PATH):
             os.chmod(CONFIG_PATH, 0o777) 
             if platform.system() == "Windows":
@@ -342,7 +350,8 @@ def save_config(new_config):
              import stat # type: ignore
              os.chmod(CONFIG_PATH, stat.S_IREAD)
         else:
-             os.chmod(CONFIG_PATH, 0o444)
+             # Linux: 400 (Read-only for owner/root)
+             os.chmod(CONFIG_PATH, 0o400)
              
         log_to_file("Configuration updated and locked.")
     except Exception as e:
@@ -490,6 +499,7 @@ def acquire_lock():
                         if content:
                             old_pid = int(content)
                             if psutil.pid_exists(old_pid):
+                                old_user = "Unknown"
                                 try:
                                     proc = psutil.Process(old_pid)
                                     old_user = proc.username()
@@ -498,34 +508,35 @@ def acquire_lock():
                                     if (not is_system and is_old_system) or (current_user == old_user):
                                         log_to_file(f"Terminating old instance (PID {old_pid}).")
                                         proc.terminate()
-                                        try:
-                                            psutil.wait_procs([proc], timeout=5)
-                                        except: pass
-                                        time.sleep(0.5)
+                                        # Wait a bit for termination
+                                        for _ in range(10):
+                                            if not psutil.pid_exists(old_pid): break
+                                            time.sleep(0.5)
                                     else:
                                         log_to_file(f"Another instance is active (PID {old_pid} by {old_user}). Exiting.")
                                         sys.exit(0)
-                                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                except psutil.NoSuchProcess:
                                     pass 
-                except (ValueError, OSError): pass 
+                                except psutil.AccessDenied:
+                                    log_to_file(f"Access Denied to instance PID {old_pid} (Run by {old_user}). A higher-privileged instance likely exists. Exiting.")
+                                    sys.exit(0)
+                        else:
+                            # Empty lock file
+                            pass
+                except Exception as e:
+                    log_to_file(f"Lock Check Error: {e}")
+            
+            # 2. Acquire New Lock
+            try:
+                with open(target_lock, 'w') as f:
+                    f.write(str(os.getpid()))
+            except Exception as e:
+                log_to_file(f"Critical: Failed to write lock file {target_lock}: {e}")
+                sys.exit(1)
+            lock_file = primary_lock_file
 
         handle_existing_instance(primary_lock_file)
         handle_existing_instance(fallback_lock_file)
-
-        # --- Acquire Lock ---
-        try:
-            with open(primary_lock_file, 'w') as f:
-                f.write(str(os.getpid()))
-            lock_file = primary_lock_file
-        except (PermissionError, OSError):
-            log_to_file(f"Primary lock directory restricted ({BASE_DIR}). Using fallback: {fallback_dir}")
-            try:
-                with open(fallback_lock_file, 'w') as f:
-                    f.write(str(os.getpid()))
-                lock_file = fallback_lock_file
-            except Exception as e_fallback:
-                log_to_file(f"Critical Lock Error: Could not write to primary or fallback. {e_fallback}")
-                sys.exit(0)
 
     except Exception as e:
         log_to_file(f"Lock Error: {e}")
@@ -1045,8 +1056,7 @@ echo [Batch] Moving Standalone EXE... >> "{update_log}"
 move /y "{update_path}" "{current_exe}" >> "{update_log}" 2>&1
 """
 
-            batch_content = f"""
-@echo off
+            batch_content = f"""@echo off
 setlocal enabledelayedexpansion
 
 :: Define Log File
@@ -1057,54 +1067,52 @@ echo [Batch] Starting Robust Update Process ({AGENT_VERSION} -> {target_ver})...
 echo [Batch] Waiting for PID {os.getpid()} to exit... >> "!UPDATE_LOG!"
 set /a attempts=0
 :wait_exit
-tasklist /FI "PID eq {os.getpid()}" | find "{os.getpid()}" >nul
-if %ERRORLEVEL%==0 (
-set /a attempts+=1
-if !attempts! GTR 15 (
-    echo [Batch] PID still active after 15s. Force killing... >> "!UPDATE_LOG!"
-    taskkill /F /PID {os.getpid()} >> "!UPDATE_LOG!" 2>&1
-)
-ping 127.0.0.1 -n 2 > nul
-goto wait_exit
+C:\\Windows\\System32\\tasklist /FI "PID eq {os.getpid()}" 2>nul | C:\\Windows\\System32\\findstr /C:"{os.getpid()}" >nul 2>&1
+if !ERRORLEVEL!==0 (
+    set /a attempts+=1
+    if !attempts! GTR 15 (
+        echo [Batch] PID still active after 15s. Force killing... >> "!UPDATE_LOG!"
+        C:\\Windows\\System32\\taskkill /F /PID {os.getpid()} >> "!UPDATE_LOG!" 2>&1
+    )
+    C:\\Windows\\System32\\ping 127.0.0.1 -n 2 > nul
+    goto wait_exit
 )
 
 :: 2. NOW Disable Watchdog (after agent exits)
 echo [Batch] Disabling Watchdog (MonitorixAgentLauncher)... >> "!UPDATE_LOG!"
-schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if %ERRORLEVEL%==0 (
-schtasks /change /tn "MonitorixAgentLauncher" /disable >> "!UPDATE_LOG!" 2>&1
-echo [Batch] Watchdog disabled successfully. >> "!UPDATE_LOG!"
-) else (
-echo [Batch] Watchdog task not found, skipping disable. >> "!UPDATE_LOG!"
+C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
+if !ERRORLEVEL!==0 (
+    C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /disable >> "!UPDATE_LOG!" 2>&1
+    echo [Batch] Watchdog disabled successfully. >> "!UPDATE_LOG!"
 )
 
 :: 3. Kill any other instances just in case
 echo [Batch] Ensuring no other instances are running... >> "!UPDATE_LOG!"
-taskkill /F /IM "{target_exe_name}" >> "!UPDATE_LOG!" 2>nul
-ping 127.0.0.1 -n 4 > nul
+C:\\Windows\\System32\\taskkill /F /IM "{target_exe_name}" >> "!UPDATE_LOG!" 2>nul
+C:\\Windows\\System32\\ping 127.0.0.1 -n 4 > nul
 
 :: 4. Swapping Files with Retries
 echo [Batch] Swapping files... >> "!UPDATE_LOG!"
-attrib -r "{current_exe}" >> "!UPDATE_LOG!" 2>&1
+C:\\Windows\\System32\\attrib -r "{current_exe}" >> "!UPDATE_LOG!" 2>&1
 
 set /a swap_attempts=0
 :swap_retry
 set /a swap_attempts+=1
 echo [Batch] Swap attempt !swap_attempts!... >> "!UPDATE_LOG!"
 
-:: [ROLLBACK] Keep the .old file for safety!
+:: [ROLLBACK PREP] Keep the .old file for safety!
 if exist "{target_exe_name}.old" del /f /q "{target_exe_name}.old"
 ren "{current_exe}" "{target_exe_name}.old" >> "!UPDATE_LOG!" 2>&1
 
 if !ERRORLEVEL! NEQ 0 (
-if !swap_attempts! LSS 8 (
-    echo [Batch] Rename failed (File locked?). Retrying in 2s... >> "!UPDATE_LOG!"
-    ping 127.0.0.1 -n 3 > nul
-    goto swap_retry
-) else (
-    echo [Batch] CRITICAL: Failed to rename old EXE after 8 attempts. >> "!UPDATE_LOG!"
-    goto abort
-)
+    if !swap_attempts! LSS 8 (
+        echo [Batch] Rename failed (File locked?). Retrying in 2s... >> "!UPDATE_LOG!"
+        C:\\Windows\\System32\\ping 127.0.0.1 -n 3 > nul
+        goto swap_retry
+    ) else (
+        echo [Batch] CRITICAL: Failed to rename old EXE after 8 attempts. >> "!UPDATE_LOG!"
+        goto abort
+    )
 )
 
 :: 5. Cleanup Stale Lock BEFORE swapping
@@ -1120,69 +1128,45 @@ start "Monitorix Agent" /B "{current_exe}"
 
 :: [ROLLBACK] Verification Loop
 echo [Batch] Verifying new agent startup (15s)... >> "!UPDATE_LOG!"
-ping 127.0.0.1 -n 16 > nul
+C:\\Windows\\System32\\ping 127.0.0.1 -n 16 > nul
 
 :: Check if process is still running
-tasklist /FI "IMAGENAME eq {target_exe_name}" | find "{target_exe_name}" >nul
-if %ERRORLEVEL%==0 (
-echo [Batch] SUCCESS: New agent is running stable. >> "!UPDATE_LOG!"
-
-:: [CLEANUP] Remove rollback marker if it exists from previous failures
-if exist "{target_dir}\\rollback_marker.txt" del /f /q "{target_dir}\\rollback_marker.txt" >> "!UPDATE_LOG!" 2>&1
-
-:: 8. Re-enable Watchdog ONLY after successful verification
-echo [Batch] Re-enabling Watchdog... >> "!UPDATE_LOG!"
-schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if %ERRORLEVEL%==0 (
-    schtasks /change /tn "MonitorixAgentLauncher" /enable >> "!UPDATE_LOG!" 2>&1
+C:\\Windows\\System32\\tasklist /FI "IMAGENAME eq {target_exe_name}" 2>nul | C:\\Windows\\System32\\findstr /I /C:"{target_exe_name}" >nul 2>&1
+if !ERRORLEVEL!==0 (
+    echo [Batch] SUCCESS: New agent is running stable. >> "!UPDATE_LOG!"
+    if exist "{target_dir}\\rollback_marker.txt" del /f /q "{target_dir}\\rollback_marker.txt" >> "!UPDATE_LOG!" 2>&1
+    
+    :: 8. Re-enable Watchdog
+    C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
+    if !ERRORLEVEL!==0 (
+        C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /enable >> "!UPDATE_LOG!" 2>&1
+    ) else (
+        echo [Batch] Watchdog missing. Creating Self-Healing Task... >> "!UPDATE_LOG!"
+        C:\\Windows\\System32\\schtasks /create /tn "MonitorixAgentLauncher" /tr "\"{current_exe}\"" /sc MINUTE /mo 1 /ru SYSTEM /f >> "!UPDATE_LOG!" 2>&1
+    )
+    
+    if exist "{target_exe_name}.old" del /f /q "{target_exe_name}.old"
+    echo [Batch] Update Complete. >> "!UPDATE_LOG!"
+    goto cleanup
 ) else (
-    echo [Batch] Watchdog missing. Creating Self-Healing Task... >> "!UPDATE_LOG!"
-    schtasks /create /tn "MonitorixAgentLauncher" /tr "\"{current_exe}\"" /sc MINUTE /mo 1 /ru SYSTEM /f >> "!UPDATE_LOG!" 2>&1
-)
-
-:: Cleanup backup
-if exist "{target_exe_name}.old" del /f /q "{target_exe_name}.old"
-echo [Batch] Update Complete. >> "!UPDATE_LOG!"
-goto cleanup
-) else (
-echo [Batch] CRITICAL: New agent failed to start! Initiating ROLLBACK... >> "!UPDATE_LOG!"
-
-:: Kill any zombie processes
-taskkill /F /IM "{target_exe_name}" >nul 2>&1
-
-:: [ABORT NOTIFICATION] Create Marker File
-echo Update failed to start. Rollback triggered. > "{target_dir}\\rollback_marker.txt"
-
-:: Delete broken new binary
-if exist "{current_exe}" del /f /q "{current_exe}"
-
-:: Restore backup
-ren "{target_exe_name}.old" "{target_exe_name}" >> "!UPDATE_LOG!" 2>&1
-
-:: Restart old agent with proper flags
-echo [Batch] Restarting restored backup agent... >> "!UPDATE_LOG!"
-start "Monitorix Agent" /B "{current_exe}"
-
-:: Re-enable watchdog after rollback
-schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if %ERRORLEVEL%==0 (
-    schtasks /change /tn "MonitorixAgentLauncher" /enable >> "!UPDATE_LOG!" 2>&1
-)
-
-:: Notify backend of failure
-powershell -Command "Invoke-RestMethod -Uri '{BACKEND_URL}/api/agents/{AGENT_ID}/update-failed' -Method POST -Body (@{{AgentId='{AGENT_ID}'; Reason='Rollback triggered during update'}} | ConvertTo-Json) -ContentType 'application/json'" >> "!UPDATE_LOG!" 2>&1
-echo [Batch] Rollback completed. Agent restored to previous version. >> "!UPDATE_LOG!"
-goto cleanup
+    echo [Batch] CRITICAL: New agent failed to start! Initiating ROLLBACK... >> "!UPDATE_LOG!"
+    goto abort
 )
 
 :abort
-echo [Batch] UPDATE ABORTED due to persistent file lock. >> "!UPDATE_LOG!"
+echo [Batch] UPDATE ABORTED. Restoring from backup... >> "!UPDATE_LOG!"
+C:\\Windows\\System32\\taskkill /F /IM "{target_exe_name}" >nul 2>&1
+if exist "{target_exe_name}.old" (
+    if exist "{current_exe}" del /f /q "{current_exe}"
+    ren "{target_exe_name}.old" "{target_exe_name}" >> "!UPDATE_LOG!" 2>&1
+)
 if exist "{lock_file}" del /f /q "{lock_file}" >> "!UPDATE_LOG!" 2>&1
-schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if %ERRORLEVEL%==0 (
-schtasks /change /tn "MonitorixAgentLauncher" /enable >> "!UPDATE_LOG!" 2>&1
+C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
+if !ERRORLEVEL!==0 (
+    C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /enable >> "!UPDATE_LOG!" 2>&1
 )
 start "Monitorix Agent" /B "{current_exe}" >> "!UPDATE_LOG!" 2>&1
+echo [Batch] Rollback completed. Agent restored. >> "!UPDATE_LOG!"
 
 :cleanup
 echo [Batch] Cleaning up temp files... >> "!UPDATE_LOG!"
@@ -1484,8 +1468,18 @@ async def on_webrtc_ice_candidate(data):
 @sio.on('StartStream')
 async def on_start_stream(data):
     log_to_file("Live Stream Requested")
-    if config.get("LiveStreamEnabled", False) and webrtc_manager: # [FIX] Check Config
-        await webrtc_manager.start_stream()
+    # [FIX] Check both Config and global live_streamer/webrtc_manager
+    if config.get("LiveStreamEnabled", True): # Default to True if not set to ensure better UX
+        if webrtc_manager:
+            await webrtc_manager.start_stream()
+        
+        if live_streamer:
+            try:
+                loop = asyncio.get_running_loop()
+                live_streamer.start_streaming(loop)
+                log_to_file("LiveStreamer (JPEG) started successfully")
+            except Exception as e:
+                log_to_file(f"Error starting LiveStreamer: {e}")
     else:
          log_to_file("Live Stream Blocked (Disabled in Policy)")
 
@@ -1494,6 +1488,9 @@ async def on_stop_stream(data):
     log_to_file("Live Stream Stop Requested")
     if webrtc_manager:
         await webrtc_manager.stop_stream()
+    
+    if live_streamer:
+        live_streamer.stop_streaming()
     
     # Non-blocking execution of remediation
     if remediation:
@@ -1578,9 +1575,12 @@ Optimized to skip non-essential and dev directories.
         
         # These files MUST be writable for the agent to function
         writable_files = {
-            "events.db", "events.db-journal", "events.db-wal", "events.db-shm", 
-            "monitorix.log", "agent.log", "agent.err", "monitorix_test.log",
-            "monitorix_watchdog.log", "agent_test_run.log", "agent_stdout.log",
+            "events.db", "events.db-journal", "events.db-wal", "events.db-shm",
+            "events_svc.db", "events_svc.db-journal", "events_svc.db-wal", "events_svc.db-shm",
+            "events_user.db", "events_user.db-journal", "events_user.db-wal", "events_user.db-shm",
+            "monitorix_service.log", "monitorix_RAJASEKHAR.log", "monitorix_watchdog.log",
+            "monitorix.lock", "monitorix_RAJASEKHAR.lock",
+            "agent_test_run.log", "agent_stdout.log",
             "monitorix_update.exe", "monitorix_update",
             "monitorix.lock", "monitorix_root.lock", 
             f"monitorix_{current_user.replace(' ', '_').replace('.', '_').upper()}.lock",
@@ -1601,12 +1601,12 @@ Optimized to skip non-essential and dev directories.
                     # Preserve execute bits for owner/group/others
                     exec_bits = current_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
                     
-                    if file in writable_files or file == "config.json":
-                        # Skip config.json (managed by save_config)
-                        if file == "config.json": continue
-                        
+                    if file in writable_files:
                         # Make Writable (600 or 711)
                         os.chmod(file_path, stat.S_IRUSR | stat.S_IWUSR | exec_bits)
+                    elif file == "config.json":
+                        # Special case for config: 400 (Read-only for owner/root)
+                        os.chmod(file_path, stat.S_IRUSR)
                     else:
                         # Make Read-Only (400 or 511)
                         os.chmod(file_path, stat.S_IRUSR | exec_bits)
@@ -1749,7 +1749,7 @@ async def main():
     config = load_config()
     
     # [ROBUST AUTH START]
-    BACKEND_URL = config.get("BackendUrl", "https://api.monitorix.co.in").strip()
+    BACKEND_URL = config.get("BackendUrl", "https://agent-api.monitorix.co.in").strip()
     API_KEY = config.get("TenantApiKey", "").strip()
     
     # Windows Registry Auth
@@ -1805,13 +1805,24 @@ async def main():
     
     # 1. Generate Stable Hardware Hash
     hw_hash = get_hardware_id()
+    # [v1.8.24] Privacy Hardening: Add random entropy if first-time or template match
+    import random, string
+    def get_entropy(length=4):
+        return ''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(length))
+
+    # [v1.8.24] Blacklisted Template IDs
+    BLACKLISTED_TEMPLATE_IDS = ["VMI3011362-ROOT-F39F2ABC", "vmi3011362-root-F39F2ABC"]
+    
     stable_id = f"{current_hostname}-{hw_hash}"
     
-    # [v1.8.23] Migration / Unification:
-    # If the stored ID matches the pattern but has a suffix, or is different from stable ID, force update.
-    if not BASE_AGENT_ID or "-ADMINISTRATOR" in BASE_AGENT_ID.upper() or BASE_AGENT_ID != stable_id:
-        log_to_file(f"Identity Migration: {BASE_AGENT_ID} -> {stable_id}")
-        BASE_AGENT_ID = stable_id
+    # 2. [v1.8.24] Migration / Unification:
+    # If the stored ID matches the template or is invalid, force update with entropy
+    is_template = BASE_AGENT_ID.upper() in BLACKLISTED_TEMPLATE_IDS
+    if not BASE_AGENT_ID or is_template or "-ADMINISTRATOR" in BASE_AGENT_ID.upper() or (not is_template and BASE_AGENT_ID != stable_id and not BASE_AGENT_ID.startswith(stable_id)):
+        entropy = get_entropy()
+        new_fixed_id = f"{stable_id}-{entropy}"
+        log_to_file(f"Identity Migration/Hardening: {BASE_AGENT_ID} -> {new_fixed_id} (Entropy Added)")
+        BASE_AGENT_ID = new_fixed_id
         config.update({"AgentId": BASE_AGENT_ID})
         save_config(config)
 

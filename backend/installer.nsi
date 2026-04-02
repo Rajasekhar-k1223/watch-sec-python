@@ -43,7 +43,7 @@ SECTION "Install"
 
     ; OLD DOWNLOAD LOGIC DISABLED
     ; DetailPrint "Connecting to Monitorix Cloud..."
-    ; StrCpy $1 "https://api.monitorix.co.in/api/downloads/public/payload?key=$ApiKey&os_type=windows"
+    ; StrCpy $1 "https://agent-api.monitorix.co.in/api/downloads/public/payload?key=$ApiKey&os_type=windows"
     ; ...
     
     DetailPrint "Initializing Installer..."

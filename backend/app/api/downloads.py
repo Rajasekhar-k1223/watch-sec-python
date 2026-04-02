@@ -23,13 +23,13 @@ router = APIRouter()
 # --- Helper Logic ---
 
 def _get_backend_url(request: Request) -> str:
-    env_url = os.getenv("APP_BACKEND_URL")
+    env_url = os.getenv("AGENT_BACKEND_URL")
     # Priority: Env Var -> Hardcoded Monitorix -> Request URL
     if env_url:
         return env_url.rstrip("/")
-    return "https://api.monitorix.co.in"
+    return "https://agent-api.monitorix.co.in"
 
-def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_payload: bool = False, format_type: str = None):
+def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_payload: bool = False, format_type: Optional[str] = None):
     """
     Common logic to package and serve the agent.
     - Windows: Stream modified EXE (Zero Disk Write) OR Static Zip.
@@ -479,13 +479,13 @@ async def download_root_ca():
         return FileResponse(file_path, media_type="application/x-x509-ca-cert", filename="root_ca.crt")
     raise HTTPException(status_code=404, detail="Root CA not found")
 
-@router.get("/public/agent")
+@router.api_route("/public/agent", methods=["GET", "HEAD"])
 async def download_public_agent(
     request: Request,
     key: str,
     os_type: str = "windows",
     payload: bool = False,
-    format: str = None,
+    format: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     # Public Endpoint (No Auth Header)
@@ -502,7 +502,7 @@ async def download_agent(
     request: Request,
     os_type: str = "windows",
     payload: bool = False,
-    format: str = None,
+    format: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -521,7 +521,7 @@ async def download_agent(
 import hashlib # type: ignore
 
 @router.api_route("/public/payload", methods=["GET", "HEAD"])
-async def get_payload_binary(key: str, os_type: str = "windows", part: int = None, db: AsyncSession = Depends(get_db)):
+async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     # Serve the raw Binary (Split or Single)
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
@@ -758,7 +758,7 @@ $VersionCheckUrl = ""
     return Response(content=full_script, media_type="text/plain")
 
 
-@router.get("/exe/windows")
+@router.api_route("/exe/windows", methods=["GET", "HEAD"])
 async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     """
     Serves the raw monitorixagent.exe for clean PowerShell deployments.
@@ -787,7 +787,7 @@ async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     )
 
 @router.api_route("/installer/exe", methods=["GET", "HEAD"])
-async def get_installer_exe(key: str, format: str = None, db: AsyncSession = Depends(get_db)):
+async def get_installer_exe(key: str, format: Optional[str] = None, db: AsyncSession = Depends(get_db)):
     # Serve the Generic Signed Installer but rename it so it contains the Key
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()

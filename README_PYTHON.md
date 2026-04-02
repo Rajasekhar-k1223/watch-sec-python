@@ -49,11 +49,11 @@ To deploy the agent, you must first build the executable.
     - `APP_BACKEND_URL`: `https://api.monitorix.co.in`
 
 ### Agent Connection
-1.  **Backend URL**: The agent connects to `https://api.monitorix.co.in`.
+1.  **Backend URL**: The agent connects to `https://agent-api.monitorix.co.in`.
 2.  **Update Config**:
     - Update `agent/config.json` locally or use the installer to auto-configure.
     ```json
-    "BackendUrl": "https://api.monitorix.co.in"
+    "BackendUrl": "https://agent-api.monitorix.co.in"
     ```
 3.  Rebuild/Run the agent.
 
