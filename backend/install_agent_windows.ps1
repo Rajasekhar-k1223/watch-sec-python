@@ -44,40 +44,59 @@ function Download-File {
     
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        # [DEBUG] Bypass SSL Certificate Validation (for self-signed dev/test)
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
         
-        # Get File Size First for UX
+        # 1. Get Metadata (optional, silent on failure)
         try {
-            $req = [System.Net.WebRequest]::Create($Url)
+            $req = [System.Net.HttpWebRequest]::Create($Url)
             $req.Method = "HEAD"
+            $req.Timeout = 10000 # 10s timeout
             $resp = $req.GetResponse()
             $bytes = $resp.ContentLength
-            $mb = [math]::Round($bytes / 1MB, 2)
             $resp.Close()
-            Write-Host "Downloading Payload: $mb MB..." -ForegroundColor Cyan
+            if ($bytes -gt 0) {
+                $mb = [math]::Round($bytes / 1MB, 2)
+                Write-Host "Payload Size: $mb MB" -ForegroundColor Cyan
+            }
         } catch {
-            Write-Host "Downloading Payload (Unknown Size)..."
+            # Server does not support HEAD requests - proceed silently
         }
 
-        # Use .NET WebClient for cleaner execution (avoiding some IWR verbosity quirks)
+        # 3. Perform Download
         $wc = New-Object System.Net.WebClient
         $wc.DownloadFile($Url, $Dest)
         
         if (Test-Path $Dest) {
-            $size = (Get-Item $Dest).Length
-            if ($size -eq 0) {
-                Write-Error "Download result is 0 bytes."
+            $fileInfo = Get-Item $Dest
+            if ($fileInfo.Length -lt 1KB) {
+                $content = Get-Content $Dest -Raw -ErrorAction SilentlyContinue
+                if ($content -like "*Error*" -or $content -like "*Internal Server Error*") {
+                    Write-Error "Server returned an error message instead of the binary: $content"
+                } else {
+                    Write-Error "Download result is suspiciously small ($($fileInfo.Length) bytes)."
+                }
                 return $false
             }
-            Write-Host "Download success. Size: $size bytes" -ForegroundColor Green
+            
+            # 4. Magic Byte Verification (MZ Header for EXE)
+            $header = New-Object byte[] 2
+            $fs = [System.IO.File]::OpenRead($Dest)
+            $fs.Read($header, 0, 2) | Out-Null
+            $fs.Close()
+            
+            if ($Url -like "*exe*" -and -not ($header[0] -eq 0x4D -and $header[1] -eq 0x5A)) {
+                Write-Error "Security Check Failed: Downloaded file is not a valid Windows Executable (Header: $($header[0].ToString('X2')) $($header[1].ToString('X2')))."
+                return $false
+            }
+
+            Write-Host "Download success and verified." -ForegroundColor Green
             return $true
         } else {
-            Write-Error "File not found after download."
+            Write-Error "File not found on disk after download attempt."
             return $false
         }
     } catch {
-        Write-Error "Download Failed: $_"
+        Write-Error "Download Failed: $($_.Exception.Message)"
         return $false
     }
 }
@@ -131,6 +150,13 @@ try {
     $OldExe = Join-Path $InstallDir $ExeName
     if (Test-Path $OldExe) {
         Remove-Item $OldExe -Force -ErrorAction SilentlyContinue
+    }
+    
+    # E. [SECURITY] Scrub legacy certificates and sensitive keys (silent if none found)
+    $legacyCerts = Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue
+    if ($legacyCerts) {
+        Write-Host "    [!] Removing legacy certificates..." -ForegroundColor Yellow
+        $legacyCerts | Remove-Item -Force -ErrorAction SilentlyContinue
     }
     # Ensure directory exists for exclusion
     if (-not (Test-Path $InstallDir)) {
@@ -237,17 +263,20 @@ try {
             }
         }
         
-        $configObj = @{
+        # Create/Update Config
+        $configJson = @{
             TenantApiKey = $ApiKey
             BackendUrl = $BackendUrl
-        }
-        $configObj | ConvertTo-Json | Out-File -FilePath $ConfigPath -Encoding utf8 -Force
+        } | ConvertTo-Json
+        
+        # [ROBUSTNESS] Use .NET to ensure UTF8 NO BOM for maximum cross-platform compatibility
+        [System.IO.File]::WriteAllText($ConfigPath, $configJson)
         
         # LOCK CONFIG: Read-Only to prevent user tampering
         $fileItem = Get-Item $ConfigPath
         $fileItem.Attributes = "ReadOnly"
         
-        Write-Host "    [+] Generated $ConfigPath (Locked)" -ForegroundColor Green
+        Write-Host "    [+] Generated $ConfigPath (Locked and Verified)" -ForegroundColor Green
 
         # [ROBUST AUTH] Write to Registry as Fallback
         # This ensures that if config.json is deleted/corrupted, the Agent can self-heal.
@@ -331,7 +360,7 @@ try {
     Write-Host "    [*] Launching interactive agent for current user..."
     Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
     
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.23 is now running (Service + User Instance)." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.26 is now running (Service + User Instance)." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }

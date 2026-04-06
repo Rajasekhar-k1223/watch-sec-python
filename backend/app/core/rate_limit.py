@@ -7,36 +7,47 @@ from functools import wraps # type: ignore
 # Reuse Celery's Redis URL or fallback to localhost
 REDIS_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 
+# [NEW] Share a single connection pool across all instances
+_shared_redis_client = None
+
+def get_redis_client():
+    global _shared_redis_client
+    if _shared_redis_client is None:
+        # Use single client with pooling
+        _shared_redis_client = redis.from_url(
+            REDIS_URL, 
+            encoding="utf-8", 
+            decode_responses=True,
+            socket_timeout=5,     # [NEW] Don't wait 20s if redis is down
+            socket_connect_timeout=5,
+            retry_on_timeout=True
+        )
+    return _shared_redis_client
+
 class RateLimiter:
     def __init__(self, times: int, seconds: int):
         self.times = times
         self.seconds = seconds
-        self.redis = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
 
     async def __call__(self, request: Request):
-        if not self.redis:
-            return # Fail open if Redis is down
-            
-        # Identifier: IP or TenantID (if available)
-        # We try to get TenantId from user/agent if possible, defaulting to IP
-        client_ip = request.client.host
-        # specific for agent update - try to limit by tenant if possible, or just IP for now
-        # Ideally, we'd inspect the token, but for now IP-based is a good start for DDoS protection
+        client = get_redis_client()
         
+        # Identifier: IP or TenantID (if available)
+        client_ip = request.client.host
         key = f"rate_limit:{client_ip}:{request.url.path}"
         
         try:
             # Simple Fixed Window Counter
-            current = await self.redis.get(key)
+            current = await client.get(key)
             
             if current and int(current) >= self.times:
                 raise HTTPException(
                     status_code=429, 
-                    detail="Too many update requests. Please try again later."
+                    detail="Too many requests. Please try again later."
                 )
             
             # Atomic Increment & Expire
-            pipe = self.redis.pipeline()
+            pipe = client.pipeline()
             pipe.incr(key)
             if not current:
                 pipe.expire(key, self.seconds)
@@ -45,6 +56,6 @@ class RateLimiter:
         except HTTPException:
             raise
         except Exception as e:
-            print(f"Rate Limiter Error: {e}")
+            print(f"Rate Limiter Warning: {e}")
             # Fail open to avoid blocking legit traffic on redis error
             pass

@@ -24,6 +24,30 @@ async def lifespan(app: FastAPI):
     # --- STARTUP: Database Check ---
     print("--- STARTUP: API Server Ready ---")
 
+    # [NEW] Ensure MongoDB Indexes for Performance
+    async def ensure_mongo_indexes():
+        try:
+            from .db.session import mongo_client # type: ignore
+            db = mongo_client["watchsec"]
+
+            print("[MongoDB] Ensuring performance indexes...")
+            # Activity: hot-path for per-agent log queries
+            activity = db["activity"]
+            await activity.create_index([("AgentId", 1), ("Timestamp", -1)])
+            await activity.create_index([("TenantId", 1), ("Timestamp", -1)])
+            await activity.create_index([("Timestamp", -1)])
+
+            # Security events: used by /events/report and dashboard
+            sec_events = db["security_events"]
+            await sec_events.create_index([("AgentId", 1), ("Timestamp", -1)])
+            await sec_events.create_index([("TenantId", 1), ("Timestamp", -1)])
+
+            print("[MongoDB] Indexes ensured.")
+        except Exception as e:
+            print(f"[MongoDB Index Error] {e}")
+
+    await ensure_mongo_indexes()
+
     async def cleanup_update_status():
         while True:
             await asyncio.sleep(600) # Every 10 mins

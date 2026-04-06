@@ -226,44 +226,52 @@ async def get_dashboard_stats(
         avg_cpu = float(avg_cpu or 0)
         avg_mem = float(avg_mem or 0)
 
-        # 3. Resource Trend
-        q_trend = select(AgentReportEntity.Timestamp, AgentReportEntity.CpuUsage, AgentReportEntity.MemoryUsage)\
-            .where(AgentReportEntity.Timestamp >= start_dt)\
-            .where(AgentReportEntity.Timestamp <= end_dt)\
-            .order_by(AgentReportEntity.Timestamp)
+        # 3. Resource Trend (Optimized: SQL-Level Bucketing)
+        group_by_day = total_hours > 48
+        
+        from ..db.session import settings # type: ignore
+        is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+        
+        if is_sqlite:
+            fmt = '%Y-%m-%d' if group_by_day else '%Y-%m-%d %H:00'
+            time_expr = func.strftime(fmt, AgentReportEntity.Timestamp)
+        else:
+            fmt = '%Y-%m-%d' if group_by_day else '%Y-%m-%d %H:00'
+            time_expr = func.date_format(AgentReportEntity.Timestamp, fmt)
+
+        q_trend = select(
+            time_expr.label("time_bucket"),
+            func.avg(AgentReportEntity.CpuUsage).label("cpu"),
+            func.avg(AgentReportEntity.MemoryUsage).label("mem")
+        ).where(AgentReportEntity.Timestamp >= start_dt)\
+         .where(AgentReportEntity.Timestamp <= end_dt)\
+         .group_by(time_expr)\
+         .order_by(time_expr)
         
         if tenantId: q_trend = q_trend.where(AgentReportEntity.TenantId == tenantId)
         
-        trend_res = await db.execute(q_trend.limit(5000)) 
+        trend_res = await db.execute(q_trend) 
         items = trend_res.all()
         
-        group_by_day = total_hours > 48
-        
-        buckets = {}
-        for ts, cpu, mem in items:
-            key = ts.strftime("%Y-%m-%d") if group_by_day else ts.strftime("%Y-%m-%d %H:00")
-            if key not in buckets: buckets[key] = {"cpu": 0, "mem": 0, "c": 0, "dt": ts}
-            buckets[key]["cpu"] += (cpu or 0)
-            buckets[key]["mem"] += (mem or 0)
-            buckets[key]["c"] += 1
-            
         trends = []
-        for k in sorted(buckets.keys()):
-            b = buckets[k]
-            label = b["dt"].strftime("%b %d") if group_by_day else b["dt"].strftime("%H:00")
+        for bucket, cpu, mem in items:
+            try:
+                # If group_by_day is true, bucket is 'YYYY-MM-DD'. Else 'YYYY-MM-DD HH:00'
+                dt_format = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H:00"
+                dt = datetime.strptime(str(bucket), dt_format)
+                label = dt.strftime("%b %d") if group_by_day else dt.strftime("%H:00")
+            except:
+                label = str(bucket)
+                
             trends.append({
                 "time": label,
-                "cpu": round(b["cpu"] / b["c"], 1),
-                "mem": round(b["mem"] / b["c"], 1),
-                "full_date": k
+                "cpu": round(float(cpu or 0), 1),
+                "mem": round(float(mem or 0), 1),
+                "full_date": str(bucket)
             })
 
         # 4. Threats
         threats = {"total": 0, "byType": [], "trend": []}
-        # Note: EventLog doesn't strictly have TenantId column in some versions, but we should join or filter if possible.
-        # Assuming AgentId is the link. To strictly filter by Tenant, we'd need to join Agents table (or add TenantId to EventLog).
-        # For now, to be safe and given schema, we rely on AgentId match if we can, BUT EventLog in schema didn't show TenantId.
-        # FIX: We must filter EventLog by joining Agent table.
         try:
             q_type = select(EventLog.Type, func.count(EventLog.Id))
             if tenantId:
@@ -283,20 +291,24 @@ async def get_dashboard_stats(
             total_threats = sum(c for _, c in filtered_counts)
             by_type = [{"type": t, "count": c} for t, c in filtered_counts]
             
-            q_trend = select(EventLog.Timestamp)
+            # Threat Trend (SQL-Level Bucketing)
+            if is_sqlite:
+                evt_time_expr = func.strftime(fmt, EventLog.Timestamp)
+            else:
+                evt_time_expr = func.date_format(EventLog.Timestamp, fmt)
+                
+            q_evt_trend = select(evt_time_expr.label("time_bucket"), func.count(EventLog.Id).label("c"))
             if tenantId:
-                q_trend = q_trend.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
-            q_trend = q_trend.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)).order_by(EventLog.Timestamp)
+                q_evt_trend = q_evt_trend.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
+            q_evt_trend = q_evt_trend.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt))
+            q_evt_trend = q_evt_trend.group_by(evt_time_expr).order_by(evt_time_expr)
             
-            res_trend = await db.execute(q_trend)
-            trend_items = res_trend.scalars().all()
+            res_evt_trend = await db.execute(q_evt_trend)
+            trend_items = res_evt_trend.all()
             
-            format_str = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H:00"
-            trend_buckets = {}
-            for ts in trend_items:
-                key = ts.strftime(format_str)
-                trend_buckets[key] = trend_buckets.get(key, 0) + 1
-            threat_trend = [{"time": k, "count": v} for k, v in sorted(trend_buckets.items())]
+            threat_trend = []
+            for bucket, count in trend_items:
+                threat_trend.append({"time": str(bucket), "count": count})
 
             threats = {
                 "total": total_threats,

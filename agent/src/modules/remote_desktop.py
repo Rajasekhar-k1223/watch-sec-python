@@ -32,8 +32,8 @@ class RemoteDesktopAgent:
         self.thread = None
         
         # Performance Settings
-        self.quality = 50 # JPEG Quality (Lowered for speed)
-        self.resolution_scale = 0.8 # Scaling factor (0.8 = 80% size - Balance)
+        self.quality = 85 # JPEG Quality (Increased for clarity)
+        self.resolution_scale = 1.0 # Scaling factor (Removed scaling for crisp text and speed)
         self.fps_target = 30 # Increased for smoother mouse
         self.recording = False
         self.writer: Any = None

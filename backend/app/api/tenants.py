@@ -23,7 +23,8 @@ class MaintenanceWindowDto(BaseModel):
     endTime: str = "23:59"
     timezone: str = "UTC"
 
-@router.get("/")
+@router.get("")
+@router.get("/", include_in_schema=False)
 async def get_tenants(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
@@ -71,7 +72,8 @@ async def get_tenant(
         raise HTTPException(status_code=404, detail="Tenant not found")
     return tenant
 
-@router.post("/")
+@router.post("")
+@router.post("/", include_in_schema=False)
 async def create_tenant(
     dto: CreateTenantDto, 
     current_user: User = Depends(get_current_user), 

@@ -1,5 +1,6 @@
 import fastapi # type: ignore # pyre-ignore
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Header # type: ignore # pyre-ignore
+import re
 from ..tasks.general import analyze_risk_background # type: ignore
 from typing import List, Optional, Any, Dict, cast # type: ignore
 from datetime import datetime, timedelta # type: ignore
@@ -8,7 +9,7 @@ from sqlalchemy.future import select # type: ignore
 
 from ..db.session import get_db, get_mongo_db # type: ignore
 from ..db.models import Tenant, EventLog, ActivityLog as ActivityLogModel # type: ignore
-from ..schemas import SecurityEventLog, ActivityLog, ActivityLogDto # type: ignore
+from ..schemas import SecurityEventLog, ActivityLog, ActivityLogDto, ActivityStats # type: ignore
 from .deps import get_current_user # type: ignore
 from ..db.models import User # type: ignore
 from motor.motor_asyncio import AsyncIOMotorClient # type: ignore
@@ -161,10 +162,6 @@ async def report_event(
         raise HTTPException(status_code=401, detail="Invalid API Key")
     
     print(f"[DEBUG /api/events/report] Tenant lookup result: {tenant}")
-    
-    if not tenant:
-        print(f"[DEBUG /api/events/report] UNAUTHORIZED - No tenant found for API key: {dto.TenantApiKey}")
-        raise HTTPException(status_code=401, detail="Unauthorized Tenant")
 
     # [RECOVERY] Revival logic for Started event
     if "Started" in dto.Details:
@@ -275,23 +272,16 @@ async def get_activity_logs(
     offset: int = Query(0, ge=0)
 ):
     try:
-        # [CHANGE] Revert to MonoDB but without Consolidation (User Approved Hybrid)
         db = mongo["watchsec"]
         collection = db["activity"]
         
-        # [SECURITY] Validate Tenant Access is skipped here because it's a simplified fixed script.
-        # We rely on the SQL AgentId check conceptually, 
-        # but for performance we can also rely on TenantId being stamped on records.
-        
+        # Use exact match (index-friendly) instead of $regex
         query: Dict[str, Any] = {"AgentId": agent_id}
         
-        # [SECURITY] Enforce TenantId Filter in Mongo Query (Removed for Agent Auth fixing)
-        
-        # [DEBUG] Print query
         print(f"[ActivityLogs-Mongo] Querying Agent: {agent_id}")
         
-        # [NEW] Handle Date Range
-        if date_range:
+        # Date Range
+        if date_range and date_range != "all":
             now = datetime.utcnow()
             if date_range == "24h":
                 start_date = (now - timedelta(hours=24)).isoformat()
@@ -304,44 +294,138 @@ async def get_activity_logs(
             query["Timestamp"] = {}
             if start_date:
                 try:
-                    # Convert ISO "2026-01-16T00:00:00" to datetime
                     query["Timestamp"]["$gte"] = datetime.fromisoformat(start_date)
                 except ValueError:
                     query["Timestamp"]["$gte"] = start_date
             if end_date:
                 try:
-                     query["Timestamp"]["$lte"] = datetime.fromisoformat(end_date)
+                    query["Timestamp"]["$lte"] = datetime.fromisoformat(end_date)
                 except ValueError:
-                     query["Timestamp"]["$lte"] = end_date
+                    query["Timestamp"]["$lte"] = end_date
         
-        # If filtering by date, limit is generous.
-        cursor = collection.find(query).sort("Timestamp", -1).skip(offset).limit(limit)
-        logs = await cursor.to_list(length=limit)
+        # Use MongoDB aggregation to group contiguous sessions server-side
+        # This replaces the 5000-record Python fetch + in-memory grouping
+        pipeline = [
+            {"$match": query},
+            {"$sort": {"Timestamp": -1}},
+            {"$skip": offset},
+            {"$limit": limit * 20},  # Fetch enough raw records to produce 'limit' sessions
+            {"$group": {
+                "_id": {
+                    "agentId": "$AgentId",
+                    "process": "$ProcessName",
+                    "title": "$WindowTitle",
+                    "type": "$ActivityType"
+                },
+                "DurationSeconds": {"$sum": "$DurationSeconds"},
+                "IdleSeconds": {"$sum": "$IdleSeconds"},
+                "EndTime": {"$max": "$Timestamp"},
+                "StartTime": {"$min": "$Timestamp"},
+                "Category": {"$last": "$Category"},
+                "ProductivityScore": {"$avg": "$ProductivityScore"},
+                "RiskScore": {"$last": "$RiskScore"},
+                "RiskLevel": {"$last": "$RiskLevel"},
+                "Url": {"$last": "$Url"},
+                "AgentId": {"$last": "$AgentId"}
+            }},
+            {"$sort": {"EndTime": -1}},
+            {"$limit": limit}
+        ]
         
-        print(f"[ActivityLogs-Mongo] Found {len(logs)} records")
+        cursor = collection.aggregate(pipeline)
+        results = await cursor.to_list(length=limit)
+        print(f"[ActivityLogs-Mongo] Returned {len(results)} grouped sessions (aggregation)")
 
         return [
             {
-                "AgentId": l.get("AgentId"),
-                "TenantId": l.get("TenantId"),
-                "ActivityType": l.get("ActivityType"),
-                "ProcessName": l.get("ProcessName"),
-                "WindowTitle": l.get("WindowTitle"),
-                "Url": l.get("Url"),
-                "DurationSeconds": l.get("DurationSeconds", 0),
-                "IdleSeconds": l.get("IdleSeconds", 0),
-                "Category": l.get("Category", "Neutral"),
-                "ProductivityScore": l.get("ProductivityScore", 0),
-                "RiskScore": l.get("RiskScore", 0),
-                "RiskLevel": l.get("RiskLevel", "Normal"),
-                "Timestamp": l.get("Timestamp") or datetime.utcnow() # Ensure not None
+                "AgentId": r["AgentId"],
+                "ActivityType": r["_id"]["type"],
+                "ProcessName": r["_id"]["process"],
+                "WindowTitle": r["_id"]["title"],
+                "Url": r.get("Url"),
+                "DurationSeconds": r["DurationSeconds"],
+                "IdleSeconds": r["IdleSeconds"],
+                "Category": r["Category"],
+                "ProductivityScore": r["ProductivityScore"],
+                "RiskScore": r.get("RiskScore", 0.0),
+                "RiskLevel": r.get("RiskLevel", "Normal"),
+                "Timestamp": r["EndTime"],
+                "startTime": r["StartTime"].isoformat() if isinstance(r["StartTime"], datetime) else r["StartTime"],
+                "endTime": r["EndTime"].isoformat() if isinstance(r["EndTime"], datetime) else r["EndTime"]
             }
-            for l in cast(List[Any], logs)
+            for r in results
         ]
     except Exception as e:
         print(f"Error fetching logs from Mongo: {e}")
         # Return empty list on failure to avoid 500 which triggers CORS error
         return []
+
+@router.get("/activity/{agent_id}/stats", response_model=ActivityStats)
+async def get_activity_stats(
+    agent_id: str,
+    date_range: Optional[str] = Query("24h"),
+    mongo: AsyncIOMotorClient = Depends(get_mongo_db),
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        db = mongo["watchsec"]
+        collection = db["activity"]
+        
+        match_filter: Dict[str, Any] = {"AgentId": {"$regex": f"^{re.escape(agent_id)}$", "$options": "i"}}
+        
+        if date_range and date_range != "all":
+            now = datetime.utcnow()
+            start_date = now - timedelta(hours=24)
+            if date_range == "7d":
+                start_date = now - timedelta(days=7)
+            elif date_range == "30d":
+                start_date = now - timedelta(days=30)
+            match_filter["Timestamp"] = {"$gte": start_date}
+            
+        pipeline = [
+            {"$match": match_filter},
+            {"$group": {
+                "_id": "$AgentId",
+                "total_duration": {"$sum": "$DurationSeconds"},
+                "total_idle": {"$sum": "$IdleSeconds"},
+                "avg_productivity": {"$avg": "$ProductivityScore"},
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        cursor = collection.aggregate(pipeline)
+        results = await cursor.to_list(length=1)
+        
+        if not results:
+            return {
+                "total_duration": 0,
+                "total_idle": 0,
+                "active_work": 0,
+                "avg_productivity": 0,
+                "count": 0
+            }
+            
+        res = results[0]
+        total = float(res.get("total_duration", 0))
+        idle = float(res.get("total_idle", 0))
+        
+        return {
+            "total_duration": total,
+            "total_idle": idle,
+            "active_work": max(0.0, total - idle),
+            "avg_productivity": float(res.get("avg_productivity", 0)),
+            "count": int(res.get("count", 0))
+        }
+    except Exception as e:
+        print(f"Error calculating stats: {e}")
+        # fallback
+        return {
+            "total_duration": 0,
+            "total_idle": 0,
+            "active_work": 0,
+            "avg_productivity": 0,
+            "count": 0
+        }
 
 def analyze_risk(title: str, process: str, url: str):
     score = 0
@@ -368,12 +452,20 @@ async def log_activity(
     dto: ActivityLogDto,
     db: AsyncSession = Depends(get_db),
     x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_agent_id: Optional[str] = Header(None, alias="X-Agent-Id"),
     mongo: AsyncIOMotorClient = Depends(get_mongo_db)
 ):
     # 1. Resolve API Key (Header > Body)
     api_key = x_tenant_api_key or dto.TenantApiKey
     if not api_key:
         raise HTTPException(status_code=401, detail="X-Tenant-Api-Key header or TenantApiKey in body required")
+
+    # 2. [SECURITY] Strict Agent Validation
+    # If X-Agent-Id header is provided (pushed by Gateway), verify it matches the body payload.
+    # This prevents Agent A from spoofing logs for Agent B within the same tenant.
+    if x_agent_id and x_agent_id != dto.AgentId:
+        print(f"[SECURITY ALERT] Spoofing Attempt! Agent {x_agent_id} tried to report as {dto.AgentId}")
+        raise HTTPException(status_code=403, detail="Agent ID Spoofing Detected")
 
     # 2. Validate Tenant
     result = await db.execute(select(Tenant).where(Tenant.ApiKey == api_key))

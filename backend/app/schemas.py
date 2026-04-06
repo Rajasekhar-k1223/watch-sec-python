@@ -25,6 +25,8 @@ class ActivityLog(BaseModel):
     Timestamp: datetime
     RiskScore: Optional[float] = 0.0
     RiskLevel: Optional[str] = "Normal"
+    startTime: Optional[str] = None
+    endTime: Optional[str] = None
 
 class MailLog(BaseModel):
     AgentId: str
@@ -41,6 +43,13 @@ class OCRLog(BaseModel):
     Confidence: float
     SensitiveKeywordsFound: List[str]
     Timestamp: datetime
+
+class ActivityStats(BaseModel):
+    total_duration: float
+    total_idle: float
+    active_work: float
+    avg_productivity: float
+    count: int
 
 # --- DTOs ---
 

@@ -1,4 +1,4 @@
-version: '3.8'
+
 
 services:
   monitorix-backend:
@@ -12,9 +12,9 @@ services:
       - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
       - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/appdb?authSource=admin
       - HOST=0.0.0.0
-      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
-      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
-      - REDIS_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+      - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
       - SECRET_KEY=your-secret-key-here
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
       - PORT=8000
@@ -37,9 +37,9 @@ services:
     environment:
       - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
       - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/appdb?authSource=admin
-      - CELERY_BROKER_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
-      - CELERY_RESULT_BACKEND=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
-      - REDIS_URL=redis://:Redis!2025%23Secure@host.docker.internal:16379/0
+      - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
       # DMARC-aligned SMTP: must use from/sender within monitorix.co.in domain
       - SMTP_HOST=smtp.monitorix.co.in
       - SMTP_PORT=465

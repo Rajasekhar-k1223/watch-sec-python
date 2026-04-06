@@ -6,7 +6,11 @@ from sqlalchemy.future import select # type: ignore
 from pydantic import BaseModel # type: ignore
 from typing import Optional, List, Any # type: ignore
 import os # type: ignore
+import asyncio # type: ignore
 from datetime import datetime, timedelta # type: ignore
+
+# --- Policy Cache (TTL=60s): avoids a DB query on every 30s heartbeat ---
+_policy_cache: dict = {}  # key: PolicyId, value: (policy_obj, cached_at)
 
 from ..db.session import get_db # type: ignore
 from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog # type: ignore
@@ -90,7 +94,8 @@ async def get_system_versions():
     }
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query # type: ignore
-@router.get("/")
+@router.get("")
+@router.get("/", include_in_schema=False)
 async def get_agents(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db),
@@ -344,6 +349,29 @@ class AgentEvent(BaseModel):
     Timestamp: Optional[str] = None
 
 
+class RelayStreamRequest(BaseModel):
+    width: int = 1280
+    quality: int = 80
+    agentId: str
+
+
+@agent_router.post("/internal/relay-stream/{agent_id}")
+async def internal_relay_stream(
+    agent_id: str,
+    payload: RelayStreamRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Internal Bridge: Emits StartStream directly to current gateway clients."""
+    print(f"[RELAY_RECEIVED] Internal signal for {agent_id}. Data: {payload}")
+    try:
+        # 1. Emit StartStream directly to the room
+        await sio.emit('StartStream', payload.dict(), room=agent_id)
+        return {"status": "relayed"}
+    except Exception as e:
+        print(f"[RELAY_ERROR] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 def is_in_maintenance_window(tenant_obj) -> bool:
     """Checks if the current UTC time is within the allowed update window."""
@@ -405,10 +433,10 @@ async def agent_heartbeat(
         agent = result_agent.scalars().first()
 
         # [RECOVERY] Revival Logic - Clear pending uninstall if agent reports back online
+        # NOTE: No early commit here — deferred to the single final commit below.
         if agent and (payload.JustStarted or "Online" in payload.Status):
             if agent.IsPendingUninstall:
                 agent.IsPendingUninstall = False
-                await db.commit()
         
         import json # type: ignore
         from datetime import datetime # type: ignore
@@ -524,9 +552,17 @@ async def agent_heartbeat(
                 
                 agent.InstalledSoftwareJson = safe_json
                 try:
-                    scan_vulnerabilities_background.delay(agent.AgentId, safe_json)
+                    import asyncio
+                    from ..core.celery_app import celery_app
+                    from ..tasks.security import scan_vulnerabilities_background
+                    
+                    # Asyncify the synchronous kombu/celery connection attempt
+                    # Use to_thread to offload the potentially blocking .delay() call
+                    await asyncio.to_thread(scan_vulnerabilities_background.delay, agent.AgentId, safe_json)
                 except Exception as e:
-                    print(f"[HEARTBEAT] Vulnerability scan trigger failed: {e}")
+                    # Log the full repr to catch auth error strings
+                    error_msg = repr(e)
+                    print(f"[HEARTBEAT] Vulnerability scan trigger failed: {error_msg}", flush=True)
                 
             if payload.PowerStatus:
                 agent.PowerStatusJson = json.dumps(payload.PowerStatus)
@@ -535,22 +571,7 @@ async def agent_heartbeat(
                 
             agent.CpuUsage = payload.CpuUsage
             agent.MemoryUsage = payload.MemoryUsage
-            
-            try:
-                await db.commit()
-            except Exception as e:
-                await db.rollback()
-                # Log to dedicated crash file
-                error_log = f"[HEARTBEAT RETRY] Data truncation issue detected for {agent.AgentId}: {e}\n"
-                try:
-                    with open("heartbeat_crash.log", "a") as f:
-                        f.write(error_log)
-                except: pass
-                
-                # RECOVERY: Clear the heavy JSON fields and commit again to save the heartbeat (LastSeen)
-                agent.InstalledSoftwareJson = None
-                agent.HardwareJson = None
-                await db.commit()
+            # NOTE: No commit here — merged with AgentReportEntity insert below for 1 round-trip
 
         # --- CRITICAL: Ensure agent is not None before proceeding ---
         if not agent:
@@ -560,18 +581,26 @@ async def agent_heartbeat(
         bandwidth_config = tenant.bandwidth_config or {}
         screenshot_interval = agent.ScreenshotInterval
         
-        # Check for Policy-specific overrides
+        # Check for Policy-specific overrides — cached to avoid a DB hit every heartbeat
         if hasattr(agent, 'PolicyId') and agent.PolicyId:
-            p_res = await db.execute(select(Policy).where(Policy.Id == agent.PolicyId))
-            policy = p_res.scalars().first()
+            policy_id = agent.PolicyId
+            now_ts = datetime.utcnow()
+            cached = _policy_cache.get(policy_id)
+            policy = None
+            if cached:
+                cached_pol, cached_at = cached
+                if (now_ts - cached_at).total_seconds() < 60:  # 60s TTL
+                    policy = cached_pol
+            if policy is None:
+                p_res = await db.execute(select(Policy).where(Policy.Id == policy_id))
+                policy = p_res.scalars().first()
+                _policy_cache[policy_id] = (policy, now_ts)
             if policy:
-                # Override Bandwidth
                 if policy.BandwidthJson:
                     try:
                         pol_bw = json.loads(policy.BandwidthJson)
                         if pol_bw: bandwidth_config = pol_bw
                     except: pass
-                # Override Screenshot Interval
                 if policy.ScreenshotInterval is not None:
                     screenshot_interval = policy.ScreenshotInterval
 
@@ -651,7 +680,19 @@ async def agent_heartbeat(
             Timestamp=report_ts
         )
         db.add(new_report)
-        await db.commit()
+        # SINGLE COMMIT: agent update + report insert + IsPendingUninstall clear in one round-trip
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            # Non-blocking crash log write
+            error_log = f"[HEARTBEAT RETRY] Data truncation issue for {agent.AgentId}: {e}\n"
+            asyncio.create_task(asyncio.to_thread(lambda: open('heartbeat_crash.log','a').write(error_log)))
+            # RECOVERY: clear heavy fields, retry
+            agent.InstalledSoftwareJson = None
+            agent.HardwareJson = None
+            db.add(new_report)
+            await db.commit()
         
         # 6. Real-time Dashboard Updates (Socket.IO)
         try:
@@ -715,10 +756,9 @@ async def agent_heartbeat(
         import traceback # type: ignore
         error_msg = f"[HEARTBEAT ERROR] {type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
         print(error_msg)
-        # Log to local crash file for persistent tracking
+        # Non-blocking crash log write (don't block the event loop on disk I/O)
         try:
-            with open("heartbeat_crash.log", "a") as f:
-                f.write(error_msg + "\n")
+            asyncio.create_task(asyncio.to_thread(lambda: open('heartbeat_crash.log','a').write(error_msg + '\n')))
         except: pass
         
         if isinstance(e, HTTPException):

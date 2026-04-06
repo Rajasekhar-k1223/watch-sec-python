@@ -106,6 +106,15 @@ class ScreenshotCapture:
                     break
                 time.sleep(1)
 
+    def _create_error_frame(self, text: str) -> bytes:
+        from PIL import Image, ImageDraw # type: ignore
+        img = Image.new('RGB', (800, 600), color=(15, 15, 15))
+        draw = ImageDraw.Draw(img)
+        draw.text((50, 300), text, fill=(255, 80, 80))
+        bio = BytesIO()
+        img.save(bio, format="WEBP", quality=50)
+        return bio.getvalue()
+
     def capture_now(self):
         import mss # type: ignore
         # Don't capture if disabled or if we are paused AND it's not a forced "one-last-shot"
@@ -122,8 +131,8 @@ class ScreenshotCapture:
                 self._capture_and_send(sct, monitor_idx)
                 return True, "Screenshot Sent"
         except mss.ScreenShotError:
-            # Common when screen is locked or in secure desktop
-            print("[Screens] Screen Locked/Secure Desktop - Capture Skipped")
+            print("[Screens] Screen Locked/Secure Desktop - Creating Placeholder")
+            self._send_raw_bytes(self._create_error_frame("NO VIDEO SIGNAL\nScreen Locked (mss.ScreenShotError)"))
             return False, "Screen Locked"
         except Exception as e:
             # Check for Session 0 / Headless indicators
@@ -136,6 +145,8 @@ class ScreenshotCapture:
             
             if self.enabled:
                 self._report_audit("CAPTURE_ERROR", error_msg)
+            
+            self._send_raw_bytes(self._create_error_frame(f"NO VIDEO SIGNAL\n{error_msg}"))
             return False, error_msg
 
     def _capture_and_send(self, sct, monitor_idx):
@@ -149,10 +160,11 @@ class ScreenshotCapture:
         # ensure it matches the BGRX raw decoder.
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         
-        # [NEW] Skip 100% black images (locked/headless)
+        # [NEW] Check for 100% black images (locked/headless/minimized RDP)
         extrema = img.convert("L").getextrema()
         if extrema == (0, 0):
-            print("[Screens] Image is completely black. Skipping upload (Session Locked).")
+            print("[Screens] Image is completely black. Sending placeholder instead.")
+            self._send_raw_bytes(self._create_error_frame("NO VIDEO SIGNAL\nDesktop Inaccessible (RDP Minimized / Locked)"))
             return
         
         # 1. Resize Logic
@@ -188,6 +200,9 @@ class ScreenshotCapture:
 
         
         # Send to Backend use .webp extension
+        self._send_raw_bytes(webp_bytes)
+        
+    def _send_raw_bytes(self, webp_bytes: bytes):
         now = datetime.utcnow()
         files = {
             'file': (f'screen.webp', webp_bytes, 'image/webp')

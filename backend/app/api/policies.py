@@ -32,7 +32,8 @@ class PolicyDto(BaseModel):
     screenshotsEnabled: Optional[bool] = False
     activityMonitorEnabled: Optional[bool] = True
 
-@router.get("/", response_model=List[PolicyDto])
+@router.get("", response_model=List[PolicyDto])
+@router.get("/", response_model=List[PolicyDto], include_in_schema=False)
 async def get_policies(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
@@ -64,7 +65,8 @@ async def get_policies(
         ) for p in policies
     ]
 
-@router.post("/")
+@router.post("")
+@router.post("/", include_in_schema=False)
 async def create_policy(
     dto: PolicyDto,
     current_user: User = Depends(get_current_user), 

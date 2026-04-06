@@ -132,6 +132,10 @@ try {
     if (Test-Path $OldExe) {
         Remove-Item $OldExe -Force -ErrorAction SilentlyContinue
     }
+    
+    # E. [SECURITY] Scrub legacy certificates and sensitive keys
+    Write-Host "    [!] Eradicating legacy certificates to ensure zero key exposure..." -ForegroundColor Yellow
+    Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     # Ensure directory exists for exclusion
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -331,7 +335,7 @@ try {
     Write-Host "    [*] Launching interactive agent for current user..."
     Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
     
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.23 is now running (Service + User Instance)." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.26 is now running (Service + User Instance)." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }

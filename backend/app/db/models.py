@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON # type: ignore
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, Boolean, ForeignKey, JSON, Index # type: ignore
 from sqlalchemy.dialects.mysql import LONGTEXT # type: ignore
 from sqlalchemy.orm import relationship # type: ignore
 from datetime import datetime # type: ignore
@@ -129,14 +129,20 @@ class AgentReportEntity(Base):
     __tablename__ = "AgentReports"
 
     Id = Column(Integer, primary_key=True, index=True)
-    AgentId = Column(String(255))
-    TenantId = Column(Integer)
+    AgentId = Column(String(255), index=True)
+    TenantId = Column(Integer, index=True)
     Status = Column(String(50))
     CpuUsage = Column(Float)
     MemoryUsage = Column(Float)
     DiskUsage = Column(Float, default=0.0) # [NEW]
     TopProcessesJson = Column(LONGTEXT, nullable=True) # [NEW]
-    Timestamp = Column(DateTime, default=datetime.utcnow)
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Composite indexes for fast time-filtered queries (hottest table)
+    __table_args__ = (
+        Index('ix_agent_reports_agentid_ts', 'AgentId', 'Timestamp'),
+        Index('ix_agent_reports_tenantid_ts', 'TenantId', 'Timestamp'),
+    )
 
 class AuditLog(Base):
     __tablename__ = "AuditLogs"
@@ -217,7 +223,7 @@ class EventLog(Base):
     AgentId = Column(String(50), index=True)
     Type = Column(String(50), default="Unknown")
     Details = Column(Text, default="")
-    Timestamp = Column(DateTime, default=datetime.utcnow)
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     # Storing raw JSON if needed, or specific fields
     RawData = Column(Text, nullable=True)
 
@@ -226,7 +232,7 @@ class ActivityLog(Base):
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
-    TenantId = Column(Integer, nullable=True)
+    TenantId = Column(Integer, nullable=True, index=True)
     ActivityType = Column(String(50))
     ProcessName = Column(String(255), nullable=True)
     WindowTitle = Column(Text, nullable=True)
@@ -237,7 +243,13 @@ class ActivityLog(Base):
     ProductivityScore = Column(Float, default=0.0) # [NEW]
     RiskScore = Column(Float, default=0.0)
     RiskLevel = Column(String(50), default="Normal")
-    Timestamp = Column(DateTime, default=datetime.utcnow)
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Composite index for fast per-agent time-filtered activity queries
+    __table_args__ = (
+        Index('ix_activity_logs_agentid_ts', 'AgentId', 'Timestamp'),
+        Index('ix_activity_logs_tenantid_ts', 'TenantId', 'Timestamp'),
+    )
 
 class SpeechLog(Base):
     __tablename__ = "SpeechLogs"

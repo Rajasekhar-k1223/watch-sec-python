@@ -81,5 +81,5 @@ systemctl daemon-reload
 systemctl enable $SERVICE_NAME
 systemctl start $SERVICE_NAME
 
-echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.23 is now active.${NC}"
+echo -e "${GREEN}[SUCCESS] Monitorix Agent v1.8.26 is now active.${NC}"
 systemctl status $SERVICE_NAME --no-pager

@@ -23,11 +23,19 @@ router = APIRouter()
 # --- Helper Logic ---
 
 def _get_backend_url(request: Request) -> str:
+    # 1. Direct Env Var (Specific for Agent Gateway)
     env_url = os.getenv("AGENT_BACKEND_URL")
-    # Priority: Env Var -> Hardcoded Monitorix -> Request URL
     if env_url:
         return env_url.rstrip("/")
-    return "https://agent-api.monitorix.co.in"
+    
+    # 2. General Base URL (Standard across the app)
+    base_url = os.getenv("MONITORIX_BASE_URL")
+    if base_url:
+        return base_url.rstrip("/")
+    
+    # 3. Fallback to current request domain (Robust)
+    # Using request.url.scheme + netloc ensures it works behind proxies if ProxyHeadersMiddleware is active
+    return f"{request.url.scheme}://{request.url.netloc}"
 
 def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_payload: bool = False, format_type: Optional[str] = None):
     """
@@ -101,7 +109,7 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
 
     # 2.5 Handle Payload Request (Zip Serving)
     if serve_payload:
-        if os_type.lower().split("-")[0] in ["linux", "mac"]:
+        if os_type.lower().split("-")[0] in ["linux", "mac", "windows"]:
             # On-the-fly Zip Generation (from Template)
             zip_buffer = io.BytesIO()
             # Zip everything in template_path
@@ -113,7 +121,7 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
                             continue
                         if file.endswith(".exe") or file.endswith(".bin"):
                             continue
-                        if file in ["monitorix-agent-linux", "monitorix-agent-mac"]:
+                        if file in ["monitorix-agent-linux", "monitorix-agent-mac", "monitorixagent.exe"]:
                             continue
                         
                         file_path = os.path.join(root, file)
@@ -489,12 +497,18 @@ async def download_public_agent(
     db: AsyncSession = Depends(get_db)
 ):
     # Public Endpoint (No Auth Header)
+    # NOTE: 'mode' param removed — Windows always uses standard binary installation.
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key")
         
     backend_url = _get_backend_url(request)
+
+    # If Windows and no payload requested, serve the PS1 Stager (always binary/standard mode)
+    if os_type.lower().startswith("windows") and not payload:
+        return await get_install_script(request, key, "binary", db)
+
     return _serve_agent_package(os_type, tenant, backend_url, serve_payload=payload, format_type=format)
 
 @router.get("/agent/install")
@@ -669,60 +683,48 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     raise HTTPException(status_code=404, detail=f"Agent Binary Not Found in {folder_name}")
 
 @router.get("/script")
-async def get_install_script(request: Request, key: str, db: AsyncSession = Depends(get_db)):
-    # Helper to get the One-Liner Script (Stager)
-    
+async def get_install_script(request: Request, key: str, mode: str = "binary", db: AsyncSession = Depends(get_db)):
+    """
+    Returns the PowerShell stager script for Windows agent installation.
+    Always uses the standard binary installation method.
+    The 'mode' param is kept for backwards-compat with direct /script calls but
+    is no longer exposed via the public one-liner URL.
+    """
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
     if not tenant:
-        return Response(content="Write-Error 'Invalid API Key'", media_type="text/plain")
+        return Response(content="Write-Error 'Invalid Monitorix API Key. Please check the key in your dashboard.'", media_type="text/plain")
 
     backend_url = _get_backend_url(request)
     
-    print(f"[Downloads] Generating Script for Key: {key}")
-    print(f"[Downloads] Tenant Found: ID={tenant.Id}, API_KEY={tenant.ApiKey}")
-
-    if not tenant.ApiKey:
-        print("[Downloads] CRITICAL: Tenant has no API Key in DB!")
-
-    # 1. Prepare Config Data
-    config_data = {
-        "TenantApiKey": tenant.ApiKey,
-        "BackendUrl": backend_url
-    }
-    config_json = json.dumps(config_data)
-    config_json_escaped = config_json.replace("'", "''")
-
-    # [NEW] Check Agent Limit BEFORE Generating Installer
-    # If limit reached, return a PS script that aborts immediately.
-    
+    # Check Agent Limit BEFORE Generating Installer
     from sqlalchemy import func # type: ignore
     from ..db.models import Agent # type: ignore
     
-    # Query Count
     count_query = select(func.count()).select_from(Agent).where(Agent.TenantId == tenant.Id)
     count_res = await db.execute(count_query)
     current_count = count_res.scalar()
     
     if current_count >= tenant.AgentLimit:
-        # Use a polite but firm error message
-        limit_script = """
-        Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
-        Write-Error "INSTALLATION ABORTED: Agent Limit Reached for your plan."
-        Write-Host "Current Usage: {0} / {1}" -ForegroundColor Red
-        Write-Host "Please contact your administrator to upgrade your license." -ForegroundColor Gray
-        exit 1
-        """.format(current_count, tenant.AgentLimit)
-        return Response(content=limit_script, media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="install.ps1"'})
+        limit_script = f"""
+Write-Host "--- Monitorix Installer ---" -ForegroundColor Cyan
+Write-Error "INSTALLATION ABORTED: Agent Limit Reached ({current_count} / {tenant.AgentLimit})."
+Write-Host "Please contact your administrator to upgrade your license." -ForegroundColor Gray
+exit 1
+"""
+        return Response(content=limit_script.strip(), media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="install.ps1"'})
     
-    # 2. Get the Actual Installer Script from disk
+    # Always use the standard binary installer template
+    # Source mode is not exposed via the public one-liner but kept here for admin use.
+    template_name = "install_agent_windows.ps1"
+    if mode == "source":
+        template_name = "install_agent_windows_source.ps1"
+
     file_dir = os.path.dirname(os.path.abspath(__file__))
-    # Priority: Updated Script in Backend Root -> Agent Folder -> Fallbacks
     possible_paths = [
-        os.path.normpath(os.path.join(file_dir, "../../install_agent_windows.ps1")), # Backend Root
-        os.path.normpath(os.path.join(file_dir, "../../../agent/install_agent_windows.ps1")), # Agent Folder (Dev)
-        "/app/install_agent_windows.ps1", # Docker Default
-        "install_agent_windows.ps1"
+        os.path.normpath(os.path.join(file_dir, f"../../{template_name}")), # Backend Root
+        os.path.normpath(os.path.join(file_dir, f"../../../agent/{template_name}")), # Agent Folder (Dev)
+        f"/app/{template_name}"
     ]
     
     installer_script_path = None
@@ -730,20 +732,26 @@ async def get_install_script(request: Request, key: str, db: AsyncSession = Depe
         if os.path.exists(p):
             installer_script_path = p
             break
-    if not installer_script_path:
-         return Response(content="Write-Error 'Installer script template not found on server.'", media_type="text/plain")
+            
+    if not installer_script_path or not os.path.exists(str(installer_script_path)):
+        # Fallback: always try standard binary template
+        fallback = os.path.normpath(os.path.join(file_dir, "../../install_agent_windows.ps1"))
+        if os.path.exists(fallback):
+            installer_script_path = fallback
+            print(f"[Downloads] Falling back to standard binary template.")
+        else:
+            return Response(content="Write-Error 'Monitorix Installer template not found on server. Contact support.'", media_type="text/plain")
 
     async with aiofiles.open(installer_script_path, mode='r') as f:
         full_script = await f.read()
 
-    # 3. Robustly Remove param(...) block using multi-line regex
-    # (?si) = dot-all and case-insensitive
+    # Strip param(...) block — variables are injected below
     full_script = re.sub(r'(?si)param\s*\(.*?\)', '', full_script, count=1)
 
-    # 3. Set Download URL - Use EXE-only endpoint (no ZIP/cert exposure)
-    # This is the clean PowerShell deployment path.
+    # Build the EXE download URL (standard binary path)
     download_url = f"{backend_url}/api/downloads/exe/windows?key={tenant.ApiKey}"
-    
+
+    # Prepend all required variables so the script is fully self-contained
     variables = f"""
 $DownloadUrl = "{download_url}"
 $ApiKey = "{tenant.ApiKey}"
@@ -752,10 +760,46 @@ $InstallDir = "C:\\Program Files\\Monitorix"
 $ExeName = "monitorixagent.exe"
 $VersionCheckUrl = ""
 """
-    # Prepend variables and ensure it starts with admin check or header
-    full_script = variables + "\n" + full_script
+    
+    # Insert variables after any #Requires directives and block comments
+    lines = full_script.splitlines()
+    insert_idx = 0
+    for i, line in enumerate(lines):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        if trimmed.startswith("<#") or trimmed.startswith("#Requires") or trimmed.startswith("#"):
+            if trimmed.startswith("<#"):
+                while i < len(lines) and "#>" not in lines[i]:
+                    i += 1
+            insert_idx = i + 1
+            continue
+        break
+    
+    final_script_lines = lines[:insert_idx] + [variables.strip()] + lines[insert_idx:]
+    full_script = "\n".join(final_script_lines)
 
     return Response(content=full_script, media_type="text/plain")
+    
+
+@router.get("/python/windows")
+async def get_python_windows():
+    """
+    Serves the portable Python (embedded) zip for source-based installations.
+    """
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    # Path: backend/app/api/../../agent/python-3.11.9-embed-amd64.zip
+    py_path = os.path.normpath(os.path.join(file_dir, "../../../agent/python-3.11.9-embed-amd64.zip"))
+    
+    if os.path.exists(py_path):
+        return FileResponse(py_path, media_type="application/zip", filename="python-runtime.zip")
+    
+    # Fallback to backend/storage/AgentTemplate/win-x64 if moved
+    py_path_alt = os.path.normpath(os.path.join(file_dir, "../../AgentTemplate/win-x64/python-3.11.9-embed-amd64.zip"))
+    if os.path.exists(py_path_alt):
+        return FileResponse(py_path_alt, media_type="application/zip", filename="python-runtime.zip")
+
+    raise HTTPException(status_code=404, detail="Python runtime not found on server.")
 
 
 @router.api_route("/exe/windows", methods=["GET", "HEAD"])

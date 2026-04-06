@@ -299,6 +299,8 @@ remote_shell: Any = None
 input_simulator: Any = None
 browser_enforcer: Any = None
 live_streamer: Any = None
+
+live_streamer: Any = None
 # HTTP Session Initialized at Module Level
 http_session: Any = requests.Session()
 http_session.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
@@ -1437,7 +1439,7 @@ async def on_take_screenshot(data):
 
 @sio.on('UpdateConfig')
 async def on_update_config(data):
-    global config
+    global config, live_streamer
     log_to_file(f"Config Update (Socket): {data}")
     
     if isinstance(data, dict):
@@ -1467,6 +1469,7 @@ async def on_webrtc_ice_candidate(data):
 
 @sio.on('StartStream')
 async def on_start_stream(data):
+    global live_streamer, webrtc_manager
     log_to_file("Live Stream Requested")
     # [FIX] Check both Config and global live_streamer/webrtc_manager
     if config.get("LiveStreamEnabled", True): # Default to True if not set to ensure better UX
@@ -1476,7 +1479,7 @@ async def on_start_stream(data):
         if live_streamer:
             try:
                 loop = asyncio.get_running_loop()
-                live_streamer.start_streaming(loop)
+                live_streamer.start_streaming(loop, data)
                 log_to_file("LiveStreamer (JPEG) started successfully")
             except Exception as e:
                 log_to_file(f"Error starting LiveStreamer: {e}")
@@ -1799,7 +1802,7 @@ async def main():
          http_session.headers.update({"X-Tenant-Api-Key": API_KEY})
          sio.auth = {"apiKey": API_KEY}
 
-    # [v1.8.23] Hardware-Centric Identity (No Suffixes/No User/No IP)
+    # [v1.8.26] Hardware-Centric Identity (No Suffixes/No User/No IP)
     # This fulfills the request to avoid AgentId (volatile) and IP/Administrator checks.
     BASE_AGENT_ID = config.get("AgentId", "").strip()
     
@@ -1909,7 +1912,7 @@ async def main():
     
     # Initialize Live Streamer (if module loaded)
     if LiveStreamer:
-        live_streamer = LiveStreamer(AGENT_ID, sio)
+        live_streamer = LiveStreamer(AGENT_ID, sio, log_to_file)
         log_to_file("  ✓ LiveStreamer initialized")
     
     # Conditionals

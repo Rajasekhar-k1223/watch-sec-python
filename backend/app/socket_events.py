@@ -22,7 +22,8 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
         token_list = params.get('token')
         if token_list:
             token = token_list[0]
-            print(f"[DEBUG] Found Token in Query String: {token[:10]}...")
+            if token:
+                print(f"[DEBUG] Found Token in Query String: {token[:10]}...")
     
     # Fallback to query param if logic changes, but auth dict is standard
     # Fallback to query param if logic changes, but auth dict is standard
@@ -128,6 +129,8 @@ async def on_join(sid: str, data: Dict[str, Any]):
     room = data.get('room')
     if not room:
         return
+    await sio.enter_room(sid, room)
+    print(f"[DEBUG] Client {sid} joined room: {room}")
 
     session = await sio.get_session(sid)
     user = session.get("user")
@@ -224,4 +227,114 @@ async def on_agent_event(sid: str, data: Dict[str, Any]):
     else:
         print(f"[Socket.IO] [WARNING] Agent event from {sid} ignored: No TenantId in session.")
 
+
+# ======================================================
+# LIVE STREAM & WEBRTC RELAY
+# ======================================================
+
+import httpx # type: ignore
+
+@sio.on('start_stream')
+async def on_start_stream(sid: str, data: Dict[str, Any]):
+    """Relay user request to agent"""
+    agent_id = data.get('agentId')
+    if agent_id:
+        print(f"[DEBUG] Signaling start_stream to room: {agent_id} | Data: {data}")
+        
+        # 1. Standard Redis Broadcast (High Availability)
+        await sio.emit('StartStream', data, room=agent_id)
+        
+        # 2. [NEW] Internal Bridge Relay (Guaranteed Delivery)
+        # This bypasses Redis signaling issues by calling the Gateway directly
+        try:
+            async with httpx.AsyncClient() as client:
+                # Use internal Docker service name
+                gateway_url = f"http://watch-sec-agent-gateway:8005/api/agent/internal/relay-stream/{agent_id}"
+                print(f"[RELAY] Sending bridge signal to {gateway_url}")
+                
+                # Payload matches RelayStreamRequest schema
+                relay_data = {
+                    "width": data.get("width", 1280),
+                    "quality": data.get("quality", 80),
+                    "agentId": agent_id
+                }
+                
+                response = await client.post(gateway_url, json=relay_data, timeout=2.0)
+                print(f"[RELAY_STATUS] Gateway responded: {response.status_code}")
+        except Exception as e:
+            print(f"[RELAY_FAILED] Internal bridge unreachable: {e}")
+
+@sio.on('stop_stream')
+async def on_stop_stream(sid: str, data: Dict[str, Any]):
+    """Relay 'stop_stream' from Frontend to Agent as 'StopStream'"""
+    agent_id = data.get('agentId')
+    if agent_id:
+        print(f"[Socket.IO] Signaling: stop_stream -> Agent {agent_id}")
+        await sio.emit('StopStream', data, room=agent_id)
+
+@sio.on('ice_candidate')
+async def on_ice_candidate(sid: str, data: Dict[str, Any]):
+    """Relay ICE Candidate from Frontend to Agent as 'webrtc_ice_candidate'"""
+    agent_id = data.get('target')
+    if agent_id:
+        await sio.emit('webrtc_ice_candidate', data, room=agent_id)
+
+@sio.on('webrtc_answer')
+async def on_webrtc_answer(sid: str, data: Dict[str, Any]):
+    """Relay WebRTC Answer from Frontend to Agent"""
+    agent_id = data.get('target')
+    if agent_id:
+        await sio.emit('webrtc_answer', data, room=agent_id)
+
+@sio.on('RemoteInput')
+async def on_remote_input(sid: str, data: Dict[str, Any]):
+    """Relay Remote Input (Keyboard/Mouse) from Frontend to Agent"""
+    agent_id = data.get('agentId')
+    if agent_id:
+        await sio.emit('RemoteInput', data, room=agent_id)
+
+# --- Agent to Frontend Relays ---
+
+@sio.on('stream_frame')
+async def on_stream_frame(sid: str, data: Dict[str, Any]):
+    """Relay JPEG frame from Agent to Frontend (as ReceiveScreen and stream_frame)"""
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    agent_id = session.get('agent_id')
+    tenant_id = session.get('tenantId')
+    
+    if tenant_id:
+        image_data = data.get('image')
+        if not image_data: return
+        
+        # print(f"[DEBUG] Relaying frame from agent: {agent_id} (Tenant: {tenant_id})")
+        # Agents.tsx expects 'ReceiveScreen' with (agentId, base64) as separate arguments
+        # python-socketio: pass a tuple to have them delivered as separate args in JS
+        await sio.emit('ReceiveScreen', (agent_id, image_data), room=f"tenant_{tenant_id}")
+        await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id) # Direct to agent room for focused listeners
+        
+        # RemoteDesktop.tsx expects 'stream_frame' with a single dict object
+        await sio.emit('stream_frame', data, room=f"tenant_{tenant_id}")
+        await sio.emit('stream_frame', data, room=agent_id) # Direct to agent room for focused listeners
+
+@sio.on('webrtc_offer')
+async def on_webrtc_offer(sid: str, data: Dict[str, Any]):
+    """Relay WebRTC Offer from Agent to Frontend"""
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    tenant_id = session.get('tenantId')
+    if tenant_id:
+        await sio.emit('webrtc_offer', data, room=f"tenant_{tenant_id}")
+
+@sio.on('webrtc_ice_candidate')
+async def on_agent_ice_candidate(sid: str, data: Dict[str, Any]):
+    """Relay ICE Candidate from Agent to Frontend as 'ice_candidate'"""
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent'): return
+    
+    tenant_id = session.get('tenantId')
+    if tenant_id:
+        await sio.emit('ice_candidate', data, room=f"tenant_{tenant_id}")
 

@@ -186,7 +186,6 @@ class DataQueue:
                 if self.bandwidth_manager and priority != 'high':
                     delay = self.bandwidth_manager.get_delay_for_size(len(payload_str))
                     if delay > 0:
-                        # self._log(f"Throttling upload: Sleeping {delay:.2f}s to maintain rate limit.")
                         time.sleep(delay)
 
                 url = f"{self.backend_url}{endpoint}"
@@ -195,20 +194,19 @@ class DataQueue:
                 if 200 <= resp.status_code < 300:
                     ids_to_delete.append(row_id)
                 elif resp.status_code in [404, 400, 422, 405]:
-                    # Permanent Client Error (Bad URL, Bad Data). Discard.
+                    # Permanent Client Error. Discard.
                     self._log(f"Permanent error {resp.status_code} for {endpoint}. Discarding item.")
                     ids_to_delete.append(row_id)
                 elif resp.status_code in [401, 403]:
                     self._log(f"Auth error flushing queue: {resp.status_code}")
                     break
                 else:
-                    # Server error (500), keep in queue
-                    break # Stop batch
+                    break # Server error (500), stop batch
                     
             except requests.exceptions.RequestException:
-                break 
+                break
 
-        # Delete sent items
+        # Delete sent items in the SAME connection used for the read (single lock acquisition)
         if ids_to_delete:
             with self.lock:
                 with sqlite3.connect(self.db_path) as conn:

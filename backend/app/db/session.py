@@ -83,8 +83,9 @@ if settings.DATABASE_URL.startswith("sqlite"):
 else:
     engine_args.update(
         {
-            "pool_size": 20,
-            "max_overflow": 10,
+            "pool_size": 30,       # Increased: handles concurrent agent heartbeats
+            "max_overflow": 20,    # Increased: peak burst capacity
+            "pool_timeout": 30,    # Wait up to 30s for a connection before giving up
         }
     )
 

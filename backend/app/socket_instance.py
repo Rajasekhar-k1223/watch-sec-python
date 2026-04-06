@@ -1,7 +1,7 @@
 import socketio # type: ignore
 import os # type: ignore
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://:Redis!2025%23Secure@watch-sec-redis:6379/0")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://:monitorix2025@watch-sec-redis:6379/0")
 
 # 1. Async Server (Used by FastAPI)
 sio = socketio.AsyncServer(
