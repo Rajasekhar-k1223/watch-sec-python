@@ -132,30 +132,18 @@ async def get_dashboard_stats(
 
     # Helper to check if a specific log type is allowed for this plan
     def is_type_allowed(log_type):
-        type_map = {
-            # Enterprise (3)
-            "Shadow": "ShadowMonitorEnabled",
-            "Speech": "SpeechMonitorEnabled",
-            "RemoteShell": "RemoteShellEnabled",
-            "Mail": "MailMonitorEnabled",
-            "Network": "NetworkMonitoringEnabled",
-            "FileDlp": "FileDlpEnabled",
-            "Vuln": "VulnerabilityIntelligenceEnabled",
-            "LiveStream": "LiveStreamEnabled",
-            
-            # Professional (2)
-            "Keystrokes": "KeyloggerEnabled",
-            "Clipboard": "ClipboardMonitorEnabled",
-            "AppBlock": "AppBlockerEnabled",
-            "Print": "PrinterMonitorEnabled",
-            "Location": "LocationTrackingEnabled",
-            "Usb": "UsbBlockingEnabled"
-        }
-        log_type_str = str(log_type)
-        for key, feat in type_map.items():
-            if key in log_type_str:
-                req = FEATURE_TIERS.get(feat, 3)
-                if plan_level < req: return False
+        log_type_str = str(log_type).lower()
+        # Only filter out explicitly enterprise-tier feature log types
+        if plan_level < 3:  # Not Enterprise
+            enterprise_only = ["shadow", "speech", "remoteshell", "mail", "livestream", "live_stream"]
+            for key in enterprise_only:
+                if key in log_type_str.replace("_", ""):
+                    return False
+        if plan_level < 2:  # Not Professional
+            pro_only = ["keystrokes", "keylogger", "clipboard"]
+            for key in pro_only:
+                if key in log_type_str:
+                    return False
         return True
 
     # 0. Time Range Logic
@@ -312,6 +300,7 @@ async def get_dashboard_stats(
 
             threats = {
                 "total": total_threats,
+                "total24h": total_threats,
                 "byType": by_type,
                 "trend": threat_trend
             }
