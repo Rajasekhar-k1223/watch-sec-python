@@ -1290,6 +1290,12 @@ async def heartbeat_loop():
     # [RECOVERY] Wait 5 seconds to ensure "Agent Started" event reaches backend 
     # to clear any stale IsPendingUninstall flags.
     await asyncio.sleep(5)
+    # [NEW] Network tracking
+    last_net = None
+    try: last_net = psutil.net_io_counters()
+    except: pass
+    last_net_time = time.time()
+    
     while running:
         # [v1.8.21] Session 0 Support: Check for active user sessions to spawn UI Agent
         if IS_WINDOWS and HEADLESS_MODE:
@@ -1300,6 +1306,24 @@ async def heartbeat_loop():
             hw_specs = hw_mon.get_complete_specs() if hw_mon else {}
             power = power_mon.get_status() if power_mon else {}
             lat, lon, country = loc_mon.get_location() if loc_mon else (0, 0, "Unknown")
+            
+            # [NEW] Calculate Network Speed
+            in_mbps = 0.0
+            out_mbps = 0.0
+            try:
+                curr_net = psutil.net_io_counters()
+                curr_net_time = time.time()
+                if last_net:
+                    elapsed = curr_net_time - last_net_time
+                    if elapsed > 0:
+                        recv_delta = curr_net.bytes_recv - last_net.bytes_recv
+                        sent_delta = curr_net.bytes_sent - last_net.bytes_sent
+                        # Convert bytes to megabits: (bytes * 8) / 1_000_000
+                        in_mbps = round((recv_delta * 8) / 1_000_000 / elapsed, 2)
+                        out_mbps = round((sent_delta * 8) / 1_000_000 / elapsed, 2)
+                last_net = curr_net
+                last_net_time = curr_net_time
+            except: pass
             
             payload = {
                 "AgentId": AGENT_ID,
@@ -1320,6 +1344,8 @@ async def heartbeat_loop():
                 "Country": country,
                 "InstalledSoftwareJson": json.dumps(hw_mon.get_installed_software()) if (hw_mon and config.get("VulnerabilityIntelligenceEnabled")) else "[]",
                 "HealthIssues": json.dumps(health_issues),
+                "NetworkInMbps": max(0.0, in_mbps),
+                "NetworkOutMbps": max(0.0, out_mbps),
                 "JustStarted": first_heartbeat
             }
             resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)

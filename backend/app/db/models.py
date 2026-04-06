@@ -97,6 +97,8 @@ class Agent(Base):
     Gateway = Column(String(50), default="Unknown")
     PowerStatusJson = Column(Text, nullable=True) # [NEW] Battery info
     HardwareJson = Column(LONGTEXT, nullable=True) # [NEW] CPU/RAM/Disk details
+    NetworkInMbps = Column(Float, default=0.0) # [NEW]
+    NetworkOutMbps = Column(Float, default=0.0) # [NEW]
     BlockedAppsJson = Column(Text, default="[]") # [NEW] Feature 7: App Blocker
     ShadowPathsJson = Column(Text, default="[]") # [NEW] Enterprise Shadow Vault Paths
     

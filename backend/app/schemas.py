@@ -104,6 +104,8 @@ class AgentHeartbeat(BaseModel):
     Country: Optional[str] = None
     DiskUsage: Optional[float] = 0.0
     TopProcessesJson: Optional[str] = "[]"
+    NetworkInMbps: Optional[float] = 0.0
+    NetworkOutMbps: Optional[float] = 0.0
 
 class AgentUpdateFailedRequest(BaseModel):
     AgentId: str

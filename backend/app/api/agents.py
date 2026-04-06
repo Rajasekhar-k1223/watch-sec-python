@@ -571,6 +571,8 @@ async def agent_heartbeat(
                 
             agent.CpuUsage = payload.CpuUsage
             agent.MemoryUsage = payload.MemoryUsage
+            agent.NetworkInMbps = payload.NetworkInMbps
+            agent.NetworkOutMbps = payload.NetworkOutMbps
             # NOTE: No commit here — merged with AgentReportEntity insert below for 1 round-trip
 
         # --- CRITICAL: Ensure agent is not None before proceeding ---

@@ -186,19 +186,25 @@ async def get_dashboard_stats(
         total_agents = total_res.scalar() or 0
         
         threshold_online = now_utc - timedelta(minutes=2)
-        # [FIX] Join Agent to filter out pending uninstalls
-        q_online = select(func.count(func.distinct(AgentReportEntity.AgentId)))\
-            .join(Agent, Agent.AgentId == AgentReportEntity.AgentId)\
-            .where(AgentReportEntity.Timestamp >= threshold_online)
+        
+        # [FIX] Use Agent.LastSeen directly (updated every heartbeat) and sum network stats
+        q_online = select(
+            func.count(Agent.Id),
+            func.sum(Agent.NetworkInMbps),
+            func.sum(Agent.NetworkOutMbps)
+        ).where(Agent.LastSeen >= threshold_online)
         
         try:
             q_online = q_online.where(Agent.IsPendingUninstall == False)
         except Exception:
             pass
             
-        if tenantId: q_online = q_online.where(AgentReportEntity.TenantId == tenantId)
+        if tenantId: q_online = q_online.where(Agent.TenantId == tenantId)
         online_res = await db.execute(q_online)
-        online_agents = online_res.scalar() or 0
+        online_row = online_res.one_or_none()
+        online_agents = online_row[0] if online_row and online_row[0] else 0
+        inbound_mbps = round(float(online_row[1] or 0), 2) if online_row else 0
+        outbound_mbps = round(float(online_row[2] or 0), 2) if online_row else 0
         
         offline_agents = max(0, total_agents - online_agents)
 
@@ -372,8 +378,8 @@ async def get_dashboard_stats(
             "threats": threats,
             "recentLogs": recent_logs,
             "network": {
-                "inboundMbps": 0, 
-                "outboundMbps": 0, 
+                "inboundMbps": inbound_mbps, 
+                "outboundMbps": outbound_mbps, 
                 "activeConnections": online_agents
             },
             "riskyAssets": risky_assets_data,
