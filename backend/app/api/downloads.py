@@ -588,7 +588,9 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
              binary_name = "monitorix-windows.zip"
         else:
              # Fallback to binary only if zip is missing (Legacy)
-             if os.path.exists(os.path.join(template_dir, "monitorixagent.exe")):
+             if os.path.exists(os.path.join(template_dir, "monitorix-agent.exe")):
+                  binary_name = "monitorix-agent.exe"
+             elif os.path.exists(os.path.join(template_dir, "monitorixagent.exe")):
                   binary_name = "monitorixagent.exe"
              else:
                   binary_name = "monitorix.exe"
@@ -778,7 +780,7 @@ $DownloadUrl = "{download_url}"
 $ApiKey = "{tenant.ApiKey}"
 $BackendUrl = "{backend_url}"
 $InstallDir = "C:\\Program Files\\Monitorix"
-$ExeName = "monitorixagent.exe"
+$ExeName = "monitorix-agent.exe"
 $VersionCheckUrl = ""
 """
     
