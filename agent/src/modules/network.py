@@ -6,6 +6,7 @@ import psutil # type: ignore
 from datetime import datetime # type: ignore
 from typing import Optional # type: ignore
 import requests # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 class NetworkScanner:
     def __init__(self, agent_id, api_key, backend_url, data_queue=None):
@@ -45,12 +46,15 @@ class NetworkScanner:
         print("[Network] Traffic Analysis Stopped")
 
     def _monitor_traffic_loop(self):
+        import random # [v1.8.37] Network Jitter
         while self.is_running:
             try:
                 self._check_connections()
             except Exception as e:
                 print(f"[Network] Error: {e}")
-            time.sleep(5) # Check every 5s
+            
+            # [v1.8.37] Randomized Jitter: 5s base +/- 20% (4s to 6s)
+            time.sleep(5 * random.uniform(0.8, 1.2)) 
 
     def _check_connections(self):
         # iterate Inet connections
@@ -79,14 +83,15 @@ class NetworkScanner:
                 if conn_key not in self.known_connections:
                     self.known_connections.add(conn_key)
                     # Alert!
-                    msg = f"Suspicious Connection: {pname} (PID: {pid}) -> {rip}:{rport}"
+                    msg = PrivacyRedactor.redact_text(f"Suspicious Connection: {pname} (PID: {pid}) -> {rip}:{rport}")
                     print(f"[DLP] {msg}")
                     self._send_alert("Network Anomaly", msg)
     
     def _send_alert(self, type, details):
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "Type": type,
             "Details": details,
             "Timestamp": datetime.utcnow().isoformat()
@@ -115,5 +120,7 @@ class NetworkScanner:
         
         for ip in target_ips:
             if self.scan_port(ip, 80) or self.scan_port(ip, 443):
-                active_hosts.append({"ip": ip, "status": "Active"})
+                # [v1.8.37] Topology Redaction at the source
+                redacted_ip = PrivacyRedactor.redact_text(ip)
+                active_hosts.append({"ip": redacted_ip, "status": "Active"})
         return active_hosts

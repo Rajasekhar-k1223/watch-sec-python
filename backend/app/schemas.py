@@ -83,6 +83,7 @@ class AgentSettingsUpdate(BaseModel):
     BlockedApps: Optional[List[str]] = [] # [NEW]
     ShadowPaths: Optional[List[str]] = [] # [NEW] Enterprise Shadow Vault
     ScreenshotInterval: Optional[int] = 60 # [NEW] v1.8.20
+    GeolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
 
 class AgentHeartbeat(BaseModel):
     AgentId: str
@@ -106,6 +107,9 @@ class AgentHeartbeat(BaseModel):
     TopProcessesJson: Optional[str] = "[]"
     NetworkInMbps: Optional[float] = 0.0
     NetworkOutMbps: Optional[float] = 0.0
+    PublicIp: Optional[str] = None
+    GeolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
+    MachineSecret: Optional[str] = None # [NEW] v1.8.37
 
 class AgentUpdateFailedRequest(BaseModel):
     AgentId: str
@@ -114,5 +118,12 @@ class AgentUpdateFailedRequest(BaseModel):
 class AgentUpdateLogRequest(BaseModel):
     AgentId: str
     Log: str
+
+class SecurityEventDto(BaseModel):
+    AgentId: str
+    TenantApiKey: Optional[str] = None
+    Type: str
+    Details: str
+    Timestamp: datetime
 
 

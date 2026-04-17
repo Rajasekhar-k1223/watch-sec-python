@@ -7,6 +7,7 @@ import requests # type: ignore
 from datetime import datetime # type: ignore
 from watchdog.observers import Observer # type: ignore
 from watchdog.events import FileSystemEventHandler # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 class ShadowHandler(FileSystemEventHandler):
     def __init__(self, agent_id, api_key, backend_url, vault_path):
@@ -38,6 +39,14 @@ class ShadowHandler(FileSystemEventHandler):
         try:
             # Check if file exists and is not too large (limit to 20MB for forensics)
             if not os.path.exists(src_path): return
+            
+            # [v1.8.34] Security: Anti-Symlink Trap
+            # Do NOT shadow symbolic links to prevent exfiltration of system files 
+            # via link trickery (e.g. Doc -> /etc/shadow)
+            if os.path.islink(src_path):
+                print(f"[Shadow] Blocked (Symlink): {src_path}")
+                return
+
             file_size = os.path.getsize(src_path)
             if file_size > 20 * 1024 * 1024: 
                 print(f"[Shadow] Skipping large file: {src_path} ({file_size} bytes)")
@@ -54,7 +63,10 @@ class ShadowHandler(FileSystemEventHandler):
             vault_file_path = os.path.join(self.vault_path, vault_filename)
             
             shutil.copy2(src_path, vault_file_path)
-            print(f"[Shadow] Intercepted: {src_path} -> {vault_file_path}")
+            
+            # [v1.8.31] Privacy: Mask user-identity in paths for logs
+            redacted_src = PrivacyRedactor.redact_text(src_path)
+            print(f"[Shadow] Intercepted: {redacted_src} -> {vault_file_path}")
 
             # Upload
             self._upload_shadow(vault_file_path, src_path, delete_on_success=True)
@@ -66,29 +78,43 @@ class ShadowHandler(FileSystemEventHandler):
         url = f"{self.backend_url}/api/uploads/shadow"
         try:
             filename = os.path.basename(original_path)
+            import hashlib # type: ignore
+            sha256_hash = hashlib.sha256()
+            with open(local_path, 'rb') as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            content_hash = sha256_hash.hexdigest()
+
             with open(local_path, 'rb') as f:
                 files = {'file': (filename, f)}
                 data = {'agent_id': self.agent_id}
+                headers = {
+                    'X-Tenant-Api-Key': self.api_key,
+                    'X-Content-Sha256': content_hash
+                }
                 
-                resp = self.session.post(url, files=files, data=data, timeout=60, verify=False)
+                resp = self.session.post(url, files=files, data=data, headers=headers, timeout=60, verify=True)
                 if resp.status_code == 200:
-                    print(f"[Shadow] Uploaded successfully: {filename}")
+                    redacted_name = PrivacyRedactor.redact_text(filename)
+                    print(f"[Shadow] Uploaded successfully: {redacted_name}")
                     if delete_on_success:
                         try:
                             os.remove(local_path)
-                            print(f"[Shadow] Cleaned up local copy: {local_path}")
+                            # print(f"[Shadow] Cleaned up local copy")
                         except: pass
                 else:
-                    print(f"[Shadow] Upload failed ({resp.status_code}) for {filename}")
+                    print(f"[Shadow] Upload failed ({resp.status_code})")
         except Exception as e:
-            print(f"[Shadow] Upload error for {original_path}: {e}")
+            redacted_orig = PrivacyRedactor.redact_text(original_path)
+            print(f"[Shadow] Upload error for {redacted_orig}: {e}")
 
 class ShadowMonitor:
-    def __init__(self, agent_id, api_key, backend_url, vault_path="shadow_vault"):
+    def __init__(self, agent_id, api_key, backend_url, vault_path="shadow_vault", machine_secret=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.vault_path = vault_path
+        self.machine_secret = machine_secret
         self.observer = None
         self.active_watches = {} # drive_path -> watch_info
         self.running = False

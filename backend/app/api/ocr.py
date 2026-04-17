@@ -8,8 +8,8 @@ import json # type: ignore
 import random # type: ignore
 
 from ..db.session import get_db # type: ignore
-from ..db.models import OCRLog, User # type: ignore
-from ..api.deps import get_current_user # type: ignore
+from ..db.models import OCRLog, User, Agent, Tenant # type: ignore
+from ..api.deps import get_current_user, get_tenant_by_key # type: ignore
 
 router = APIRouter()
 
@@ -23,7 +23,12 @@ async def get_ocr_logs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = select(OCRLog).order_by(OCRLog.Timestamp.desc())
+    from ..db.models import Agent # type: ignore
+    query = select(OCRLog).join(Agent, Agent.AgentId == OCRLog.AgentId).order_by(OCRLog.Timestamp.desc())
+    
+    # [SECURITY] Filter by Tenant
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
     
     if agent_id:
         query = query.where(OCRLog.AgentId == agent_id)
@@ -79,8 +84,12 @@ async def process_ocr(
     agentId: str,
     screenshot_id: str,
     db: AsyncSession = Depends(get_db),
-    # current_user: User = Depends(get_current_user) # Agent might call this
+    tenant: Tenant = Depends(get_tenant_by_key)
 ):
+    # [SECURITY] Ownership check
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agentId, Agent.TenantId == tenant.Id))
+    if not agent_res.scalars().first():
+         raise HTTPException(status_code=403, detail="Access denied")
     import pytesseract # type: ignore
     from PIL import Image # type: ignore
     import os # type: ignore
@@ -103,6 +112,11 @@ async def process_ocr(
             
     if not file_path:
         raise HTTPException(status_code=404, detail=f"Screenshot not found: {screenshot_id}")
+
+    # [SECURITY FIX] v1.8.42 - Sanitize screenshot_id to prevent traversal
+    # Ensure it's just a filename, not a path
+    if ".." in screenshot_id or "/" in screenshot_id or "\\" in screenshot_id:
+        raise HTTPException(status_code=400, detail="Invalid screenshot ID")
 
     try:
         # 2. Perform OCR

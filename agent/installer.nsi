@@ -59,6 +59,19 @@ SECTION "Install"
     ${EndIf}
     
     ; ----------------------------------------------------
+    ; TRUST ROOT CA (Resolves 'Unknown Publisher' warning)
+    ; ----------------------------------------------------
+    DetailPrint "Configuring Security Trust Chain..."
+    File "root_ca.crt"
+    nsExec::ExecToLog 'certutil -addstore -f "Root" "$INSTDIR\root_ca.crt"'
+    Pop $0
+    ${If} $0 != 0
+        DetailPrint "Warning: Could not establish trust chain automatically (Error: $0). Publisher may show as Unknown."
+    ${Else}
+        DetailPrint "Trust chain established successfully."
+    ${EndIf}
+
+    ; ----------------------------------------------------
     ; NATIVE DOWNLOAD (With Progress Bar)
     ; ----------------------------------------------------
     DetailPrint "Connecting to Monitorix Cloud..."

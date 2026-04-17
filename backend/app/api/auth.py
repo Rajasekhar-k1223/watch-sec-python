@@ -103,7 +103,8 @@ class RegisterTenantRequest(BaseModel):
 async def register_tenant(
     form_data: RegisterTenantRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _ = Depends(RateLimiter(times=3, seconds=60)) # [SEC] 3 attempts per minute for registration
 ):
     # 1. Check if user already exists (globally unique username enforcement)
     result = await db.execute(select(User).where(User.Username == form_data.adminUsername))

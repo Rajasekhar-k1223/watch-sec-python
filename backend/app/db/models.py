@@ -68,6 +68,7 @@ class Agent(Base):
     TenantId = Column(Integer, nullable=False)
     ScreenshotsEnabled = Column(Boolean, default=False)
     LocationTrackingEnabled = Column(Boolean, default=False) # [NEW] User Toggle
+    GeolocationEnabled = Column(Boolean, default=True) # [NEW] v1.8.27
     UsbBlockingEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement User Toggle
     NetworkMonitoringEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
     FileDlpEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
@@ -89,8 +90,8 @@ class Agent(Base):
     LastSeen = Column(DateTime, default=datetime.utcnow)
     Hostname = Column(String(255), default="Unknown")
     PublicIp = Column(String(50), nullable=True)
-    Latitude = Column(Float, default=0.0)
-    Longitude = Column(Float, default=0.0)
+    Latitude = Column(Float, nullable=True)
+    Longitude = Column(Float, nullable=True)
     Country = Column(Text, nullable=True)
     InstalledSoftwareJson = Column(LONGTEXT, nullable=True)
     LocalIp = Column(String(50), default="0.0.0.0")
@@ -112,6 +113,7 @@ class Agent(Base):
     # Telemetry [NEW]
     CpuUsage = Column(Float, default=0.0)
     MemoryUsage = Column(Float, default=0.0)
+    SoftwareCount = Column(Integer, default=0) # [v1.8.37] Parity Sync
     
     # Screenshot Settings
     ScreenshotQuality = Column(Integer, default=80)
@@ -126,6 +128,7 @@ class Agent(Base):
     UpdateStatus = Column(String(50), default="idle")
     LastUpdateAttempt = Column(DateTime, nullable=True)
     UpdateFailureReason = Column(Text, nullable=True)
+    MachineId = Column(String(255), nullable=True)
 
 class AgentReportEntity(Base):
     __tablename__ = "AgentReports"
@@ -137,6 +140,9 @@ class AgentReportEntity(Base):
     CpuUsage = Column(Float)
     MemoryUsage = Column(Float)
     DiskUsage = Column(Float, default=0.0) # [NEW]
+    SoftwareCount = Column(Integer, default=0) # [v1.8.37] Parity Sync
+    NetworkInMbps = Column(Float, default=0.0) # [NEW] v1.8.26
+    NetworkOutMbps = Column(Float, default=0.0) # [NEW] v1.8.26
     TopProcessesJson = Column(LONGTEXT, nullable=True) # [NEW]
     Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
@@ -171,6 +177,7 @@ class Policy(Base):
     RemediationJson = Column(Text, default="[]") # [NEW] Automated response playbooks
     BandwidthJson = Column(Text, default="{}") # [NEW] Policy-Based Bandwidth Control
     ScreenshotInterval = Column(Integer, default=60) # [NEW] v1.8.20
+    GeolocationEnabled = Column(Boolean, default=True) # [NEW] v1.8.27
     CreatedAt = Column(DateTime, default=datetime.utcnow)
 
 class SystemSetting(Base):
@@ -283,6 +290,7 @@ class DigitalFingerprint(Base):
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=True, index=True)
     HardwareId = Column(String(255), index=True) # Unique HWID
     OS = Column(String(100))
     # Storing extended properties (BIOS serial, CPU ID etc) if needed
@@ -295,6 +303,7 @@ class SavedSearch(Base):
     __tablename__ = "SavedSearches"
 
     Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=True, index=True)
     Name = Column(String(100), nullable=False)
     QueryJson = Column(Text, default="{}") # Stores the search filters
     Category = Column(String(50), default="General")

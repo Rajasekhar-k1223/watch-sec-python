@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from ..db.session import get_db # type: ignore
-from ..db.models import Tenant # type: ignore
+from ..db.models import Tenant, User # type: ignore
 from .deps import get_current_user # type: ignore
 from ..socket_instance import sio # type: ignore
 
@@ -12,8 +12,11 @@ router = APIRouter()
 async def get_bandwidth_config(
     tenant_id: int, 
     db: AsyncSession = Depends(get_db), 
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin" and current_user.TenantId != tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
     """Get bandwidth configuration for a tenant"""
     result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
     tenant = result.scalars().first()
@@ -37,8 +40,11 @@ async def update_bandwidth_config(
     tenant_id: int, 
     config: dict, 
     db: AsyncSession = Depends(get_db), 
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin" and current_user.TenantId != tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
     """Update bandwidth configuration with Plan enforcement"""
     result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
     tenant = result.scalars().first()
@@ -83,8 +89,11 @@ async def pause_uploads(
     tenant_id: int, 
     duration_minutes: int, 
     db: AsyncSession = Depends(get_db), 
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin" and current_user.TenantId != tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
     """Pause uploads for all agents of a tenant (Enterprise Only)"""
     result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
     tenant = result.scalars().first()

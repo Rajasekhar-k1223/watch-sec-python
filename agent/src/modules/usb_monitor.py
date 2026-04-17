@@ -6,6 +6,7 @@ import threading # type: ignore
 import json # type: ignore
 import time # type: ignore
 from datetime import datetime # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 # Platform specific imports
 try:
@@ -58,13 +59,31 @@ class UsbMonitorStrategy:
     def _loop(self):
         raise NotImplementedError
 
+    def _get_drive_inventory(self, mount_point):
+        """Recursively list filenames (no content) from the USB drive for AI analysis."""
+        if not mount_point: return []
+        inventory = []
+        try:
+            # Only scan top 2 levels to avoid long delays on large drives
+            for root, dirs, files in os.walk(mount_point):
+                depth = root[len(mount_point):].count(os.sep)
+                if depth > 1: continue 
+                for f in files:
+                    inventory.append(os.path.join(root, f))
+                if len(inventory) > 200: break # Safety cap
+        except Exception as e:
+            self.logger.error(f"Failed to inventory drive {mount_point}: {e}")
+        return inventory
+
     def _send_alert(self, event_type, details):
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key, # Added
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "Type": event_type,
             "Details": details,
-            "Timestamp": datetime.utcnow().isoformat()
+            "Timestamp": datetime.utcnow().isoformat(),
+            "User": "REDACTED"
         }
         
         if self.data_queue:
@@ -87,7 +106,6 @@ class WindowsUsbStrategy(UsbMonitorStrategy):
             winreg.CloseKey(key) # type: ignore
             self.logger.info(f"Registry Policy Applied: Start={req_value}")
             self._send_alert("POLICY_APPLIED", f"USB Policy set to: {self.policy}")
-            self.logger.info(f"Registry Policy Applied: Start={req_value}")
         except PermissionError:
             curr_state = self._read_current_policy()
             self.logger.warning(f"Failed to set Registry Policy: Access Denied. (Run as Admin). Current System Policy: {curr_state}")
@@ -126,8 +144,8 @@ class WindowsUsbStrategy(UsbMonitorStrategy):
                 
                 devices.append({
                     "id": drive.DeviceID,
-                    "name": drive.Caption,
-                    "serial": getattr(drive, 'SerialNumber', 'Unknown'),
+                    "name": PrivacyRedactor.redact_text(drive.Caption),
+                    "serial": PrivacyRedactor.redact_text(getattr(drive, 'SerialNumber', 'Unknown')),
                     "mount_point": mount_point
                 })
         except: pass
@@ -154,14 +172,26 @@ class WindowsUsbStrategy(UsbMonitorStrategy):
                 for dev_id in new_ids:
                     details = next((d for d in current_drives if d["id"] == dev_id), None)
                     if details:
-                        self.logger.info(f"INSERTED: {details['name']} (Mount: {details.get('mount_point')})")
-                        self._send_alert("USB_INSERTION", f"Device Connected: {details['name']} at {details.get('mount_point', 'Unknown')}")
+                        # [v1.8.31] Privacy: Anonymize Device Metadata
+                        redacted_name = PrivacyRedactor.redact_text(details['name'])
+                        redacted_mount = PrivacyRedactor.redact_text(details.get('mount_point', 'Unknown'))
                         
+                        self.logger.info(f"INSERTED: {redacted_name} (Mount: {redacted_mount})")
                         if details.get("mount_point") and self.on_mount:
                              self.on_mount(details["mount_point"])
 
+                        # [INTELLIGENCE] Get file inventory for AI analysis
+                        inventory = []
+                        if details.get("mount_point"):
+                            inventory = self._get_drive_inventory(details["mount_point"])
+                        
+                        self._send_alert("USB_INSERTION", {
+                            "message": f"Device Connected: {redacted_name} at {redacted_mount}",
+                            "inventory": [PrivacyRedactor.redact_text(i) for i in inventory]
+                        })
+
                         if self.policy == "Block":
-                            self._send_alert("USB_BLOCKED", f"Blocked Policy Prevented Access: {details['name']}")
+                            self._send_alert("USB_BLOCKED", f"Blocked Policy Prevented Access: {redacted_name}")
                             if details.get("mount_point"):
                                 self._block_device(details["mount_point"])
 
@@ -213,8 +243,8 @@ class LinuxUsbStrategy(UsbMonitorStrategy):
                     if dev.get("tran") == "usb":
                         devices.append({
                             "id": dev.get("name"), # sdb
-                            "name": f"{dev.get('model')} ({dev.get('name')})",
-                            "serial": dev.get("serial"),
+                            "name": PrivacyRedactor.redact_text(f"{dev.get('model')} ({dev.get('name')})"),
+                            "serial": PrivacyRedactor.redact_text(dev.get("serial", "Unknown")),
                             "mount_point": dev.get("mountpoint")
                         })
         except Exception as e:
@@ -236,11 +266,23 @@ class LinuxUsbStrategy(UsbMonitorStrategy):
                 for dev_id in new_ids:
                     details = next((d for d in current if d["id"] == dev_id), None)
                     if details:
-                        self.logger.info(f"INSERTED: {details['name']} (Mount: {details.get('mount_point')})")
-                        self._send_alert("USB_INSERTION", f"Device Connected: {details['name']} at {details.get('mount_point', 'Unknown')}")
+                        # [v1.8.31] Privacy: Anonymize Device Metadata
+                        redacted_name = PrivacyRedactor.redact_text(details['name'])
+                        redacted_mount = PrivacyRedactor.redact_text(details.get('mount_point', 'Unknown'))
                         
+                        self.logger.info(f"INSERTED: {redacted_name} (Mount: {redacted_mount})")
                         if details.get("mount_point") and self.on_mount:
                              self.on_mount(details["mount_point"])
+                        
+                        # [INTELLIGENCE] Get file inventory for AI analysis
+                        inventory = []
+                        if details.get("mount_point"):
+                            inventory = self._get_drive_inventory(details["mount_point"])
+
+                        self._send_alert("USB_INSERTION", {
+                            "message": f"Device Connected: {redacted_name} at {redacted_mount}",
+                            "inventory": [PrivacyRedactor.redact_text(i) for i in inventory]
+                        })
                         
                         if self.policy == "Block":
                             # Attempt unmount/block
@@ -300,10 +342,10 @@ class MacUsbStrategy(UsbMonitorStrategy):
                      mount_point = disk.get("MountPoint")
                      
                      devices.append({
-                         "id": dev_id,
-                         "name": f"External Disk {dev_id} ({size // (1024*1024)} MB)",
-                         "serial": "Unknown",
-                         "mount_point": mount_point
+                          "id": dev_id,
+                          "name": PrivacyRedactor.redact_text(f"External Disk {dev_id} ({size // (1024*1024)} MB)"),
+                          "serial": "[REDACTED]",
+                          "mount_point": mount_point
                      })
         except Exception as e:
             # self.logger.error(f"Mac detection error: {e}")
@@ -324,8 +366,12 @@ class MacUsbStrategy(UsbMonitorStrategy):
                 for dev_id in new_ids:
                      details = next((d for d in current if d["id"] == dev_id), None)
                      if details:
-                         self.logger.info(f"INSERTED: {dev_id} (Mount: {details.get('mount_point')})")
-                         self._send_alert("USB_INSERTION", f"Device Connected: {dev_id} at {details.get('mount_point', 'Unknown')}")
+                         # [v1.8.31] Privacy: Anonymize Device Metadata
+                         redacted_name = PrivacyRedactor.redact_text(details['name'])
+                         redacted_mount = PrivacyRedactor.redact_text(details.get('mount_point', 'Unknown'))
+                         
+                         self.logger.info(f"INSERTED: {redacted_name} (Mount: {redacted_mount})")
+                         self._send_alert("USB_INSERTION", f"Device Connected: {redacted_name} at {redacted_mount}")
                          
                          if details.get("mount_point") and self.on_mount:
                              self.on_mount(details["mount_point"])

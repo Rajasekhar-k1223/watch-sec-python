@@ -15,7 +15,11 @@ async def get_fingerprints(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(DigitalFingerprint).order_by(DigitalFingerprint.LastSeen.desc()))
+    query = select(DigitalFingerprint)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(DigitalFingerprint.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query.order_by(DigitalFingerprint.LastSeen.desc()))
     fps = result.scalars().all()
     
     # Enrich with Hostname if possible (simple join logic simulation)
@@ -51,6 +55,10 @@ async def set_fingerprint_status(
     fp = res.scalars().first()
     if not fp:
         raise HTTPException(status_code=404, detail="Fingerprint not found")
+        
+    # [SECURITY] Check Ownership
+    if current_user.Role != "SuperAdmin" and fp.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
         
     fp.Status = status
     await db.commit()

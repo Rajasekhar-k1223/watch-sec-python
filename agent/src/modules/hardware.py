@@ -1,5 +1,6 @@
 import platform # type: ignore
 import psutil # type: ignore
+import time # type: ignore
 import subprocess # type: ignore
 import os # type: ignore
 import logging # type: ignore
@@ -14,6 +15,10 @@ class HardwareMonitor:
         # [v1.8.21] Resource Optimization Cache
         self._serial_cache = None
         self._gpu_cache = None
+        # [v1.8.27] Software Inventory Cache & Change Detection
+        self._software_cache = None
+        self._last_software_scan = 0
+        self._software_inventory_hash = None # Store a hash of the names/versions
 
     def _get_cpu_model(self):
         system = platform.system()
@@ -77,64 +82,116 @@ class HardwareMonitor:
         except:
             return "Unknown"
 
-    def get_installed_software(self):
+    def check_for_software_changes(self):
+        """
+        Lightweight check to see if the software inventory has likely changed.
+        Returns True if a change is detected.
+        """
+        try:
+            current_apps = []
+            system = platform.system()
+            
+            if system == "Windows":
+                 import winreg # type: ignore
+                 roots = [
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+                 ]
+                 for hive, subkey in roots:
+                     try:
+                         key = winreg.OpenKey(hive, subkey)
+                         num_subkeys = winreg.QueryInfoKey(key)[0]
+                         current_apps.append(str(num_subkeys)) # Just the count is a good proxy
+                         winreg.CloseKey(key)
+                     except: pass
+            elif system == "Linux":
+                # Fast count of installed packages
+                res = subprocess.run(['dpkg-query', '-f', '${binary:Package}\n', '-W'], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0:
+                    current_apps.append(str(len(res.stdout.splitlines())))
+            elif system == "Darwin":
+                # [v1.8.46] MacOS Software Pivot Detection
+                if os.path.exists("/Applications"):
+                    app_count = len([a for a in os.listdir("/Applications") if a.endswith(".app")])
+                    current_apps.append(str(app_count))
+            
+            current_hash = "|".join(current_apps)
+            if self._software_inventory_hash != current_hash:
+                self._software_inventory_hash = current_hash
+                return True
+            return False
+        except:
+            return True # Assume changed on error
+
+    def get_installed_software(self, force_scan=False):
         """
         Returns a list of installed software.
-        Format: [{"Name": "App", "Version": "1.0", "Vendor": "Corp"}]
+        Uses a 6-hour cache to drastically reduce memory/CPU overhead.
         """
+        current_time = time.time()
+        if not force_scan and self._software_cache and (current_time - self._last_software_scan < 21600):
+            return self._software_cache
+
         software_list = []
         seen_apps = set()
-
         system = platform.system()
         
         try:
+            # [INTERNAL HELPER] Generator for registry entries to save memory during scan
+            def _win_registry_items(hive, subkey):
+                import winreg # type: ignore
+                try:
+                    key = winreg.OpenKey(hive, subkey)
+                    for i in range(0, winreg.QueryInfoKey(key)[0]):
+                        try:
+                            skey_name = winreg.EnumKey(key, i)
+                            yield skey_name, key
+                        except: continue
+                    winreg.CloseKey(key)
+                except: pass
+
             if system == "Windows":
                 import winreg # type: ignore
-                # Iterate over Uninstall keys (32-bit and 64-bit)
                 roots = [
-                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"), # type: ignore
-                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall") # type: ignore
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
                 ]
                 
                 for hive, subkey in roots:
-                    try:
-                        key = winreg.OpenKey(hive, subkey) # type: ignore
-                        for i in range(0, winreg.QueryInfoKey(key)[0]): # type: ignore
+                    for skey_name, parent_key in _win_registry_items(hive, subkey):
+                        try:
+                            skey = winreg.OpenKey(parent_key, skey_name)
                             try:
-                                skey_name = winreg.EnumKey(key, i) # type: ignore
-                                skey = winreg.OpenKey(key, skey_name) # type: ignore
-                                try:
-                                    name = winreg.QueryValueEx(skey, "DisplayName")[0] # type: ignore
-                                    version = winreg.QueryValueEx(skey, "DisplayVersion")[0] # type: ignore
-                                    publisher = winreg.QueryValueEx(skey, "Publisher")[0] # type: ignore
-                                    
-                                    if name:
-                                        # [FIX] Deduplication Logic
-                                        # Use Name-Version as unique key
-                                        unique_key = f"{name}-{version}"
-                                        if unique_key not in seen_apps:
-                                            seen_apps.add(unique_key)
-                                            software_list.append({
-                                                "Name": name.strip(),
-                                                "Version": str(version).strip(),
-                                                "Vendor": str(publisher).strip()
-                                            })
-                                except: pass
-                                finally: winreg.CloseKey(skey) # type: ignore
+                                name_tuple = winreg.QueryValueEx(skey, "DisplayName")
+                                name = name_tuple[0].strip() if name_tuple[0] else None
+                                
+                                version_tuple = winreg.QueryValueEx(skey, "DisplayVersion")
+                                version = str(version_tuple[0]).strip() if version_tuple[0] else "Unknown"
+                                
+                                pub_tuple = winreg.QueryValueEx(skey, "Publisher")
+                                publisher = str(pub_tuple[0]).strip() if pub_tuple[0] else "Unknown"
+                                
+                                if name:
+                                    unique_key = f"{name}-{version}"
+                                    if unique_key not in seen_apps:
+                                        seen_apps.add(unique_key)
+                                        software_list.append({
+                                            "Name": name,
+                                            "Version": version,
+                                            "Vendor": publisher
+                                        })
                             except: pass
-                        winreg.CloseKey(key) # type: ignore
-                    except: pass
+                            finally: winreg.CloseKey(skey)
+                        except: pass
                     
             elif system == "Linux":
-                # Try dpkg (Debian/Ubuntu)
                 try:
-                    res = subprocess.run(['dpkg-query', '-W', '-f=${Package},${Version},${Maintainer}\\n'], capture_output=True, text=True)
+                    res = subprocess.run(['dpkg-query', '-W', '-f=${Package},${Version},${Maintainer}\\n'], capture_output=True, text=True, timeout=10)
                     if res.returncode == 0:
                         for line in res.stdout.splitlines():
                             parts = line.split(',')
                             if len(parts) >= 2:
-                                name = parts[0]
-                                version = parts[1]
+                                name, version = parts[0], parts[1]
                                 unique_key = f"{name}-{version}"
                                 if unique_key not in seen_apps:
                                     seen_apps.add(unique_key)
@@ -146,8 +203,6 @@ class HardwareMonitor:
                 except: pass
                 
             elif system == "Darwin":
-                 # Simple Applications folder scan
-                 # Real pkgutil usage is slower
                  try:
                      apps = os.listdir("/Applications")
                      for app in apps:
@@ -161,6 +216,9 @@ class HardwareMonitor:
         except Exception as e:
             self.logger.error(f"Software scan error: {e}")
             
+        # Update Cache
+        self._software_cache = software_list
+        self._last_software_scan = current_time
         return software_list
 
     def get_complete_specs(self):
@@ -181,6 +239,12 @@ class HardwareMonitor:
         if not self._gpu_cache:
             self._gpu_cache = self._get_gpu_details()
 
+        # [v1.8.37] Hardware Data Privacy (HDP)
+        # Obfuscate the physical serial number before cloud persistence
+        import hashlib
+        raw_serial = self._serial_cache if self._serial_cache else "Unknown"
+        hdp_serial = hashlib.sha256(f"HDP_SALT_{raw_serial}".encode()).hexdigest()[:24]
+
         return {
             "CpuModel": self.cpu_model,
             "CpuCores": self.cpu_cores,
@@ -191,6 +255,6 @@ class HardwareMonitor:
             "RamPercent": mem.percent,
             "DiskTotalGB": disk_total,
             "DiskFreeGB": disk_free,
-            "SerialNumber": self._serial_cache,
+            "SerialNumber": f"HDP_{hdp_serial}",
             "GpuModel": self._gpu_cache
         }

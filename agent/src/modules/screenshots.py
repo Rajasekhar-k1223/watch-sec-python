@@ -5,6 +5,9 @@ import time # type: ignore
 from datetime import datetime # type: ignore
 from typing import Optional # type: ignore
 from io import BytesIO # type: ignore
+import platform # type: ignore
+import ctypes # type: ignore
+import random # type: ignore
 
 class ScreenshotCapture:
     def __init__(self, agent_id, api_key, backend_url, interval=60):
@@ -21,6 +24,16 @@ class ScreenshotCapture:
         self.resolution = "Original" 
         self.max_size = 0 # 0 = Unlimited (KB)
         
+        # [v1.8.29] Privacy Filter: Detect sensitive window's and block capture
+        self.privacy_keywords = [
+            "KeePass", "Bitwarden", "1Password", "LastPass", "Dashlane", 
+            "Authy", "Authenticator", "Banking", "Login", "Sign In", 
+            "Password", "Secret", "Private", "Incognito"
+        ]
+        self.is_windows = platform.system() == "Windows"
+        self.is_mac = platform.system() == "Darwin"
+        self.is_linux = platform.system() == "Linux"
+        
         # Robust Session
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(max_retries=3)
@@ -33,7 +46,8 @@ class ScreenshotCapture:
         self.resolution = str(resolution) if resolution is not None else "Original"
         self.max_size = int(max_size) if max_size is not None else 0
         if interval is not None:
-             self.interval = int(interval)
+             # [v1.8.34] Security: Enforce minimum interval to prevent DoS-by-Policy
+             self.interval = max(5, int(interval))
         print(f"[Screens] Config Updated: Q={self.quality}, Res={self.resolution}, Max={self.max_size}KB, Int={self.interval}s")
 
     def start(self):
@@ -90,7 +104,7 @@ class ScreenshotCapture:
             "Timestamp": datetime.utcnow().isoformat()
         }
         try:
-            self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=False)
+            self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
         except: pass
 
     def _loop(self):
@@ -98,28 +112,57 @@ class ScreenshotCapture:
             if self.enabled and not self.paused:
                 self.capture_now()
             
-            # [v1.8.19] Reactive Wait: Sleep in 1s increments to respond to interval changes or shutdown
+            # [v1.8.37] Reactive Jitter: Sleep base +/- 20% randomized to break detection patterns
+            jitter_interval = self.interval * random.uniform(0.8, 1.2)
             start_wait = time.time()
             while self.running:
                 elapsed = time.time() - start_wait
-                if elapsed >= self.interval:
+                if elapsed >= jitter_interval:
                     break
                 time.sleep(1)
+                # Check for interval change during wait
+                if jitter_interval > self.interval * 1.2:
+                     jitter_interval = self.interval * random.uniform(0.8, 1.2)
+
+    def _save_image(self, img, quality=80):
+        """Attempts to save image as WebP with a fallback to PNG if the encoder is missing."""
+        bio = BytesIO()
+        ext = "webp"
+        mime = "image/webp"
+        
+        try:
+            img.save(bio, format="WEBP", quality=quality)
+        except Exception as e:
+            # Fallback to PNG if WEBP encoder is not found/failing
+            bio = BytesIO()
+            img.save(bio, format="PNG")
+            ext = "png"
+            mime = "image/png"
+            
+        return bio.getvalue(), ext, mime
 
     def _create_error_frame(self, text: str) -> bytes:
         from PIL import Image, ImageDraw # type: ignore
         img = Image.new('RGB', (800, 600), color=(15, 15, 15))
         draw = ImageDraw.Draw(img)
         draw.text((50, 300), text, fill=(255, 80, 80))
-        bio = BytesIO()
-        img.save(bio, format="WEBP", quality=50)
-        return bio.getvalue()
+        data, _, _ = self._save_image(img, quality=50)
+        return data
 
     def capture_now(self):
         import mss # type: ignore
-        # Don't capture if disabled or if we are paused AND it's not a forced "one-last-shot"
-        # Wait, if we are calling capture_now() explicitly (like on lock), we should ignore the pause flag.
+        from agent_core.privacy_utils import PrivacyRedactor
+        
         try:
+            # [v1.8.37] Intelligent Privacy Check BEFORE capture
+            raw_title = PrivacyRedactor.get_active_window_title()
+            current_title = PrivacyRedactor.redact_text(raw_title)
+            
+            if PrivacyRedactor.is_sensitive_window(raw_title):
+                 print(f"[Screens] Privacy Blackout triggered by: {current_title}")
+                 self._send_raw_bytes(self._create_error_frame("REDACTED FOR PRIVACY\nSensitive Application Detected"))
+                 return True, f"Redacted ({current_title})"
+
             with mss.mss() as sct:
                 # [FIX] Robust monitor detection
                 if not sct.monitors:
@@ -183,29 +226,23 @@ class ScreenshotCapture:
 
         # 2. Save/Compress Logic with Max Size Constraint
         current_quality = self.quality
-        
-        bio = BytesIO()
-        img.save(bio, format="WEBP", quality=current_quality)
-        webp_bytes = bio.getvalue()
+        img_bytes, ext, mime = self._save_image(img, quality=current_quality)
         
         # Max Size Check (KB -> Bytes)
         if self.max_size > 0:
             target_bytes = self.max_size * 1024
-            while len(webp_bytes) > target_bytes and current_quality > 10:
-                print(f"[Screens] Size {len(webp_bytes)} > {target_bytes}. Reducing quality...")
+            while len(img_bytes) > target_bytes and current_quality > 10:
+                print(f"[Screens] Size {len(img_bytes)} > {target_bytes}. Reducing quality...")
                 current_quality -= 10
-                bio = BytesIO()
-                img.save(bio, format="WEBP", quality=current_quality)
-                webp_bytes = bio.getvalue()
+                img_bytes, ext, mime = self._save_image(img, quality=current_quality)
 
+        # Send to Backend with correct extension
+        self._send_raw_bytes(img_bytes, ext, mime)
         
-        # Send to Backend use .webp extension
-        self._send_raw_bytes(webp_bytes)
-        
-    def _send_raw_bytes(self, webp_bytes: bytes):
+    def _send_raw_bytes(self, img_bytes: bytes, ext="webp", mime="image/webp"):
         now = datetime.utcnow()
         files = {
-            'file': (f'screen.webp', webp_bytes, 'image/webp')
+            'file': (f'screen.{ext}', img_bytes, mime)
         }
         data = {
             'agent_id': self.agent_id,
@@ -214,7 +251,7 @@ class ScreenshotCapture:
         
         try:
             url = f"{self.backend_url}/api/screenshots/upload"
-            resp = self.session.post(url, files=files, data=data, timeout=20, verify=False)
+            resp = self.session.post(url, files=files, data=data, timeout=20, verify=True)
             if resp.status_code == 200:
                 print(f"[Screens] Sent Screenshot")
             else:

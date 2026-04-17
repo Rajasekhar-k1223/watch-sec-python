@@ -9,9 +9,16 @@ __pycache__/
 venv/
 .venv/
 build_env/
-build/
 dist/
 *.spec
+agent/build_*/
+agent/dist_*/
+agent/build_staging/
+agent/build_temp/
+agent/*_final*.log
+installer_build.log
+pyinstaller_build.log
+
 agent_backup_*/
 agent/wine_env/
 agent/venv/

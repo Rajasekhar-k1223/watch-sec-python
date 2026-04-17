@@ -33,6 +33,54 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         
     return user
 
+async def get_current_user_flexible(
+    token: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db),
+    header_token: str = Depends(oauth2_scheme)
+):
+    """
+    Tries to get token from Query Param first (for <img> and window.open), 
+    then falls back to standard oauth2_scheme (Authorization Header).
+    """
+    # Note: oauth2_scheme will RAISE 401 if header is missing.
+    # To make it truly optional, we need a custom extractor or handle the fail.
+    # Actually, we'll try a simpler approach: check header manually first.
+    pass
+
+# We redefine to handle the 'optional' header case for flexible usage
+from fastapi.security import APIKeyHeader # type: ignore
+header_scheme = APIKeyHeader(name="Authorization", auto_error=False)
+
+async def get_current_user_flexible(
+    token: Optional[str] = None, 
+    auth_header: Optional[str] = Depends(header_scheme),
+    db: AsyncSession = Depends(get_db)
+):
+    actual_token = token
+    if not actual_token and auth_header:
+        if auth_header.startswith("Bearer "):
+            actual_token = auth_header.split(" ")[1]
+        else:
+            actual_token = auth_header
+
+    if not actual_token:
+        raise HTTPException(status_code=401, detail="Authentication required (Token or Header missing)")
+
+    try:
+        payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    result = await db.execute(select(User).where(User.Username == username))
+    user = result.scalars().first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+        
+    return user
+
 async def get_current_active_user(current_user: User = Depends(get_current_user)):
     if not current_user.TenantId and current_user.Role != "SuperAdmin":
         raise HTTPException(status_code=403, detail="User not assigned to any tenant")

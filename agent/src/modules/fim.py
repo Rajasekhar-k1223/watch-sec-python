@@ -103,7 +103,8 @@ class FileIntegrityMonitor:
     def _send_log(self, type, details):
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "Type": type,
             "Details": details,
             "Timestamp": datetime.utcnow().isoformat()

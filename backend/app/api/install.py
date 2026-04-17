@@ -9,6 +9,7 @@ from ..db.session import get_db # type: ignore
 from ..db.models import Tenant, User # type: ignore
 from ..services.email_service import email_service # type: ignore
 from .deps import get_current_user # type: ignore
+from ..core.rate_limit import RateLimiter # type: ignore
 
 router = APIRouter()
 
@@ -19,7 +20,11 @@ class ValidateRequest(BaseModel):
     TenantApiKey: Optional[str] = None
 
 @router.post("/validate")
-async def validate_device(req: ValidateRequest, db: AsyncSession = Depends(get_db)):
+async def validate_device(
+    req: ValidateRequest, 
+    db: AsyncSession = Depends(get_db),
+    _ = Depends(RateLimiter(times=10, seconds=60)) # [SEC] 10 attempts per minute per IP
+):
     print(f"[Install] Validating Device: {req.MachineName} | Domain: {req.Domain} | IP: {req.IP}")
 
     tenant_name = "Unknown"

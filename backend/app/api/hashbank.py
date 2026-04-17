@@ -45,6 +45,9 @@ async def add_hash(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # [SECURITY] RBAC Check
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Only SuperAdmins can modify the global hash bank")
     # Check duplicate
     res = await db.execute(select(HashBank).where(HashBank.Hash == dto.Hash))
     if res.scalars().first():
@@ -70,6 +73,9 @@ async def delete_hash(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # [SECURITY] RBAC Check
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Only SuperAdmins can modify the global hash bank")
     res = await db.execute(select(HashBank).where(HashBank.Id == id))
     entry = res.scalars().first()
     if not entry:

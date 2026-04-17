@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Header # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from datetime import datetime # type: ignore
@@ -11,6 +11,7 @@ from typing import Dict, Optional, List # type: ignore
 
 from ..db.session import get_db, AsyncSessionLocal # type: ignore
 from ..db.models import Agent, SessionRecording, Tenant # type: ignore
+from ..core.security import generate_agent_command_signature # type: ignore
 from ..socket_instance import sio # type: ignore
 from .agents import verify_feature_access # type: ignore
 
@@ -57,6 +58,14 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str, api_key: Optio
         res = await db.execute(select(Tenant).where(Tenant.ApiKey == api_key))
         tenant = res.scalars().first()
         if not tenant:
+            await websocket.close(code=4003)
+            return
+
+        # [SECURITY FIX] v1.8.42 - Enforce Agent-Tenant Ownership
+        # Prevents an attacker with Key A from hijacking a websocket for Agent B
+        agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
+        if not agent_res.scalars().first():
+            print(f"[SECURITY ALERT] WebSocket Hijack Attempt blocked! Tenant {tenant.Id} tried to connect for Agent {agent_id}")
             await websocket.close(code=4003)
             return
             
@@ -138,18 +147,35 @@ async def on_remote_input(sid, data):
     
     rooms = sio.rooms(sid)
     if agent_id in rooms or user['role'] == "SuperAdmin":
-        print(f"[DEBUG] Relaying RemoteInput to room {agent_id}: {data.get('type')}")
+        # [v1.8.37] Remote Input Sovereignty: Sign Input Relay
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+            
+        timestamp = datetime.utcnow().isoformat()
+        # Sign payload (including type, x, y, key, etc)
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="RemoteInput",
+            params=data, # Sign entire input data
+            timestamp=timestamp
+        )
+        data['timestamp'] = timestamp
+        data['signature'] = signature
+
+        print(f"[DEBUG] Relaying Signed RemoteInput to room {agent_id}: {data.get('type')}")
         # 1. Primary: Broadcast via Socket.IO (Works across processes via Redis)
         await sio.emit('RemoteInput', data, room=agent_id, skip_sid=sid)
 
         # 2. Optimization: Local WebSocket Bypass
         if agent_id in manager.active_connections:
-            print(f"[DEBUG] Local WS Bypass for {agent_id}")
             await manager.send_command(agent_id, data)
-        else:
-            # We don't necessarily NEED to relay manually anymore if SIO broadcast worked,
-            # but we'll leave a debug print to see if SIO broadcast is enough.
-            pass
 
 @sio.on('start_stream')
 @sio.on('StartStream')
@@ -172,26 +198,57 @@ async def on_start_stream(sid, data):
                         print(f"Feature Access Denied: {e}")
                         return
 
-        print(f"[DEBUG] Emitting StartStream to room {agent_id}")
+        # [v1.8.37] Stream Sovereignty: Signed Control Commands
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+
+        timestamp = datetime.utcnow().isoformat()
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey, machine_id=agent.MachineId or "",
+            action="StartStream", params={"Action": "Start"}, timestamp=timestamp
+        )
+        payload = {"Action": "Start", "timestamp": timestamp, "signature": signature}
+
+        print(f"[DEBUG] Emitting Signed StartStream to room {agent_id}")
         # 1. Primary: Socket.IO Broadcast
-        await sio.emit('StartStream', {'Action': 'Start'}, room=agent_id)
+        await sio.emit('StartStream', payload, room=agent_id)
 
         # 2. Optimization: WebSocket Bypass
         if agent_id in manager.active_connections:
-            print(f"[DEBUG] Local WS Bypass (StartStream) for {agent_id}")
-            await manager.send_command(agent_id, {"type": "start_stream"})
+            await manager.send_command(agent_id, payload)
 
 @sio.on('stop_stream')
 @sio.on('StopStream')
 async def on_stop_stream(sid, data):
     agent_id = data.get('agentId') or data.get('AgentId')
     if agent_id:
+        # [v1.8.37] Stream Sovereignty: Signed Control Commands
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+
+        timestamp = datetime.utcnow().isoformat()
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey, machine_id=agent.MachineId or "",
+            action="StopStream", params={"Action": "Stop"}, timestamp=timestamp
+        )
+        payload = {"Action": "Stop", "timestamp": timestamp, "signature": signature}
+
         # 1. Primary: Socket.IO Broadcast
-        await sio.emit('StopStream', {'Action': 'Stop'}, room=agent_id)
+        await sio.emit('StopStream', payload, room=agent_id)
 
         # 2. Optimization: WebSocket Bypass
         if agent_id in manager.active_connections:
-            await manager.send_command(agent_id, {"type": "stop_stream"})
+            await manager.send_command(agent_id, payload)
 
 @sio.on('stream_frame')
 async def on_stream_frame(sid, data):
@@ -221,7 +278,35 @@ async def on_shell_input(sid, data):
                 if tenant:
                     verify_feature_access(tenant.Plan, "RemoteShellEnabled")
 
-        await sio.emit('ShellInput', data, room=agent_id)
+        # [SECURITY] Verify user is in the Agent Room or is SuperAdmin
+        rooms = sio.rooms(sid)
+        if agent_id in rooms or user['role'] == "SuperAdmin":
+            # [v1.8.37] Shell Sovereignty: Sign Input
+            async with AsyncSessionLocal() as db:
+                res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+                agent = res_a.scalars().first()
+                if not agent: return
+                
+                res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+                tenant = res_t.scalars().first()
+                if not tenant: return
+            
+            timestamp = datetime.utcnow().isoformat()
+            input_text = data.get('input', '')
+            signature = generate_agent_command_signature(
+                api_key=tenant.ApiKey,
+                machine_id=agent.MachineId or "",
+                action="ShellInput",
+                params={"input": input_text},
+                timestamp=timestamp
+            )
+            
+            data['timestamp'] = timestamp
+            data['signature'] = signature
+            
+            await sio.emit('ShellInput', data, room=agent_id)
+        else:
+            print(f"[SECURITY] Unauthorized ShellInput attempt for {agent_id} by {user.get('username')}")
 
 @sio.on('ShellResize')
 async def on_shell_resize(sid, data):
@@ -230,7 +315,13 @@ async def on_shell_resize(sid, data):
     """
     agent_id = data.get('agentId')
     if agent_id:
-        await sio.emit('ShellResize', data, room=agent_id)
+        session = await sio.get_session(sid)
+        user = session.get("user")
+        if not user: return
+
+        rooms = sio.rooms(sid)
+        if agent_id in rooms or user['role'] == "SuperAdmin":
+            await sio.emit('ShellResize', data, room=agent_id)
 
 @sio.on('ShellOutput')
 async def on_shell_output(sid, data):
@@ -247,13 +338,48 @@ async def on_shell_output(sid, data):
         data['AgentId'] = agent_id
         await sio.emit('ShellOutput', data, room=agent_id, skip_sid=sid)
 
+async def _sign_and_emit_file_command(sid, agent_id, action, path, data_key):
+    """[v1.8.37] Centralized File Command Signing Utility."""
+    async with AsyncSessionLocal() as db:
+        res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = res_a.scalars().first()
+        if not agent: return
+        
+        res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+        tenant = res_t.scalars().first()
+        if not tenant: return
+
+    timestamp = datetime.utcnow().isoformat()
+    # Params must match agent-side reconstruction exactly
+    params = {"path": path}
+    signature = generate_agent_command_signature(
+        api_key=tenant.ApiKey,
+        machine_id=agent.MachineId or "",
+        action=action,
+        params=params,
+        timestamp=timestamp
+    )
+    
+    payload = {
+        'path': path,
+        'timestamp': timestamp,
+        'signature': signature
+    }
+    await sio.emit(action, payload, room=agent_id)
+
 @sio.on('ListFiles')
 async def on_list_files(sid, data):
     agent_id = data.get('agentId')
     path = data.get('path', '.')
     if agent_id:
-        print(f"[FileManager] ListFiles for {agent_id}: {path}")
-        await sio.emit('ListFiles', {'path': path}, room=agent_id)
+        session = await sio.get_session(sid)
+        user = session.get("user")
+        if not user: return
+
+        rooms = sio.rooms(sid)
+        if agent_id in rooms or user['role'] == "SuperAdmin":
+            print(f"[FileManager] ListFiles for {agent_id}: {path}")
+            await _sign_and_emit_file_command(sid, agent_id, "ListFiles", path, "path")
 
 @sio.on('FileList')
 async def on_file_list(sid, data):
@@ -279,7 +405,7 @@ async def on_download_file(sid, data):
     # Re-verify room membership (set by on_join)
     rooms = sio.rooms(sid)
     if agent_id in rooms or user['role'] == "SuperAdmin":
-        await sio.emit('DownloadFile', {'path': path}, room=agent_id)
+        await _sign_and_emit_file_command(sid, agent_id, "DownloadFile", path, "path")
 
 @sio.on('FileContent')
 async def on_file_content(sid, data):
@@ -303,7 +429,7 @@ async def on_delete_file(sid, data):
     
     rooms = sio.rooms(sid)
     if agent_id in rooms or user['role'] == "SuperAdmin":
-        await sio.emit('DeleteFile', {'path': path}, room=agent_id)
+        await _sign_and_emit_file_command(sid, agent_id, "DeleteFile", path, "path")
 
 # --- WebRTC Signaling Handlers ---
 
@@ -363,20 +489,28 @@ async def upload_session_recording(
     duration: int = Form(...),
     start_time: str = Form(...), # ISO Format
     file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key")
 ):
-    # Validate Agent
+    # [v1.8.37] SECURITY: Authenticate Agent Identity
+    if not x_tenant_api_key:
+        raise HTTPException(status_code=401, detail="Authentication required")
+        
+    # Validate Agent & Tenant Ownership
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = result.scalars().first()
     
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # [SECURITY] Plan Check
     res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
     tenant = res_t.scalars().first()
-    if tenant:
-        verify_feature_access(tenant.Plan, "LiveStreamEnabled")
+    if not tenant or tenant.ApiKey != x_tenant_api_key:
+        print(f"[SECURITY ALERT] Remote Session upload spoofing attempt for Agent {agent_id}")
+        raise HTTPException(status_code=403, detail="Unauthorized session upload")
+
+    # [SECURITY] Plan Check
+    verify_feature_access(tenant.Plan, "LiveStreamEnabled")
 
     # Save File
     filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}.mp4"

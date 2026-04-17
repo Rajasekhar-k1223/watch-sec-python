@@ -3,7 +3,8 @@ from pydantic import BaseModel # type: ignore
 from typing import Optional # type: ignore
 
 from .deps import get_current_user # type: ignore
-from ..db.models import User # type: ignore
+from ..db.models import User, Tenant # type: ignore
+from ..core.security import generate_agent_command_signature # type: ignore
 from ..socket_instance import sio # type: ignore
 
 router = APIRouter()
@@ -21,6 +22,25 @@ async def execute_command(
     # 1. Security Check
     if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
         raise HTTPException(status_code=403, detail="Not authorized to execute commands")
+
+    # [SECURITY] Validate Agent Ownership
+    from ..db.session import get_db # type: ignore
+    from sqlalchemy.future import select # type: ignore
+    async with AsyncSessionLocal() as db:
+        from ..db.models import Agent # type: ignore
+        res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = res_a.scalars().first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+        # [v1.8.37] Fetch Tenant ApiKey for signing
+        res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+        tenant = res_t.scalars().first()
+        if not tenant:
+             raise HTTPException(status_code=404, detail="Tenant key not found")
 
     # 2. Audit Log
     from ..db.models import AuditLog # type: ignore
@@ -41,13 +61,26 @@ async def execute_command(
     print(f"[Audit] User {current_user.Username} executing {req.Command} on {agent_id}")
 
     # 3. Emit via Socket.IO
+    # [v1.8.37] Command Sovereignty: Generate HMAC Signature
+    timestamp = datetime.utcnow().isoformat()
+    # Payload matches Agent's RemediationHandler expects
+    params = {"target": req.Target}
+    signature = generate_agent_command_signature(
+        api_key=tenant.ApiKey,
+        machine_id=agent.MachineId or "",
+        action=req.Command,
+        params=params,
+        timestamp=timestamp
+    )
+
     # We should emit to the specific room ID of the agent.
-    # Assuming Agent joins room=agent_id on connect.
     await sio.emit("ReceiveCommand", {
         "agent_id": agent_id,
-        "command": req.Command,
-        "target": req.Target
-    }) # Broadcast to all for now or use room=agent_id if implemented
+        "action": req.Command,
+        "params": params,
+        "timestamp": timestamp,
+        "signature": signature
+    }, room=agent_id) 
 
     return {"Status": "Sent", "Message": f"Command '{req.Command}' sent to {agent_id}"}
 
@@ -56,6 +89,18 @@ async def trigger_screenshot(
     agent_id: str,
     current_user: User = Depends(get_current_user)
 ):
+    # [SECURITY] Validate Agent Ownership
+    from ..db.session import AsyncSessionLocal # type: ignore
+    from sqlalchemy.future import select # type: ignore
+    from ..db.models import Agent # type: ignore
+    async with AsyncSessionLocal() as db:
+        res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = res_a.scalars().first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+            
+        if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=403, detail="Access denied")
     # Audit Log
     from ..db.models import AuditLog # type: ignore
     from datetime import datetime # type: ignore

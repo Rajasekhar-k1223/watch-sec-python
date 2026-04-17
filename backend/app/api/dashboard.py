@@ -95,6 +95,8 @@ async def get_dashboard_status(
                 "memoryUsage": mem,
                 "timestamp": ts.isoformat() + "Z",
                 "hostname": agent.Hostname or "Unknown",
+                "latitude": agent.Latitude,
+                "longitude": agent.Longitude,
                 "hardwareJson": agent.HardwareJson,
                 "powerStatusJson": agent.PowerStatusJson
             })
@@ -361,13 +363,40 @@ async def get_dashboard_stats(
 
         # 7. Productivity
         offline_ratio = (offline_agents / total_agents) if total_agents > 0 else 0
-        score = max(0, min(100, 100 - (offline_ratio * 50)))
+        fleet_score = max(0, min(100, 100 - (offline_ratio * 50)))
+        
+        # [NEW] Productivity Breakdown (SQL Based)
+        # Summing categories over the requested range for the tenant
+        productivity_breakdown = []
+        try:
+            from ..db.models import ActivityLog # type: ignore
+            # Get category counts
+            q_prod = select(ActivityLog.Category, func.count(ActivityLog.Id)).where(
+                (ActivityLog.Timestamp >= start_dt) & (ActivityLog.Timestamp <= end_dt)
+            )
+            if tenantId:
+                q_prod = q_prod.where(ActivityLog.TenantId == tenantId)
+            
+            q_prod = q_prod.group_by(ActivityLog.Category)
+            res_prod = await db.execute(q_prod)
+            prod_items = res_prod.all()
+            
+            for cat, count in prod_items:
+                cat_name = cat or "Neutral"
+                color = "#6366F1" # Indigo (Neutral)
+                if cat_name in ["High", "Security", "Risk", "Critical"]: color = "#EF4444" # Red
+                elif cat_name in ["Unproductive", "Social", "Entertainment"]: color = "#F59E0B" # Amber
+                elif cat_name in ["Productive", "Work", "Dev", "Office"]: color = "#10B981" # Emerald
+                
+                productivity_breakdown.append({
+                    "name": cat_name,
+                    "value": count,
+                    "color": color
+                })
+        except Exception as e:
+            print(f"[Dashboard] Productivity Breakdown Error: {e}")
 
         # 8. Network (Real Data Only)
-        # We generally do not have bandwidth data unless agents send it. 
-        # Using 0 for Mbps to indicate 'active but unknown bandwidth' or simply omitting if UI handles it.
-        # But for 'activeConnections', we use online_agents count.
-        
         return {
             "agents": {"total": total_agents, "online": online_agents, "offline": offline_agents},
             "resources": {
@@ -383,7 +412,10 @@ async def get_dashboard_stats(
                 "activeConnections": online_agents
             },
             "riskyAssets": risky_assets_data,
-            "productivity": {"globalScore": int(score)}
+            "productivity": {
+                "globalScore": int(fleet_score),
+                "breakdown": productivity_breakdown
+            }
         }
     except Exception as e:
         import traceback # type: ignore
@@ -396,6 +428,9 @@ async def get_network_topology(
     db: AsyncSession = Depends(get_db),
     current_user: "User" = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin":
+        tenantId = current_user.TenantId
+        
     # Fetch all agents to build a Star Topology (Central Server -> Agents)
     # This replaces the static hardcoded list
     q = select(Agent).where(Agent.IsPendingUninstall == False)

@@ -158,22 +158,8 @@ async def change_password(
     if not is_valid:
          raise HTTPException(status_code=400, detail="Incorrect current password.")
 
-    # 3. Update
-    # For now, we store plain text if that's what C# did, OR we upgrade to hash.
-    # To be safe and compatible with the Auth endpoint which expects `verify_password`(hash), 
-    # we should ideally hash it. BUT if C# auth expects plain text, we break it.
-    # Checking C# AuthController: It uses `_signInManager` or custom?
-    # C# `UsersController` line 72: `if (user.PasswordHash != req.OldPassword)` <- Direct String Compare!
-    # This implies C# uses PLAIN TEXT storage for this prototype.
-    # Python `auth.py` line 40: `verify_password(form_data.Password, user.PasswordHash)` which calls `pwd_context.verify`.
-    # `pwd_context` handles bcrypt. Handing plain text to it might fail or work if "plain" scheme enabled.
-    # To support BOTH, we will Hash it in Python.
-    # WAIT: If C# writes plain text, Python reads plain text. 
-    # If Python writes Hash, C# reads Hash -> C# `!=` check will FAIL because Hash != Password.
-    # Conflict: C# expects Plain, Python expects Hash.
-    # Decision: For now, write PLAIN TEXT to maintain C# compatibility until we migrate C# to hashing too.
-    
-    user.PasswordHash = req.NewPassword # Keeping it simple/insecure as per C# prototype
+    # 3. Update with Hashing
+    user.PasswordHash = get_password_hash(req.NewPassword)
     
     # [AUDIT]
     from datetime import datetime # type: ignore

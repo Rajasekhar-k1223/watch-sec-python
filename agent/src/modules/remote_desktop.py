@@ -172,7 +172,7 @@ class RemoteDesktopAgent:
                     'start_time': start_time.isoformat()
                 }
                 headers = {'X-Tenant-Api-Key': self.api_key}
-                requests.post(url, files=files, data=data, headers=headers, verify=False)
+                requests.post(url, files=files, data=data, headers=headers, verify=True)
             
             self.logger.info("Upload Complete. Deleting local file.")
             os.remove(file_path)

@@ -42,6 +42,9 @@ async def add_entry(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="SuperAdmin restricted endpoint")
+        
     # Check if keyword exists
     stmt = select(ThesaurusEntry).where(ThesaurusEntry.Keyword == entry_data.keyword)
     res = await db.execute(stmt)
@@ -69,6 +72,9 @@ async def delete_entry(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="SuperAdmin restricted endpoint")
+        
     entry = await db.get(ThesaurusEntry, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")

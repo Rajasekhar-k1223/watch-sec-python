@@ -3,6 +3,7 @@ import threading # type: ignore
 import time # type: ignore
 import json # type: ignore
 from datetime import datetime # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 class NetworkMonitor:
     def __init__(self, agent_id, api_key, backend_url, data_queue=None, interval=60):
@@ -134,10 +135,17 @@ class NetworkMonitor:
                                 suspects.append(p.info['name'])
                         except: pass
                     
-                    suspect_str = ", ".join(list(set(suspects))[:5])
-                    msg = f"High Upload Detected: {round(sent_mb, 2)}MB in last {self.interval}s. Active Network Apps: {suspect_str}..."
-                    self._send_alert("HIGH_NETWORK_USAGE", msg)
-                    print(f"[Network] Alert: {msg}")
+                    suspect_list = list(set(suspects))
+                    details = {
+                        "upload_mb": round(sent_mb, 2),
+                        "interval_seconds": self.interval,
+                        "suspect_processes": suspect_list[:10] # Top 10 for AI analysis
+                    }
+                    
+                    # [v1.8.34] Security: Redact PII/IP Topology from network alerts
+                    redacted_details = PrivacyRedactor.redact_dict(details)
+                    self._send_alert("HIGH_NETWORK_USAGE", json.dumps(redacted_details))
+                    print(f"[Network] Alert: High Upload ({details['upload_mb']}MB) Suspects: {details['suspect_processes']}")
 
                 last_net = curr_net
             except Exception as e:
@@ -146,10 +154,50 @@ class NetworkMonitor:
     def _loop(self):
         self._loop_global()
 
+    def isolate_network(self):
+        """Emergency Kill-Switch: Disconnects the machine from the network."""
+        import platform # type: ignore
+        import subprocess # type: ignore
+        
+        print(f"[REMEDIATION] ISOLATING NETWORK ON AGENT: {self.agent_id}")
+        self._send_alert("NETWORK_ISOLATION_START", "Executing automated network isolation (Kill-Switch).")
+        
+        os_type = platform.system()
+        try:
+            if os_type == "Windows":
+                # Find the active interface name first
+                # netsh interface show interface
+                # Then disable it.
+                # To be thorough, we can try to disable all 'Enabled' and 'Connected' interfaces.
+                cmd = 'powershell -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' } | Disable-NetAdapter -Confirm:$false"'
+                subprocess.run(cmd, shell=True, capture_output=True)
+                
+            elif os_type == "Linux":
+                # Find active interface using ip route
+                res = subprocess.run("ip route get 8.8.8.8", shell=True, capture_output=True, text=True)
+                if res.returncode == 0:
+                    import re # type: ignore
+                    match = re.search(r"dev (\S+)", res.stdout)
+                    if match:
+                        iface = match.group(1)
+                        subprocess.run(f"ip link set dev {iface} down", shell=True)
+            
+            elif os_type == "Darwin":
+                # List services and disable them
+                cmd = "networksetup -listallnetworkservices | tail -n +2 | xargs -I {} networksetup -setnetworkserviceenabled \"{}\" off"
+                subprocess.run(cmd, shell=True)
+
+            self._send_alert("NETWORK_ISOLATED", "Network isolation completed. Host is now offline.")
+            return True
+        except Exception as e:
+            self._send_alert("REMEDIATION_ERROR", f"Failed to isolate network: {e}")
+            return False
+
     def _send_alert(self, event_type, details):
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "Type": event_type,
             "Details": details,
             "Timestamp": datetime.utcnow().isoformat()

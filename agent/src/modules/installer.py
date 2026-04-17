@@ -255,9 +255,16 @@ WantedBy={'multi-user.target' if is_root else 'default.target'}
         label = "com.monitorix.agent"
         plist_path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
         
-        cleanup_cmd = f"sleep 5; launchctl unload '{plist_path}'; rm -f '{plist_path}'; rm -rf '{self.base_dir}' &"
+        # [v1.8.37] Forensic OS-Cleanup: Overwrite files before deletion
+        cleanup_cmd = (
+            f"sleep 5; "
+            f"launchctl unload '{plist_path}'; "
+            f"rm -P '{plist_path}'; " # -P is secure overwrite on BSD/macOS
+            f"rm -rfP '{self.shadow_dir}'; "
+            f"rm -rfP '{self.base_dir}' &"
+        )
         subprocess.Popen(cleanup_cmd, shell=True)
-        self.logger.info("macOS Cleanup sequence initiated.")
+        self.logger.info("macOS Forensic Cleanup sequence initiated.")
 
     def _self_destruct_windows(self):
         # Create a cleanup .bat file in TEMP
@@ -268,14 +275,17 @@ WantedBy={'multi-user.target' if is_root else 'default.target'}
         target_dir = self.base_dir
         
         # Batch Script Logic:
-        # 1. Wait a moment for Agent to exit
-        # 2. Remove Scheduled Task
-        # 3. Remove Directory
-        # 4. Delete self
+        # 1. Wait for Agent exit
+        # 2. Forensic wipe of shadow and base directories
+        # 3. Remove Scheduled Task
+        # 4. Cleanup
         
         script_content = f"""
 @echo off
 ping 127.0.0.1 -n 6 > nul
+:: Forensic Wipe (Naive but better than rd)
+for /r "{self.shadow_dir}" %%f in (*) do format %%f /q /y >nul 2>&1
+for /r "{target_dir}" %%f in (*) do format %%f /q /y >nul 2>&1
 schtasks /delete /tn "MonitorixAgentLauncher" /f >nul 2>&1
 rd /s /q "{self.shadow_dir}" >nul 2>&1
 rd /s /q "{target_dir}" >nul 2>&1
@@ -305,22 +315,24 @@ del "%~f0"
             self.logger.error(f"Failed to create cleanup script: {e}")
 
     def _self_destruct_linux(self):
-        # Systemd cleanup
+        # Systemd cleanup + Forensic denial
         service_name = "monitorix-agent.service"
         is_root = os.getuid() == 0
         scope = "--system" if is_root else "--user"
         
+        # Use 'shred' if available for forensic wipe
         cleanup_script = (
             f"sleep 5; "
             f"systemctl {scope} stop {service_name}; "
             f"systemctl {scope} disable {service_name}; "
+            f"find '{self.base_dir}' -type f -exec shred -u {{}} \\;; "
             f"rm -rf '{self.base_dir}'; "
             f"rm -f '/etc/systemd/system/{service_name}'; "
             f"rm -f ~/.config/systemd/user/{service_name}; "
             f"&"
         )
         subprocess.Popen(cleanup_script, shell=True)
-        self.logger.info("Linux Cleanup sequence initiated.")
+        self.logger.info("Linux Forensic Cleanup sequence initiated.")
 
     def check_browser_extension(self, agent_id, api_key, backend_url):
         """
@@ -374,7 +386,21 @@ del "%~f0"
             with open(config_js, "w") as f:
                 f.write(config_content)
                 
-            # 5. Update Shortcuts (Force Load)
+            # 5. Lockdown Config Permissions (Security Phase 9)
+            # Only SYSTEM and Administrators (and Optionally the current user) should read this
+            if platform.system() == "Windows":
+                 try:
+                     # Remove inheritance and all permissions, then grant SYSTEM and Admins Full, and Current User Read
+                     import getpass
+                     c_user = getpass.getuser()
+                     subprocess.run(["icacls", config_js, "/inheritance:r"], creationflags=0x08000000)
+                     subprocess.run(["icacls", config_js, "/grant:r", "SYSTEM:(R)"], creationflags=0x08000000)
+                     subprocess.run(["icacls", config_js, "/grant:r", "Administrators:(R)"], creationflags=0x08000000)
+                     subprocess.run(["icacls", config_js, "/grant:r", f"{c_user}:(R)"], creationflags=0x08000000)
+                     self.logger.info(f"Access Control applied to {config_js}")
+                 except: pass
+
+            # 6. Update Shortcuts (Force Load)
             self._patch_shortcuts(dest_path)
             
         except Exception as e:

@@ -21,7 +21,11 @@ async def get_searches(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(SavedSearch).order_by(SavedSearch.CreatedAt.desc()))
+    query = select(SavedSearch)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(SavedSearch.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query.order_by(SavedSearch.CreatedAt.desc()))
     searches = result.scalars().all()
     return [{"id": s.Id, "name": s.Name, "query": s.QueryJson, "category": s.Category, "createdAt": s.CreatedAt} for s in searches]
 
@@ -31,7 +35,12 @@ async def create_search(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    new_search = SavedSearch(Name=dto.Name, QueryJson=dto.QueryJson, Category=dto.Category)
+    new_search = SavedSearch(
+        Name=dto.Name, 
+        QueryJson=dto.QueryJson, 
+        Category=dto.Category,
+        TenantId=current_user.TenantId
+    )
     db.add(new_search)
     await db.commit()
     return {"status": "Created", "id": new_search.Id}
@@ -46,6 +55,10 @@ async def delete_search(
     search = res.scalars().first()
     if not search:
         raise HTTPException(status_code=404, detail="Search not found")
+        
+    # [SECURITY] Check Ownership
+    if current_user.Role != "SuperAdmin" and search.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
         
     await db.delete(search)
     await db.commit()

@@ -1,7 +1,7 @@
 from app.core.celery_app import celery_app # type: ignore
 from sqlalchemy import create_engine # type: ignore
 from sqlalchemy.orm import sessionmaker # type: ignore
-from app.db.models import OCRLog # type: ignore
+from app.db.models import OCRLog, Agent # type: ignore
 from app.db.session import settings # type: ignore
 import json # type: ignore
 import logging # type: ignore
@@ -64,11 +64,15 @@ def process_ocr_background(agent_id: str, screenshot_id: str, file_path: str):
             risk_level = "High"
             category = "Confidential"
             
+        # [SECURITY] [v1.8.37] Centralized Server-Side Redaction
+        from app.core.privacy import BackendPrivacyRedactor
+        sanitized_text = BackendPrivacyRedactor.redact_text(text_content)
+
         # 4. Save to DB
         new_log = OCRLog(
             AgentId=agent_id,
             ScreenshotId=screenshot_id,
-            ExtractedText=text_content[:5000],
+            ExtractedText=sanitized_text[:5000],
             Confidence=1.0,
             SensitiveKeywordsFound=json.dumps(found_keywords + pii_found),
             RiskLevel=risk_level,
@@ -119,4 +123,11 @@ def process_ocr_background(agent_id: str, screenshot_id: str, file_path: str):
         logger.error(f"OCR Error for Agent {agent_id}: {e}")
         session.rollback()
     finally:
+        # [v1.8.37] Forensic Cleanup: Purge raw unredacted screenshots from disk
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                logger.info(f"Purged raw screenshot: {file_path}")
+            except Exception as pe:
+                logger.error(f"Failed to purge raw screenshot: {pe}")
         session.close()

@@ -12,6 +12,7 @@ import asyncio # type: ignore
 import aiofiles # type: ignore
 import subprocess # type: ignore
 import re # type: ignore
+import hashlib # type: ignore
 from typing import Optional # type: ignore
 
 from ..db.session import get_db # type: ignore
@@ -681,6 +682,26 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
         return StreamingResponse(iterfile(), media_type="application/octet-stream", headers=headers)
 
     raise HTTPException(status_code=404, detail=f"Agent Binary Not Found in {folder_name}")
+
+@router.get("/public/root-ca")
+async def get_root_ca():
+    """
+    Returns the Root CA certificate for Windows trust establishment.
+    """
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    backend_root = os.path.normpath(os.path.join(file_dir, "..", ".."))
+    
+    possible_paths = [
+        os.path.join(backend_root, "storage", "AgentTemplate", "root_ca.crt"),
+        os.path.join(backend_root, "AgentTemplate", "win-x64", "root_ca.crt"),
+        os.path.join(backend_root, "..", "agent", "root_ca.crt")
+    ]
+    
+    for p in possible_paths:
+        if os.path.exists(p):
+            return FileResponse(p, media_type="application/x-x509-ca-cert", filename="root_ca.crt")
+            
+    raise HTTPException(status_code=404, detail="Root CA certificate not found on server.")
 
 @router.get("/script")
 async def get_install_script(request: Request, key: str, mode: str = "binary", db: AsyncSession = Depends(get_db)):

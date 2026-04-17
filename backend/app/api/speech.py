@@ -74,10 +74,16 @@ async def get_speech_logs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # [SECURITY] Plan Check
+    # [SECURITY] Ownership & Plan Check
     res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = res_a.scalars().first()
-    if agent:
+    if not agent:
+         raise HTTPException(status_code=404, detail="Agent not found")
+         
+    if current_user.Role != "SuperAdmin":
+        if agent.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
         res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
         tenant = res_t.scalars().first()
         if tenant:

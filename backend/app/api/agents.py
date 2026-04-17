@@ -7,6 +7,9 @@ from pydantic import BaseModel # type: ignore
 from typing import Optional, List, Any # type: ignore
 import os # type: ignore
 import asyncio # type: ignore
+import hashlib # type: ignore
+import hmac # type: ignore
+import json # type: ignore
 from datetime import datetime, timedelta # type: ignore
 
 # --- Policy Cache (TTL=60s): avoids a DB query on every 30s heartbeat ---
@@ -14,7 +17,7 @@ _policy_cache: dict = {}  # key: PolicyId, value: (policy_obj, cached_at)
 
 from ..db.session import get_db # type: ignore
 from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog # type: ignore
-from .deps import get_current_user, get_tenant_by_key # type: ignore
+from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate # type: ignore
 
@@ -156,9 +159,16 @@ async def get_agents(
                 "cpuUsage": a.CpuUsage,
                 "memoryUsage": a.MemoryUsage,
                 "lastSeen": a.LastSeen.isoformat() if a.LastSeen else None,
-                "localIp": a.LocalIp,
+                # Network / Location fields
+                "publicIp": get_safe(a, "PublicIp"),
+                "localIp": get_safe(a, "LocalIp"),
+                "gateway": get_safe(a, "Gateway"),
+                "latitude": get_safe(a, "Latitude"),
+                "longitude": get_safe(a, "Longitude"),
+                "country": get_safe(a, "Country"),
+                # Feature flags
                 "screenshotsEnabled": a.ScreenshotsEnabled,
-                "locationTrackingEnabled": a.LocationTrackingEnabled,
+                "locationTrackingEnabled": getattr(a, "GeolocationEnabled", getattr(a, "LocationTrackingEnabled", False)),
                 "usbBlockingEnabled": a.UsbBlockingEnabled,
                 "networkMonitoringEnabled": a.NetworkMonitoringEnabled,
                 "fileDlpEnabled": a.FileDlpEnabled,
@@ -176,11 +186,11 @@ async def get_agents(
                 "hardwareJson": a.HardwareJson,
                 "version": a.Version,
                 "targetVersion": a.TargetVersion,
-                "updateStatus": a.UpdateStatus,
-                "updateFailureReason": a.UpdateFailureReason,
-                "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if a.LastUpdateAttempt else None,
+                "updateStatus": get_safe(a, "UpdateStatus"),
+                "updateFailureReason": get_safe(a, "UpdateFailureReason"),
+                "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if get_safe(a, "LastUpdateAttempt") else None,
                 "policyId": get_safe(a, "PolicyId"),
-                "screenshotInterval": get_safe(a, "ScreenshotInterval", 60)
+                "screenshotInterval": get_safe(a, "ScreenshotInterval", 60),
             })
             
         return response
@@ -205,14 +215,28 @@ from ..core.rate_limit import RateLimiter # type: ignore
 async def report_update_log(
     agent_id: str,
     payload: AgentUpdateLogRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_tenant_by_key)
 ):
+    # [SECURITY] Ownership check
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
+    if not agent_res.scalars().first():
+         raise HTTPException(status_code=403, detail="Access denied")
+    # [SECURITY] [v1.8.36] Path Traversal Protection
+    # Strictly validate agent_id to prevent directory traversal payloads (../../)
+    import re
+    if not re.match(r"^[a-zA-Z0-9\-]+$", agent_id):
+         print(f"[SECURITY ALERT] Prevented Path Traversal attempt via agent_id: {agent_id}")
+         raise HTTPException(status_code=403, detail="Invalid Agent ID format")
+
     # Save log to storage
     file_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir = os.path.join(file_dir, "..", "..", "..", "storage", "logs", "updates")
+    log_dir = os.path.abspath(os.path.join(file_dir, "..", "..", "..", "storage", "logs", "updates"))
     os.makedirs(log_dir, exist_ok=True)
     
-    log_path = os.path.join(log_dir, f"{agent_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log")
+    # Ensure filename is safe using basename
+    safe_filename = os.path.basename(f"{agent_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log")
+    log_path = os.path.join(log_dir, safe_filename)
     with open(log_path, "w", encoding='utf-8') as f:
         f.write(payload.Log)
         
@@ -222,8 +246,14 @@ async def report_update_log(
 async def report_update_failure(
     agent_id: str,
     payload: AgentUpdateFailedRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_tenant_by_key)
 ):
+    # [SECURITY] Ownership check
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
+    agent = agent_res.scalars().first()
+    if not agent:
+         raise HTTPException(status_code=403, detail="Access denied")
     # Log the failure in EventLogs
     event = EventLog(
         AgentId=agent_id,
@@ -291,6 +321,29 @@ async def trigger_agent_update(
     
     return {"status": "success", "message": f"Target version set to {agent.TargetVersion}"}
 
+@router.get("/{agent_id}/software")
+async def get_agent_software(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+    
+    agent_result = await db.execute(query)
+    agent = agent_result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    import json
+    if agent.InstalledSoftwareJson:
+        try:
+            return json.loads(agent.InstalledSoftwareJson)
+        except:
+            return []
+    return []
+
 @router.get("/{agent_id}/shadow-vault")
 async def get_shadow_vault(
     agent_id: str,
@@ -317,8 +370,7 @@ async def get_shadow_vault(
 async def download_shadow_file(
     agent_id: str,
     file_id: int,
-    token: Optional[str] = None, # Allow token in query for window.open
-    current_user: User = Depends(get_current_user), # This will still work if browser sends Cookie or we handle token
+    current_user: User = Depends(get_current_user_flexible),
     db: AsyncSession = Depends(get_db)
 ):
     # Fetch File Info
@@ -328,6 +380,15 @@ async def download_shadow_file(
     
     if not file_info:
         raise HTTPException(status_code=404, detail="File not found")
+        
+    # [SECURITY] Check Tenant Ownership
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
         
     if not os.path.exists(file_info.StoragePath):
         raise HTTPException(status_code=404, detail="File not found on disk")
@@ -383,14 +444,35 @@ def is_in_maintenance_window(tenant_obj) -> bool:
             
         data = json.loads(tenant_obj.MaintenanceWindowJson)
         if not data or not data.get("enabled", False):
-            return True # Always allow if disabled
+            return True # Always allow if scheduling is disabled
             
+        mode = data.get("mode", "automatic")
         now = datetime.utcnow()
         day_of_week = now.weekday() # 0=Monday, 6=Sunday
+        current_date_str = now.strftime("%Y-%m-%d")
         
-        # 1. Day Check
-        allowed_days = data.get("days", [0, 1, 2, 3, 4, 5, 6])
-        if day_of_week not in allowed_days:
+        # [v1.8.40] One-Time Date Override
+        one_time_enabled = data.get("oneTimeEnabled", False)
+        one_time_date = data.get("oneTimeDate")
+        
+        is_scheduled_day = False
+        if mode == "manual":
+            # In Manual mode, we ONLY allow if oneTimeDate matches today
+            if one_time_enabled and one_time_date == current_date_str:
+                is_scheduled_day = True
+            else:
+                return False # Manual mode requires a specific date trigger
+        else:
+            # Automatic Mode: Recurring Day Check
+            allowed_days = data.get("days", [0, 1, 2, 3, 4, 5, 6])
+            if day_of_week in allowed_days:
+                is_scheduled_day = True
+            
+            # Also allow if one-time date is set for today (Manual override in Auto mode)
+            if one_time_enabled and one_time_date == current_date_str:
+                is_scheduled_day = True
+
+        if not is_scheduled_day:
             return False
             
         # 2. Time Check (HH:MM)
@@ -414,6 +496,7 @@ async def agent_heartbeat(
     db: AsyncSession = Depends(get_db),
     tenant: Tenant = Depends(get_tenant_by_key)
 ):
+    print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted})")
     """
     Agent Heartbeat endpoint. 
     Handles both new agent registration and periodic status updates.
@@ -431,6 +514,12 @@ async def agent_heartbeat(
         # 2. Find Agent
         result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
         agent = result_agent.scalars().first()
+
+        # [SECURITY FIX] v1.8.28 - Verify Agent belongs to this Tenant
+        if agent and agent.TenantId != tenant.Id:
+             from .audit import AuditLog # type: ignore
+             print(f"[SECURITY ALERT] Tenant {tenant.Id} attempted to spoof Agent {payload.AgentId} (owned by {agent.TenantId})")
+             raise HTTPException(status_code=403, detail="Unauthorized Agent access")
 
         # [RECOVERY] Revival Logic - Clear pending uninstall if agent reports back online
         # NOTE: No early commit here — deferred to the single final commit below.
@@ -490,9 +579,11 @@ async def agent_heartbeat(
                 VulnerabilityIntelligenceEnabled=check_feat("VulnerabilityIntelligenceEnabled", True),
                 Version=payload.Version or "v1.3.0",
                 TargetVersion=payload.Version or "v1.3.0",
-                Longitude=payload.Longitude,
-                Latitude=payload.Latitude,
-                Country=payload.Country
+                PublicIp=payload.PublicIp,
+                Longitude=payload.Longitude if payload.Longitude != 0 else None,
+                Latitude=payload.Latitude if payload.Latitude != 0 else None,
+                Country=payload.Country if payload.Country != "Unknown" else None,
+                MachineId=payload.MachineSecret # [NEW] v1.8.37
             )
             db.add(agent)
             try:
@@ -511,9 +602,16 @@ async def agent_heartbeat(
             agent.Hostname = payload.Hostname
             agent.LocalIp = payload.LocalIp
             agent.Gateway = payload.Gateway
-            agent.Latitude = payload.Latitude
-            agent.Longitude = payload.Longitude
-            agent.Country = payload.Country
+            
+            if payload.Latitude and payload.Latitude != 0:
+                agent.Latitude = payload.Latitude
+            if payload.Longitude and payload.Longitude != 0:
+                agent.Longitude = payload.Longitude
+            if payload.Country and payload.Country != "Unknown":
+                agent.Country = payload.Country
+            
+            if payload.PublicIp:
+                agent.PublicIp = payload.PublicIp
             
             # Version & Update Status Tracking
             if payload.Version:
@@ -528,20 +626,47 @@ async def agent_heartbeat(
                 # [v1.8.21] Automated Update Logic:
                 # If agent version is lagging behind LATEST, set TargetVersion to trigger update
                 # except if a custom TargetVersion is already set (and isn't LATEST).
+                # [v1.8.40] Scheduled Patching: Mode Check
+                data_mw = {}
+                try: 
+                    data_mw = json.loads(tenant.MaintenanceWindowJson or "{}")
+                except: pass
+                
+                auto_patch = data_mw.get("mode", "automatic") == "automatic"
+                
                 if agent.Version != LATEST_AGENT_VERSION:
                     if agent.TargetVersion != LATEST_AGENT_VERSION:
-                        # Only auto-target if not already in a custom update state
-                        if not agent.TargetVersion or agent.TargetVersion == agent.Version:
+                        # Only auto-target if not already in a custom update state AND in Auto-Patch mode
+                        if (not agent.TargetVersion or agent.TargetVersion == agent.Version) and auto_patch:
                             agent.TargetVersion = LATEST_AGENT_VERSION
                 else:
                     # If already at latest, ensure TargetVersion matches
                     if agent.TargetVersion != LATEST_AGENT_VERSION:
                         agent.TargetVersion = LATEST_AGENT_VERSION
                         agent.UpdateStatus = "idle"
+            
+            # [v1.8.37] Cryptographic Sync: Ensure MachineId is recorded
+            if payload.MachineSecret:
+                agent.MachineId = payload.MachineSecret
+                # [v1.8.38] Intermediate Commit: Ensure MachineId is visible to /activity flushes immediately
+                try:
+                    await db.commit()
+                    await db.refresh(agent)
+                except:
+                    await db.rollback()
 
-            # Ensure TenantId is correct
+            # [v1.8.38] Inventory Stats:
+            if payload.InstalledSoftwareJson:
+                try:
+                    software_list = json.loads(payload.InstalledSoftwareJson)
+                    agent.SoftwareCount = len(software_list)
+                except:
+                    pass
+
+            # [v1.8.37] Strict Tenant-Agent Pinning:
             if agent.TenantId != tenant.Id:
-                agent.TenantId = tenant.Id
+                 print(f"[SECURITY ALERT] Tenant Conflict: Agent {agent.AgentId} claimed Tenant {agent.TenantId} but API Key is for {tenant.Id}")
+                 raise HTTPException(status_code=403, detail="Agent does not belong to this tenant")
             
             # Inventory & Vulnerability Scanning
             if payload.InstalledSoftwareJson and len(payload.InstalledSoftwareJson) > 2:
@@ -558,7 +683,12 @@ async def agent_heartbeat(
                     
                     # Asyncify the synchronous kombu/celery connection attempt
                     # Use to_thread to offload the potentially blocking .delay() call
-                    await asyncio.to_thread(scan_vulnerabilities_background.delay, agent.AgentId, safe_json)
+                    # [v1.8.42] Respect Maintenance Window for Scans
+                    if is_in_maintenance_window(tenant):
+                        print(f"[HEARTBEAT] Triggering vulnerability scan for {agent.AgentId}")
+                        await asyncio.to_thread(scan_vulnerabilities_background.delay, agent.AgentId, safe_json)
+                    else:
+                        print(f"[HEARTBEAT] Skipping vulnerability scan for {agent.AgentId} - Outside Maintenance Window")
                 except Exception as e:
                     # Log the full repr to catch auth error strings
                     error_msg = repr(e)
@@ -582,6 +712,7 @@ async def agent_heartbeat(
         # 3. Resolve Configuration (Bandwidth & Screenshot Interval)
         bandwidth_config = tenant.bandwidth_config or {}
         screenshot_interval = agent.ScreenshotInterval
+        geolocation_enabled = getattr(agent, 'GeolocationEnabled', True)
         
         # Check for Policy-specific overrides — cached to avoid a DB hit every heartbeat
         if hasattr(agent, 'PolicyId') and agent.PolicyId:
@@ -605,23 +736,45 @@ async def agent_heartbeat(
                     except: pass
                 if policy.ScreenshotInterval is not None:
                     screenshot_interval = policy.ScreenshotInterval
+                if hasattr(policy, 'GeolocationEnabled') and policy.GeolocationEnabled is not None:
+                    geolocation_enabled = policy.GeolocationEnabled
 
         # 4. Check for Remote Updates
         update_required = False
         update_url = ""
         if agent.Version != agent.TargetVersion:
-            if is_in_maintenance_window(tenant):
+            # [v1.8.42] Bypass window if update was explicitly triggered via 'patch-now' (pending_manual_push)
+            if is_in_maintenance_window(tenant) or agent.UpdateStatus == "pending_manual_push":
                 update_required = True
                 backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
-                # Determine OS type and Architecture for update payload
+                # --- v1.8.41: Precision Architecture Detection ---
                 os_type = "windows"
                 arch = "x64"
                 
-                hostname_lower = agent.Hostname.lower()
-                if "linux" in hostname_lower or "ubuntu" in hostname_lower:
-                    os_type = "linux"
-                elif "mac" in hostname_lower or "darwin" in hostname_lower:
-                    os_type = "macos"
+                if agent.HardwareJson:
+                    try:
+                        hw = json.loads(agent.HardwareJson)
+                        os_sys = hw.get("OsSystem", "").lower()
+                        if "linux" in os_sys: os_type = "linux"
+                        elif "darwin" in os_sys or "mac" in os_sys: os_type = "mac"
+                        
+                        model = hw.get("CpuModel", "").lower() + hw.get("Arch", "").lower()
+                        if "arm" in model or "apple" in model or "m1" in model or "m2" in model:
+                            arch = "arm64"
+                    except: pass
+                else:
+                    # Fallback to hostname-based detection [Legacy]
+                    hostname_lower = agent.Hostname.lower()
+                    if "linux" in hostname_lower or "ubuntu" in hostname_lower:
+                        os_type = "linux"
+                    elif "mac" in hostname_lower or "darwin" in hostname_lower:
+                        os_type = "macos"
+                    
+                    if "arm" in hostname_lower or "aarch64" in hostname_lower:
+                        arch = "arm64"
+                
+                update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
+                update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}"
                 
                 # Simple arch detection from hostname or hardware JSON if available
                 if "arm" in hostname_lower or "aarch64" in hostname_lower:
@@ -637,6 +790,46 @@ async def agent_heartbeat(
                 
                 update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
                 update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}"
+                
+                # --- v1.8.41: HMAC Update Handshake ---
+                update_hash = ""
+                update_signature = ""
+                
+                try:
+                    # 1. Locate Binary in AgentTemplate
+                    template_map = {
+                        "linux-x64": "linux-x64", "linux-arm64": "linux-arm64",
+                        "mac-arm64": "osx-arm64", "mac-x64": "osx-x64", "windows": "win-x64"
+                    }
+                    folder = template_map.get(update_os_type, "win-x64")
+                    file_dir = os.path.dirname(os.path.abspath(__file__))
+                    base_path = os.path.normpath(os.path.join(file_dir, "..", "..", "storage", "AgentTemplate", folder))
+                    
+                    # Target correct filename (Consistent with downloads.py)
+                    fname = "monitorix.zip"
+                    if "linux" in update_os_type: fname = "monitorix-agent-linux"
+                    elif "mac" in update_os_type: fname = "monitorix-agent-mac"
+                    
+                    bin_path = os.path.join(base_path, fname)
+                    if os.path.exists(bin_path):
+                        # 2. Calculate Binary SHA256
+                        sha_calc = hashlib.sha256()
+                        with open(bin_path, "rb") as f:
+                            for chunk in iter(lambda: f.read(8192), b""): 
+                                sha_calc.update(chunk)
+                        update_hash = sha_calc.hexdigest()
+                        
+                        # 3. Generate HMAC Signature (Derive key using Machine Secret)
+                        # machine_secret = agent.MachineId (sent by agent in heartbeat)
+                        if agent.MachineId:
+                            m_secret = agent.MachineId
+                            # HMAC Key derivation same as agent: SHA256(ApiKey + MachineSecret)
+                            hmac_key = hashlib.sha256(tenant.ApiKey.encode() + m_secret.encode()).digest()
+                            update_signature = hmac.new(hmac_key, update_hash.encode(), hashlib.sha256).hexdigest()
+                    else:
+                        print(f"[PATCH] Binary not found at {bin_path}. Handshake will fail on agent.")
+                except Exception as e:
+                    print(f"[PATCH] Signature error: {e}")
 
         # 5. Create Periodic Status Report (for Resource History)
         from ..db.models import AgentReportEntity # type: ignore
@@ -678,6 +871,8 @@ async def agent_heartbeat(
             CpuUsage=payload.CpuUsage,
             MemoryUsage=payload.MemoryUsage,
             DiskUsage=disk_usage,
+            NetworkInMbps=payload.NetworkInMbps,
+            NetworkOutMbps=payload.NetworkOutMbps,
             TopProcessesJson=top_proc,
             Timestamp=report_ts
         )
@@ -725,6 +920,8 @@ async def agent_heartbeat(
             "status": "ok",
             "UpdateRequired": update_required,
             "UpdateUrl": update_url,
+            "UpdateHash": update_hash if update_required else "",
+            "UpdateSignature": update_signature if update_required else "",
             "TargetVersion": agent.TargetVersion,
             "config": {
                 "ScreenshotsEnabled": check_feat_final("ScreenshotsEnabled", agent.ScreenshotsEnabled),
@@ -748,6 +945,7 @@ async def agent_heartbeat(
                 "ScreenshotResolution": agent.ScreenshotResolution,
                 "MaxScreenshotSize": agent.MaxScreenshotSize,
                 "ScreenshotInterval": screenshot_interval,
+                "GeolocationEnabled": geolocation_enabled,
                 "BlockedApps": agent.BlockedAppsJson or "[]",
                 "ShadowPaths": agent.ShadowPathsJson or "[]",
                 "BandwidthConfig": bandwidth_config
@@ -1245,10 +1443,14 @@ async def toggle_agent_feature(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # Check Tenant Scoping
+    # Check Tenant Scoping & Role
     if current_user.Role != "SuperAdmin":
         if not current_user.TenantId or agent.TenantId != current_user.TenantId:
              raise HTTPException(status_code=403, detail="Not authorized")
+        
+        if current_user.Role != "TenantAdmin":
+             raise HTTPException(status_code=403, detail="Permission Denied: Only TenantAdmins can toggle features.")
+
 
     # Map feature string to column
     feature_map = {
@@ -1263,7 +1465,7 @@ async def toggle_agent_feature(
         "remote_shell": "RemoteShellEnabled",
         "mail": "MailMonitorEnabled",
         "screenshots": "ScreenshotsEnabled",
-        "location": "LocationTrackingEnabled",
+        "location": "GeolocationEnabled",
         "usb": "UsbBlockingEnabled",
         "network": "NetworkMonitoringEnabled",
         "file_dlp": "FileDlpEnabled",
@@ -1349,8 +1551,34 @@ async def take_screenshot(
     except Exception as e:
         import traceback # type: ignore
         traceback.print_exc()
-        # Return 500 but try to ensure CORS doesn't block reading it in dev
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
+
+def validate_shadow_paths(paths: List[str]):
+    """
+    Prevents administrators from configuring agents to shadow (steal) 
+    sensitive OS-level files or browser credentials.
+    """
+    if not paths: return
+    
+    blacklist = [
+        # Windows
+        "C:\\Windows", "C:\\System Volume Information", "C:\\Users\\All Users",
+        "System32", "SysWOW64", "config\\SAM",
+        # Linux
+        "/etc", "/root", "/boot", "/dev", "/proc", "/sys", "/var/lib/docker",
+        # App/Browser Data (Universal)
+        ".ssh", ".gnupg", ".aws", "Cookies", "Login Data", "Local Storage",
+        "Web Data", "History", "Passwords"
+    ]
+    
+    for path in paths:
+        normalized = str(path).replace("/", "\\").upper()
+        for blocked in blacklist:
+            if blocked.upper() in normalized:
+                 raise HTTPException(
+                     status_code=403, 
+                     detail=f"Security Restriction: Monitoring of system-critical path '{path}' is prohibited."
+                 )
 
 from ..schemas import AgentSettingsUpdate # type: ignore
 
@@ -1396,6 +1624,10 @@ async def update_settings(
     if settings.ShadowPaths is not None:
          # Check Plan
          if tenant: verify_feature_access(tenant.Plan, "ShadowMonitorEnabled")
+         
+         # [SECURITY] Prevent OS exfiltration
+         validate_shadow_paths(settings.ShadowPaths)
+         
          import json # type: ignore
          agent.ShadowPathsJson = json.dumps(settings.ShadowPaths)
 
@@ -1472,3 +1704,41 @@ async def update_blocked_apps(
     await sio.emit('UpdateConfig', {'BlockedApps': apps}, room=agent_string_id)
     
     return {"AgentId": agent.AgentId, "BlockedApps": apps}
+
+@router.post("/{agent_string_id}/patch-now")
+async def patch_now(
+    agent_string_id: str,
+    target_version: Optional[str] = None,
+    current_user: User = Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """Administrator Override: Force an immediately available update regardless of maintenance window."""
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+         raise HTTPException(status_code=403, detail="Not authorized")
+         
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    # Set the target version
+    target = target_version or LATEST_AGENT_VERSION
+    agent.TargetVersion = target
+    agent.UpdateStatus = "pending_manual_push"
+    
+    # [AUDIT]
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="Push Manual Patch",
+        Target=f"{agent.Hostname} ({agent.AgentId})",
+        Details=f"Forcing immediate patch to {target}",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return {"status": "success", "TargetVersion": target, "Message": "Agent will update on next heartbeat."}

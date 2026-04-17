@@ -19,7 +19,7 @@ pip3 install -q -r requirements.txt
 
 # Clean previous builds
 echo "[2/4] Cleaning previous builds..."
-rm -rf build_linux dist_linux __pycache__ *.spec
+rm -rf build_lin_v1 dist_lin_v1 __pycache__ *.spec
 
 # Architecture Detection
 ARCH=$(uname -m)
@@ -33,8 +33,9 @@ echo "Building for Architecture: ${AGENT_ARCH}"
 # [3/4] Building binary with PyInstaller...
 echo "[3/4] Building binary with PyInstaller..."
 pyinstaller --clean --onefile \
-    --workpath build_linux \
-    --distpath dist_linux \
+    --workpath build_lin_v1 \
+    --distpath dist_lin_v1 \
+    --specpath build_lin_v1 \
     --name monitorix-agent-linux \
     --hidden-import=modules.activity_monitor \
     --hidden-import=modules.app_blocker \
@@ -95,18 +96,18 @@ pyinstaller --clean --onefile \
 
 # Test the binary
 echo "[4/4] Testing binary..."
-if [ -f "dist_linux/monitorix-agent-linux" ]; then
-    chmod +x dist_linux/monitorix-agent-linux
-    SIZE=$(du -h dist_linux/monitorix-agent-linux | cut -f1)
+if [ -f "dist_lin_v1/monitorix-agent-linux" ]; then
+    chmod +x dist_lin_v1/monitorix-agent-linux
+    SIZE=$(du -h dist_lin_v1/monitorix-agent-linux | cut -f1)
     echo "✓ Binary built successfully: $SIZE"
-    echo "  Location: dist_linux/monitorix-agent-linux"
+    echo "  Location: dist_lin_v1/monitorix-agent-linux"
     
     # Quick test
-    timeout 2 dist_linux/monitorix-agent-linux 2>&1 | head -n 5 || true
+    timeout 2 dist_lin_v1/monitorix-agent-linux 2>&1 | head -n 5 || true
     
     echo ""
     echo "Next steps:"
-    echo "1. Copy to backend: cp dist_linux/monitorix-agent-linux ../backend/storage/AgentTemplate/linux-${AGENT_ARCH}/"
+    echo "1. Copy to backend: cp dist_lin_v1/monitorix-agent-linux ../backend/storage/AgentTemplate/linux-${AGENT_ARCH}/"
     echo "2. Remove .broken file: rm ../backend/storage/AgentTemplate/linux-${AGENT_ARCH}/monitorix-agent-linux.broken"
     echo "3. Restart backend: docker restart watch-sec-backend"
 else

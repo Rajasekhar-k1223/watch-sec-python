@@ -168,7 +168,50 @@ try {
     Write-Warning "Cleanup had some minor issues (e.g., file locked), but proceeding..."
 }
 
-# 3. Configure Windows Defender Exclusion
+# 3. Establish Security Trust (Resolve "Unknown Publisher" warning)
+# This step is MANDATORY. The agent will NOT install without a trusted certificate.
+# The certificate is stored in the Windows System Trust Store (LocalMachine\Root).
+Write-Host "[*] Establishing Monitorix Security Trust (Mandatory)..."
+if ($BackendUrl) {
+    try {
+        $RootCaUrl = "$BackendUrl/api/downloads/public/root-ca"
+        $TempCert = Join-Path $env:TEMP "monitorix_root_ca.crt"
+        
+        Write-Host "    [*] Fetching Root CA from $RootCaUrl..."
+        Invoke-WebRequest -Uri $RootCaUrl -OutFile $TempCert -UseBasicParsing -ErrorAction Stop
+        
+        if (Test-Path $TempCert) {
+            Write-Host "    [*] Importing Monitorix Root CA into Windows System Trust Store..."
+            # Try PowerShell cmdlet first (Windows 10/11)
+            try {
+                Import-Certificate -FilePath $TempCert -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction Stop | Out-Null
+                Write-Host "    [+] Root CA successfully trusted via PowerShell." -ForegroundColor Green
+            } catch {
+                # Fallback to certutil (legacy/server environments)
+                Write-Host "    [*] Falling back to certutil for trust import..."
+                & certutil -addstore -f "Root" "$TempCert" | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "    [+] Root CA successfully trusted via certutil." -ForegroundColor Green
+                } else {
+                    Write-Error "CRITICAL: Could not import Root CA (Code: $LASTEXITCODE). Installation Aborted."
+                    exit 1
+                }
+            }
+            Remove-Item $TempCert -Force
+        } else {
+             Write-Error "CRITICAL: Root CA file not found after download. Installation Aborted."
+             exit 1
+        }
+    } catch {
+        Write-Error "CRITICAL: Mandatory Trust establishment failed: $($_.Exception.Message). Installation Aborted."
+        exit 1
+    }
+} else {
+    Write-Error "CRITICAL: BackendUrl not provided. Cannot establish security trust. Installation Aborted."
+    exit 1
+}
+
+# 4. Configure Windows Defender Exclusion
 Write-Host "[*] Adding Windows Defender Exclusion for $InstallDir..."
 try {
     Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
@@ -177,7 +220,7 @@ try {
     Write-Warning "Could not add Defender exclusion. Ensure you have the latest Windows updates."
 }
 
-# 3. Download and Deploy Agent
+# 5. Download and Deploy Agent
 $TempFile = Join-Path $env:TEMP "monitorix_payload"
 $ExtractPath = $env:TEMP + "\monitorix_extracted"
 

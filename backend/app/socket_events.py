@@ -5,6 +5,14 @@ from .core.security import SECRET_KEY, ALGORITHM # type: ignore
 from .db.session import AsyncSessionLocal # type: ignore
 from .db.models import Agent, Tenant # type: ignore
 from typing import Any, Dict, Optional, List # type: ignore
+import httpx # type: ignore
+import secrets 
+import hmac 
+import hashlib
+
+# [NEW] Persistent client for high-performance bridge relaying
+_bridge_client = httpx.AsyncClient(timeout=2.0)
+
 
 @sio.event
 async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, Any]] = None):
@@ -60,38 +68,40 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
     # B. Agent Auth (API Key)
     if api_key:
         try:
-             async with AsyncSessionLocal() as db:
+            async with AsyncSessionLocal() as db:
                 result = await db.execute(select(Tenant).where(Tenant.ApiKey == api_key))
                 tenant = result.scalars().first()
                 
                 if tenant and auth:
-                    agent_id = auth.get('room', f"Agent-{sid}")
+                    agent_id = auth.get('room')
+                    if not agent_id: return False
                     
+                    # [v1.8.37] Identity Pinning: Verify Agent-Tenant Ownership
+                    res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+                    existing_agent = res.scalars().first()
+                    
+                    if existing_agent and existing_agent.TenantId != tenant.Id:
+                         print(f"[SECURITY ALERT] SID {sid} tried to spoof Agent {agent_id}!")
+                         return False
+
+                    challenge = secrets.token_hex(16)
                     await sio.save_session(sid, {
                         'role': 'Agent',
+                        'is_agent': True, # [NEW] v1.8.37
                         'tenantId': tenant.Id,
-                        'username': agent_id,
-                        'is_agent': True,
-                        'agent_id': agent_id 
+                        'agent_id': agent_id,
+                        'challenge': challenge,
+                        'is_verified': False
                     })
-                    print(f"[Socket.IO] Agent Connected: {agent_id} (Tenant: {tenant.Id})")
                     
-                    # [FIX] Always join own agent room to ensure receipt of control commands
-                    await sio.enter_room(sid, agent_id)
-                    print(f"[Socket.IO] Agent strictly joined room: {agent_id}")
-                    
+                    await sio.emit('identity_challenge', {'challenge': challenge}, to=sid)
                     return True
-                else:
-                    print(f"[Socket.IO] Agent Auth Failed: Invalid API Key {api_key}")
-                    return False
+                return False
         except Exception as e:
-            print(f"[Socket.IO] DB Error during Agent Auth: {e}")
+            print(f"[Socket.IO] Agent Auth Error: {e}")
             return False
 
-    if auth and 'room' in auth:
-        # Validate Initial Room Join?
-        # Usually frontend connects then emits 'join', but if they send room in handshake:
-        pass 
+    return False
 
 @sio.event
 async def disconnect(sid: str):
@@ -103,9 +113,9 @@ async def on_update_progress(sid: str, data: Dict[str, Any]):
     Relay update progress from Agent to Frontend.
     Data: {'agentId': '...', 'progress': 50}
     """
-    # 1. Validate Session (Is this an Agent?)
+    # 1. Validate Session (Is this a Verified Agent?)
     session = await sio.get_session(sid)
-    if not session or not session.get('is_agent'):
+    if not session or not session.get('is_agent') or not session.get('is_verified'):
         return # Ignore unauthorized
         
     agent_id = data.get('agentId')
@@ -123,56 +133,110 @@ async def catch_all(sid: str, event: str, data: Any):
     # print(f"[Socket.IO] Event DEBUG: SID={sid} Event={event} Data={data}")
     pass
 
+@sio.on('verify_identity')
+async def on_verify_identity(sid: str, data: Dict[str, Any]):
+    """
+    Complete the Challenge-Response handshake.
+    Agent sends HMACSig(challenge, machine_secret).
+    """
+    session = await sio.get_session(sid)
+    if not session or not session.get('agent_id'): return
+    
+    challenge = session.get('challenge')
+    signature = data.get('signature')
+    agent_id = session.get('agent_id')
+    tenant_id = session.get('tenantId')
+
+    # [v1.8.37] Proof of Hardware logic
+    # We re-derive the expected signature using the tenant secret + agent identity info
+    # In a real PROD system, we'd look up the agent's unique pubkey or registered secret.
+    # For this hardened demo, we use the Ghost Identity pattern (Key salt).
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
+        tenant = res.scalars().first()
+        if not tenant: return
+        
+        # [v1.8.37] Cryptographic Verification Gate
+        # Upgrade: Use the actual MachineId from the database record
+        res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = res_a.scalars().first()
+        if not agent or not agent.MachineId:
+             # Fallback to derivation for un-migrated agents
+             secret = f"HW_PROOF_{tenant.ApiKey}_{agent_id}".encode()
+        else:
+             # Use authoritative Hardware ID as the HMAC Key
+             secret = hashlib.sha256(tenant.ApiKey.encode() + agent.MachineId.encode()).digest()
+             
+        expected = hmac.new(secret, challenge.encode(), hashlib.sha256).hexdigest()
+        
+        if hmac.compare_digest(signature, expected):
+            print(f"[Socket.IO] Handshake SUCCESS for Agent {agent_id}. Access Granted.")
+            session['is_verified'] = True
+            await sio.save_session(sid, session)
+            # ONLY NOW join the command room
+            await sio.enter_room(sid, agent_id)
+            await sio.emit('identity_verified', {'status': 'OK'}, to=sid)
+        else:
+            print(f"[SECURITY ALERT] Handshake FAILED for Agent {agent_id}. Disconnecting.")
+            await sio.disconnect(sid)
+
 @sio.on('join')
 @sio.on('join_room')
 async def on_join(sid: str, data: Dict[str, Any]):
     room = data.get('room')
     if not room:
         return
-    await sio.enter_room(sid, room)
-    print(f"[DEBUG] Client {sid} joined room: {room}")
-
+    
     session = await sio.get_session(sid)
+    if not session:
+        print(f"[Socket.IO] Join Rejection: No Session for {sid}")
+        return
+        
     user = session.get("user")
+    # [v1.2.5] Fallback for legacy session structure
+    if not user and session.get('username'):
+        user = session
     
     print(f"[Socket.IO] Join Request from {sid}: Room={room} User={user.get('username') if user else 'None'}")
 
     # 1. If User is Authenticated
     if user:
         # A. Tenant Room Join (e.g. "tenant_123")
-        if room.startswith("tenant_"):
+        if str(room).startswith("tenant_"):
             try:
-                target_tid = int(room.split("_")[1])
-                if user['role'] == "SuperAdmin" or user['tenantId'] == target_tid:
+                target_tid = int(str(room).split("_")[1])
+                if user.get('role') == "SuperAdmin" or int(user.get('tenantId', -1)) == target_tid:
                     await sio.enter_room(sid, room)
-                    print(f"[Socket.IO] {user['username']} successfully joined {room}")
+                    print(f"[Socket.IO] {user.get('username')} successfully joined {room}")
                 else:
-                    print(f"[Socket.IO] Access Denied: {user['username']} (Tenant {user['tenantId']}) tried to join {room}")
+                    print(f"[Socket.IO] Access Denied: {user.get('username')} (Tenant {user.get('tenantId')}) tried to join {room}")
             except Exception as e:
                 print(f"[Socket.IO] Error parsing tenant room {room}: {e}")
                 
         # B. Agent Room Join (e.g. "DEVICE-UUID")
         else:
-             # Assume it's an Agent ID. Verify ownership.
-             if user['role'] == "SuperAdmin":
-                 await sio.enter_room(sid, room)
-                 print(f"[Socket.IO] SuperAdmin joined Agent Room {room}")
+             # Assume it's an Agent ID. [SECURITY] Verify ownership to prevent cross-agent snooping.
+             target_agent_id = str(room)
+             if user.get('role') == "SuperAdmin":
+                 await sio.enter_room(sid, target_agent_id)
+                 print(f"[Socket.IO] SuperAdmin joined Agent Room {target_agent_id}")
              else:
                  async with AsyncSessionLocal() as db:
-                     res = await db.execute(select(Agent).where(Agent.AgentId == room))
+                     res = await db.execute(select(Agent).where(Agent.AgentId == target_agent_id))
                      agent = res.scalars().first()
-                     if agent and agent.TenantId == user['tenantId']:
-                         await sio.enter_room(sid, room)
-                         print(f"[Socket.IO] {user['username']} joined Agent Room {room}")
+                     if agent and agent.TenantId == user.get('tenantId'):
+                         await sio.enter_room(sid, target_agent_id)
+                         print(f"[Socket.IO] {user.get('username')} joined Agent Room {target_agent_id}")
                      else:
-                         print(f"[Socket.IO] Access Denied or Agent Not Found: {room} for user {user['username']}")
+                         print(f"[Socket.IO] Access Denied or Agent Not Found: {target_agent_id} for user {user.get('username')}")
 
     # 2. If Not User (e.g. Agent connecting/joining its own room?)
-    # Agents usually don't "join" explicitly via this event, they separate namespaces or just listen/emit.
-    # If Agents DO use this 'join' event, we need a way to auth them (e.g. API Key).
-    # For now, we assume this 'join' event is primarily for Frontend Clients watching streams.
+    elif session.get('is_agent'):
+         # Agents are allowed to join their own rooms (already handled in connect, but just in case)
+         if session.get('agent_id') == room:
+             await sio.enter_room(sid, room)
     else:
-        print(f"[Socket.IO] Unauthenticated join attempt for {room}")
+        print(f"[Socket.IO] Unauthenticated join attempt for {room} from {sid}")
 
 @sio.on('bandwidth_stats')
 async def handle_bandwidth_stats(sid: str, data: Any):
@@ -192,16 +256,16 @@ async def handle_bandwidth_stats(sid: str, data: Any):
         # We need the Agent ID and Tenant ID.
         # In 'connect', we store this in sio.get_session(sid).
         session = await sio.get_session(sid)
-        if not session: return
+        if not session or not session.get('is_verified'): return
 
         agent_id = session.get('agent_id')
-        tenant_id = session.get('tenantId') # Note: camelCase in save_session
             
-        if agent_id and tenant_id:
+        if agent_id:
+             # [v1.8.37] Signal Isolation: Emit only to the private agent room
              await sio.emit('agent_bandwidth_update', {
                 'agent_id': agent_id,
                 'stats': data
-            }, room=f"tenant_{tenant_id}")
+            }, room=agent_id)
              
     except Exception as e:
         print(f"Error handling bandwidth stats: {e}")
@@ -213,19 +277,20 @@ async def on_agent_event(sid: str, data: Dict[str, Any]):
     and broadcast them to the dashboard.
     """
     session = await sio.get_session(sid)
-    if not session:
+    if not session or not session.get('is_verified'):
         return
 
-    # [SECURITY] Use tenantId from session, NOT from client payload
+    # [SECURITY] Use tenantId and agent_id from session, NOT from client payload
     tenant_id = session.get('tenantId')
+    agent_id = session.get('agent_id')
     
-    if tenant_id:
-        room = f"tenant_{tenant_id}"
+    if tenant_id and agent_id:
+        # [v1.8.37] Signal Isolation: Emit strictly to the private agent room
         # Ensure the data contains the correct tenantId for the frontend
         data['tenantId'] = tenant_id
-        await sio.emit('new_alert', data, room=room)
+        await sio.emit('new_alert', data, room=agent_id)
     else:
-        print(f"[Socket.IO] [WARNING] Agent event from {sid} ignored: No TenantId in session.")
+        print(f"[Socket.IO] [WARNING] Agent event from {sid} ignored: Missing context.")
 
 
 # ======================================================
@@ -234,107 +299,131 @@ async def on_agent_event(sid: str, data: Dict[str, Any]):
 
 import httpx # type: ignore
 
+async def _validate_agent_access(session: Dict, agent_id: str) -> bool:
+    """Helper to verify if a socket session has access to a specific agent"""
+    if not session: return False
+    if session.get('role') == "SuperAdmin": return True
+    
+    tenant_id = session.get('tenantId')
+    if not tenant_id: return False
+    
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(select(Agent.TenantId).where(Agent.AgentId == agent_id))
+        owner_id = res.scalar()
+        return owner_id == tenant_id
+
 @sio.on('start_stream')
 async def on_start_stream(sid: str, data: Dict[str, Any]):
     """Relay user request to agent"""
+    session = await sio.get_session(sid)
     agent_id = data.get('agentId')
     if agent_id:
+        if not await _validate_agent_access(session, agent_id):
+            print(f"[SECURITY ALERT] Unauthorized start_stream attempt by {sid} for Agent {agent_id}")
+            return
+
         print(f"[DEBUG] Signaling start_stream to room: {agent_id} | Data: {data}")
         
         # 1. Standard Redis Broadcast (High Availability)
         await sio.emit('StartStream', data, room=agent_id)
         
-        # 2. [NEW] Internal Bridge Relay (Guaranteed Delivery)
-        # This bypasses Redis signaling issues by calling the Gateway directly
+        # 2. [OPTIMIZED] Internal Bridge Relay (Shared Client)
         try:
-            async with httpx.AsyncClient() as client:
-                # Use internal Docker service name
-                gateway_url = f"http://watch-sec-agent-gateway:8005/api/agent/internal/relay-stream/{agent_id}"
-                print(f"[RELAY] Sending bridge signal to {gateway_url}")
-                
-                # Payload matches RelayStreamRequest schema
-                relay_data = {
-                    "width": data.get("width", 1280),
-                    "quality": data.get("quality", 80),
-                    "agentId": agent_id
-                }
-                
-                response = await client.post(gateway_url, json=relay_data, timeout=2.0)
-                print(f"[RELAY_STATUS] Gateway responded: {response.status_code}")
+            # Use internal Docker service name
+            gateway_url = f"http://watch-sec-agent-gateway:8005/api/agent/internal/relay-stream/{agent_id}"
+            
+            # Payload matches RelayStreamRequest schema
+            relay_data = {
+                "width": data.get("width", 1280),
+                "quality": data.get("quality", 80),
+                "agentId": agent_id
+            }
+            
+            response = await _bridge_client.post(gateway_url, json=relay_data)
+            # print(f"[RELAY_STATUS] Gateway responded: {response.status_code}")
         except Exception as e:
             print(f"[RELAY_FAILED] Internal bridge unreachable: {e}")
 
 @sio.on('stop_stream')
 async def on_stop_stream(sid: str, data: Dict[str, Any]):
     """Relay 'stop_stream' from Frontend to Agent as 'StopStream'"""
+    session = await sio.get_session(sid)
     agent_id = data.get('agentId')
     if agent_id:
+        if not await _validate_agent_access(session, agent_id):
+            return
+
         print(f"[Socket.IO] Signaling: stop_stream -> Agent {agent_id}")
         await sio.emit('StopStream', data, room=agent_id)
 
 @sio.on('ice_candidate')
 async def on_ice_candidate(sid: str, data: Dict[str, Any]):
     """Relay ICE Candidate from Frontend to Agent as 'webrtc_ice_candidate'"""
+    session = await sio.get_session(sid)
     agent_id = data.get('target')
     if agent_id:
+        if not await _validate_agent_access(session, agent_id):
+            return
         await sio.emit('webrtc_ice_candidate', data, room=agent_id)
 
 @sio.on('webrtc_answer')
 async def on_webrtc_answer(sid: str, data: Dict[str, Any]):
     """Relay WebRTC Answer from Frontend to Agent"""
+    session = await sio.get_session(sid)
     agent_id = data.get('target')
     if agent_id:
+        if not await _validate_agent_access(session, agent_id):
+            return
         await sio.emit('webrtc_answer', data, room=agent_id)
 
 @sio.on('RemoteInput')
 async def on_remote_input(sid: str, data: Dict[str, Any]):
     """Relay Remote Input (Keyboard/Mouse) from Frontend to Agent"""
+    session = await sio.get_session(sid)
     agent_id = data.get('agentId')
     if agent_id:
+        if not await _validate_agent_access(session, agent_id):
+            return
         await sio.emit('RemoteInput', data, room=agent_id)
 
 # --- Agent to Frontend Relays ---
 
 @sio.on('stream_frame')
 async def on_stream_frame(sid: str, data: Dict[str, Any]):
-    """Relay JPEG frame from Agent to Frontend (as ReceiveScreen and stream_frame)"""
+    """
+    Relay JPEG frame from Agent to Frontend.
+    [SECURITY] BROADCAST ISOLATION: We now emit to the private agent room ONLY.
+    """
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent') or not session.get('is_verified'): return
+    
+    agent_id = session.get('agent_id')
+    
+    if agent_id:
+        image_data = data.get('image')
+        if not image_data: return
+        
+        # [v1.8.34] Isolated Relay: Only users authorized for THIS agent see the frame
+        await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id)
+        await sio.emit('stream_frame', data, room=agent_id)
+
+@sio.on('webrtc_offer')
+async def on_webrtc_offer(sid: str, data: Dict[str, Any]):
+    """Relay WebRTC Offer from Agent to private agent room"""
+    session = await sio.get_session(sid)
+    if not session or not session.get('is_agent') or not session.get('is_verified'): return
+    
+    agent_id = session.get('agent_id')
+    if agent_id:
+        await sio.emit('webrtc_offer', data, room=agent_id)
+
+@sio.on('webrtc_ice_candidate')
+async def on_agent_ice_candidate(sid: str, data: Dict[str, Any]):
+    """Relay ICE Candidate from Agent to private agent room"""
     session = await sio.get_session(sid)
     if not session or not session.get('is_agent'): return
     
     agent_id = session.get('agent_id')
-    tenant_id = session.get('tenantId')
-    
-    if tenant_id:
-        image_data = data.get('image')
-        if not image_data: return
-        
-        # print(f"[DEBUG] Relaying frame from agent: {agent_id} (Tenant: {tenant_id})")
-        # Agents.tsx expects 'ReceiveScreen' with (agentId, base64) as separate arguments
-        # python-socketio: pass a tuple to have them delivered as separate args in JS
-        await sio.emit('ReceiveScreen', (agent_id, image_data), room=f"tenant_{tenant_id}")
-        await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id) # Direct to agent room for focused listeners
-        
-        # RemoteDesktop.tsx expects 'stream_frame' with a single dict object
-        await sio.emit('stream_frame', data, room=f"tenant_{tenant_id}")
-        await sio.emit('stream_frame', data, room=agent_id) # Direct to agent room for focused listeners
-
-@sio.on('webrtc_offer')
-async def on_webrtc_offer(sid: str, data: Dict[str, Any]):
-    """Relay WebRTC Offer from Agent to Frontend"""
-    session = await sio.get_session(sid)
-    if not session or not session.get('is_agent'): return
-    
-    tenant_id = session.get('tenantId')
-    if tenant_id:
-        await sio.emit('webrtc_offer', data, room=f"tenant_{tenant_id}")
-
-@sio.on('webrtc_ice_candidate')
-async def on_agent_ice_candidate(sid: str, data: Dict[str, Any]):
-    """Relay ICE Candidate from Agent to Frontend as 'ice_candidate'"""
-    session = await sio.get_session(sid)
-    if not session or not session.get('is_agent'): return
-    
-    tenant_id = session.get('tenantId')
-    if tenant_id:
-        await sio.emit('ice_candidate', data, room=f"tenant_{tenant_id}")
+    if agent_id:
+        await sio.emit('ice_candidate', data, room=agent_id)
 

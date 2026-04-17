@@ -14,9 +14,6 @@ import json # type: ignore
 router = APIRouter()
 
 class PolicyDto(BaseModel):
-    Id: Optional[int]
-    Name: str
-class PolicyDto(BaseModel):
     id: Optional[int] = None
     name: str
     rulesJson: str
@@ -26,11 +23,12 @@ class PolicyDto(BaseModel):
     blockedAppsJson: str
     blockedWebsitesJson: str
     remediationJson: str
-    bandwidthJson: str = "{}" # [NEW]
+    bandwidthJson: str = "{}"
     screenshotInterval: Optional[int] = 60
     screenshotQuality: Optional[int] = 80
     screenshotsEnabled: Optional[bool] = False
     activityMonitorEnabled: Optional[bool] = True
+    geolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
 
 @router.get("", response_model=List[PolicyDto])
 @router.get("/", response_model=List[PolicyDto], include_in_schema=False)
@@ -61,7 +59,8 @@ async def get_policies(
             screenshotInterval=p.ScreenshotInterval,
             screenshotQuality=p.ScreenshotQuality or 80,
             screenshotsEnabled=p.ScreenshotsEnabled,
-            activityMonitorEnabled=p.ActivityMonitorEnabled
+            activityMonitorEnabled=p.ActivityMonitorEnabled,
+            geolocationEnabled=p.GeolocationEnabled # [NEW] v1.8.27
         ) for p in policies
     ]
 
@@ -92,6 +91,7 @@ async def create_policy(
         ScreenshotQuality=dto.screenshotQuality or 80,
         ScreenshotsEnabled=dto.screenshotsEnabled or False,
         ActivityMonitorEnabled=dto.activityMonitorEnabled or True,
+        GeolocationEnabled=dto.geolocationEnabled if dto.geolocationEnabled is not None else True,
         CreatedAt=datetime.utcnow()
     )
     
@@ -145,6 +145,7 @@ async def update_policy(
     policy.ScreenshotQuality = dto.screenshotQuality if dto.screenshotQuality is not None else 80
     policy.ScreenshotsEnabled = dto.screenshotsEnabled if dto.screenshotsEnabled is not None else False
     policy.ActivityMonitorEnabled = dto.activityMonitorEnabled if dto.activityMonitorEnabled is not None else True
+    policy.GeolocationEnabled = dto.geolocationEnabled if dto.geolocationEnabled is not None else True # [NEW]
     
     # [REAL-TIME SYNC] Notify Agents assigned to this policy
     agent_query = select(Agent).where(Agent.PolicyId == id)
@@ -159,6 +160,7 @@ async def update_policy(
                 "ScreenshotQuality": policy.ScreenshotQuality,
                 "ScreenshotsEnabled": policy.ScreenshotsEnabled,
                 "ActivityMonitorEnabled": policy.ActivityMonitorEnabled,
+                "GeolocationEnabled": policy.GeolocationEnabled, # [NEW]
                 "BandwidthConfig": json.loads(policy.BandwidthJson) if policy.BandwidthJson else {}
             }, room=agent.AgentId)
             print(f"[Policy Sync] Pushed v1.8.20 config to Agent: {agent.AgentId}")

@@ -47,14 +47,19 @@ async def get_agent_mail_logs(
         .options(selectinload(MailLog.Attachments))\
         .where(MailLog.AgentId == agent_id)
     
-    # [SECURITY] Plan Check
+    # [SECURITY] Tenant & Plan Check
     res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = res_a.scalars().first()
-    if agent:
-        res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
-        tenant = res_t.scalars().first()
-        if tenant:
-            verify_feature_access(tenant.Plan, "MailMonitorEnabled")
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = res_t.scalars().first()
+    if tenant:
+        verify_feature_access(tenant.Plan, "MailMonitorEnabled")
     
     # [NEW] Handle Date Range
     from datetime import timedelta # type: ignore
@@ -99,14 +104,29 @@ async def get_agent_mail_logs(
 @router.get("/attachment/{attachment_id}")
 async def download_attachment(
     attachment_id: int,
-    db: AsyncSession = Depends(get_db)
-    # Removing Auth for ease of download via browser link, or add token to query param
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     result = await db.execute(select(MailAttachment).where(MailAttachment.Id == attachment_id))
     att = result.scalars().first()
     
     if not att:
         raise HTTPException(status_code=404, detail="Attachment not found")
+        
+    # [SECURITY] Validate Agent and Tenant Ownership
+    mail_res = await db.execute(select(MailLog).where(MailLog.Id == att.MailLogId))
+    mail_log = mail_res.scalars().first()
+    if not mail_log:
+         raise HTTPException(status_code=404, detail="Parent mail log not found")
+         
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == mail_log.AgentId))
+    agent = agent_res.scalars().first()
+    
+    if not agent:
+         raise HTTPException(status_code=404, detail="Agent not found")
+         
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+         raise HTTPException(status_code=403, detail="Access denied")
         
     try:
         # Decode Base64
@@ -129,6 +149,12 @@ async def log_mail(
     tenant = result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # [SECURITY] Verify Agent belongs to this Tenant
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId, Agent.TenantId == tenant.Id))
+    if not agent_res.scalars().first():
+        print(f"[SECURITY ALERT] Unmapped mail logging attempt for Agent {dto.AgentId} by Tenant {tenant.Id}")
+        raise HTTPException(status_code=403, detail="Agent does not belong to this Tenant")
 
     # [SECURITY] Plan Check
     verify_feature_access(tenant.Plan, "MailMonitorEnabled")

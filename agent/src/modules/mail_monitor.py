@@ -10,6 +10,7 @@ import base64 # type: ignore
 import requests # type: ignore
 import glob # type: ignore
 import subprocess # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 # --- Strategy Interface ---
 class MailMonitorStrategy:
@@ -42,11 +43,12 @@ class MailMonitorStrategy:
     def _send_to_backend(self, sender, recipient, subject, body_preview, attachments_data):
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
-            "Sender": sender,
-            "Recipient": recipient,
-            "Subject": subject,
-            "BodyPreview": body_preview,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
+            "Sender": PrivacyRedactor.redact_text(sender),
+            "Recipient": PrivacyRedactor.redact_text(recipient),
+            "Subject": PrivacyRedactor.redact_text(subject),
+            "BodyPreview": PrivacyRedactor.redact_text(body_preview),
             "HasAttachments": len(attachments_data) > 0,
             "AttachmentNames": ", ".join([a["FileName"] for a in attachments_data]),
             "Timestamp": datetime.datetime.utcnow().isoformat(),
@@ -56,17 +58,10 @@ class MailMonitorStrategy:
         if self.data_queue:
             self.data_queue.enqueue("/api/mail", payload, priority='normal')
             print(f"[{self.__class__.__name__}] Queued email '{subject}' for upload.")
-            return
-
-        try:
-            headers = {"X-Tenant-Api-Key": self.api_key}
-            res = requests.post(f"{self.api_url}/api/mail", json=payload, headers=headers, verify=False, timeout=10)
-            if res.status_code == 200:
-                print(f"[{self.__class__.__name__}] Sent email '{subject}' to backend.")
-            else:
-                print(f"[{self.__class__.__name__}] Backend rejected: {res.status_code} {res.text}")
-        except Exception as e:
-            print(f"[{self.__class__.__name__}] Backend Upload Error: {e}")
+        else:
+            # [SECURITY] Stealth Mode: Forbidden to send plaintext key or unsigned requests.
+            # Direct send is no longer supported for telemetry.
+            print(f"[{self.__class__.__name__}] WARNING: DataQueue missing. Email log discarded.")
 
 # --- Windows Strategy (Outlook COM) ---
 class WindowsOutlookStrategy(MailMonitorStrategy):

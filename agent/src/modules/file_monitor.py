@@ -125,7 +125,8 @@ class FileMonitor:
         print(f"[File] {event_type}: {details}")
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "Type": event_type,
             "Details": details,
             "Timestamp": datetime.utcnow().isoformat()

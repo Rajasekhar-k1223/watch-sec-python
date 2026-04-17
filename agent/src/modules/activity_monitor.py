@@ -8,6 +8,7 @@ import platform # type: ignore
 import logging # type: ignore
 import subprocess # type: ignore
 import psutil # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 # OS-Specific Imports
 import ctypes # type: ignore
@@ -396,7 +397,7 @@ class ActivityMonitor:
                             # Strictly suppress "No Desktop Access" from Session 0 (Services)
                             # to avoid overwriting legitimate user activity in the dashboard.
                             sid = self._get_session_id()
-                            is_headless_fallback = "No Desktop Access" in str(last_title)
+                            is_headless_fallback = "Desktop Inaccessible" in str(last_title) or "Monitorix Service" in str(last_title)
                             
                             if sid == 0 and is_headless_fallback:
                                 # self._log("Skipping 'No Desktop Access' report from Session 0 (Service).")
@@ -441,11 +442,12 @@ class ActivityMonitor:
         
         payload = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced. 
+            # Replaced with HMAC signatures at the DataQueue layer.
             "ActivityType": activity_type,
-            "WindowTitle": title,
-            "ProcessName": process,
-            "Url": url if url else None, # [FIX] Send None instead of "" for Optional fields
+            "WindowTitle": PrivacyRedactor.redact_text(title),
+            "ProcessName": PrivacyRedactor.redact_text(process),
+            "Url": PrivacyRedactor.redact_url(url) if url else None, 
             "DurationSeconds": float(f"{duration:.2f}"),
             "IdleSeconds": float(f"{idle_time:.2f}"),
             "Category": category,
@@ -459,21 +461,8 @@ class ActivityMonitor:
             else: print(msg)
             self.data_queue.enqueue("/api/events/activity", payload)
         else:
-            try:
-                msg = f"[ActivityMonitor] Sending log directly: {process} - {title} ({duration}s)"
-                if self.logger: self.logger(msg)
-                else: print(msg)
-                
-                response = self.session.post(f"{self.backend_url}/api/events/activity", json=payload, timeout=10, verify=False)
-                if response.status_code != 200:
-                    err = f"[ActivityMonitor] Backend Rejected: {response.status_code} {response.text}"
-                    if self.logger: self.logger(err)
-                    else: print(err)
-                else:
-                    succ = f"[ActivityMonitor] Log Sent Successfully"
-                    if self.logger: self.logger(succ)
-                    else: print(succ)
-            except Exception as e:
-                err = f"[ActivityMonitor] Upload Error: {e}"
-                if self.logger: self.logger(err)
-                else: print(err)
+            # [SECURITY] Direct send and plaintext keys are no longer supported in Stealth Mode.
+            # All telemetry must go through the signed DataQueue.
+            msg = f"[ActivityMonitor] WARNING: DataQueue missing. Log discarded to prevent Stealth Breach."
+            if self.logger: self.logger(msg)
+            else: print(msg)

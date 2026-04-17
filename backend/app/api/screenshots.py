@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Header
 from fastapi.responses import FileResponse
 from typing import List, Optional
 from datetime import datetime
@@ -15,7 +15,7 @@ from jose import JWTError, jwt
 from ..core.security import SECRET_KEY, ALGORITHM
 from ..db.session import get_db
 from ..db.models import User, Agent, Screenshot, Tenant
-from .deps import get_current_user
+from .deps import get_current_user, get_current_user_flexible
 from ..tasks.ocr_tasks import process_ocr_background
 from ..core.constants import PLAN_LEVELS
 from ..socket_instance import sio
@@ -139,14 +139,25 @@ async def upload_screenshot(
     file: UploadFile = File(...),
     agent_id: str = Form(...),
     created_at: str = Form(...), # ISO Format
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key")
 ):
-    # 1. Validate Agent Exists
+    # 1. Resolve API Key
+    if not x_tenant_api_key:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # 2. Validate Agent & Tenant Ownership
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = result.scalars().first()
     if not agent:
-        # Fail silently or 404 to avoid leaking? Agent expects 200 usually or logs error.
         raise HTTPException(status_code=404, detail="Agent not registered")
+
+    # Verify API Key matches Agent's Tenant
+    t_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant_obj = t_res.scalars().first()
+    if not tenant_obj or tenant_obj.ApiKey != x_tenant_api_key:
+        print(f"[SECURITY ALERT] Unauthorized upload attempt for Agent {agent_id} with Key {x_tenant_api_key}")
+        raise HTTPException(status_code=403, detail="Invalid API Key for this Agent")
 
     # Structure: storage/Screenshots/{agent_id}/{date_Ymd}/
     try:
@@ -164,9 +175,14 @@ async def upload_screenshot(
         target_dir = os.path.join(STORAGE_BASE, agent_id, date_folder)
         os.makedirs(target_dir, exist_ok=True)
         
+        # [SECURITY] Sanitize filename and validate extension to prevent Arbitrary File Write
+        safe_filename = os.path.basename(file.filename)
+        if not safe_filename.lower().endswith(('.png', '.webp')):
+             raise HTTPException(status_code=400, detail="Invalid file type. Only PNG and WEBP allowed.")
+             
         # Filename: HHmmss_uuid.webp
         time_part = dt.strftime("%H%M%S")
-        filename = f"{time_part}_{file.filename}"
+        filename = f"{time_part}_{safe_filename}"
         file_path = os.path.join(target_dir, filename)
         
         # Save to Disk
@@ -228,47 +244,14 @@ async def upload_screenshot(
 
 # --- Redundant imports removed ---
 
-# Custom Dependency to allow Token in Query Params for Images (<img> tags can't set headers)
-async def get_current_user_images(
-    token: Optional[str] = None, # Start with query param
-    current_user: User = Depends(get_current_user) # Try standard header auth
-):
-    # This logic is tricky because Depends(get_current_user) will RAISE 401 if header missing.
-    # We should make header auth optional, or implement manual logic.
-    pass 
-
-# Retrying implementing logic properly without double dependency conflict.
-async def get_image_access_user(
-    token: Optional[str] = None, # Query Param
-    db: AsyncSession = Depends(get_db)
-):
-    if not token:
-        # If no token param, this endpoint effectively acts publicly or we just fail.
-        # But wait, frontend might use Header OR Param.
-        # Since 'view_screenshot' is used by <img> tags, it almost exclusively relies on Query Param in this architecture.
-        # So we enforce Query Param.
-        raise HTTPException(status_code=401, detail="Not authenticated (Query token missing)")
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-             raise HTTPException(status_code=401, detail="Invalid token")
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    result = await db.execute(select(User).where(User.Username == username))
-    user = result.scalars().first()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
+# Flexible dependency moved to deps.py for centralization.
 
 @router.get("/view/{agent_id}/{date}/{filename}")
 async def view_screenshot(
     agent_id: str,
     date: str,
     filename: str,
-    current_user: User = Depends(get_image_access_user),
+    current_user: User = Depends(get_current_user_flexible),
     db: AsyncSession = Depends(get_db)
 ):
     # [SECURITY] Validate Ownership
@@ -295,7 +278,7 @@ async def view_thumbnail(
     agent_id: str,
     date: str,
     filename: str,
-    current_user: User = Depends(get_image_access_user),
+    current_user: User = Depends(get_current_user_flexible),
     db: AsyncSession = Depends(get_db)
 ):
     # [SECURITY] Same as view_screenshot

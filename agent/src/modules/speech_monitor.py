@@ -73,7 +73,7 @@ class SpeechMonitor:
                 # Using the generic upload endpoint or specific speech one
                 url = f"{self.backend_url}/api/speech/upload/{self.agent_id}"
                 
-                requests.post(url, files=files, headers=headers, verify=False, timeout=30)
+                requests.post(url, files=files, headers=headers, verify=True, timeout=30)
                 # print(f"[Speech] Uploaded {filepath}")
         except Exception as e:
             print(f"[Speech] Upload Failed: {e}")

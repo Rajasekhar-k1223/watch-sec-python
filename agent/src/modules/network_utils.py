@@ -3,20 +3,29 @@ import platform # type: ignore
 import requests # type: ignore
 
 class NetworkUtils:
-    @staticmethod
-    def get_public_ip():
+    _public_ip_cache = (None, 0) # (IP, Timestamp)
+
+    @classmethod
+    def get_public_ip(cls):
+        import time # type: ignore
+        now = time.time()
+        if cls._public_ip_cache[0] and (now - cls._public_ip_cache[1] < 600):
+            return cls._public_ip_cache[0]
+
         try:
-            # Multi-provider fallback for public IP
             providers = ["https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"]
             for url in providers:
                 try:
-                    resp = requests.get(url, timeout=2)
+                    # [v1.8.29] Security Hardening: SSL verification ENABLED for external lookups
+                    resp = requests.get(url, timeout=5, verify=True)
                     if resp.status_code == 200:
-                        return resp.text.strip()
+                        ip = resp.text.strip()
+                        cls._public_ip_cache = (ip, now)
+                        return ip
                 except: continue
-            return "Unknown"
+            return cls._public_ip_cache[0] or "Unknown"
         except:
-            return "Unknown"
+            return cls._public_ip_cache[0] or "Unknown"
 
     @staticmethod
     def get_wifi_ssid():

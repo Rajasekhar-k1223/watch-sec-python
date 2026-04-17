@@ -2,6 +2,7 @@ import fastapi # type: ignore # pyre-ignore
 from fastapi import APIRouter, Depends, HTTPException # type: ignore # pyre-ignore
 from motor.motor_asyncio import AsyncIOMotorClient # type: ignore # pyre-ignore
 from typing import List, Dict, Any, Optional # type: ignore
+from datetime import datetime, timedelta # type: ignore
 
 from ..db.session import get_mongo_db # type: ignore
 from .deps import get_current_user # type: ignore
@@ -137,32 +138,45 @@ async def get_productivity_summary(
 
 @router.get("/pulse")
 async def get_pulse_summary(
+    tenantId: Optional[int] = None,
     days: int = 7,
     mongo: AsyncIOMotorClient = Depends(get_mongo_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Tenant Scope
+    # Tenant Scope & RBAC
     tenant_id = current_user.TenantId
+    if current_user.Role == "SuperAdmin" and tenantId is not None:
+        tenant_id = tenantId
     
-    # 1. Fetch ALL agents for this tenant
-    # In a real scenario, we'd filter logs by AgentId belonging to TenantId
-    # For now, let's query the 'agents' SQL table first to get IDs?
-    # Or rely on the fact that we can query logs. But logs might not have TenantId indexed.
-    # We should fetch active agents from SQL first.
+    if not tenant_id and current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Tenant context missing")
     
-    # Simplified: Query logs where AgentId is in (list of tenant agents)
-    # OR, just query logs if we add TenantId to logs (Better practice).
-    # Assuming logs DON'T have TenantId, we must get AgentIds.
+    # 1. Fetch ALL agents for this tenant to ensure isolation
+    from ..db.session import AsyncSessionLocal # type: ignore
+    from ..db.models import Agent # type: ignore
+    from sqlalchemy.future import select # type: ignore
     
-    # Let's mock a "Global" view for now if TenantId is missing, or fetch all.
-    # To be safe, let's just use the same logic as above but aggregate ALL logs.
-    
+    async with AsyncSessionLocal() as sql_db:
+        res = await sql_db.execute(select(Agent.AgentId).where(Agent.TenantId == tenant_id))
+        agent_ids = [row[0] for row in res.all()]
+
+    if not agent_ids:
+        return {
+            "companyScore": 0,
+            "totalHoursLogged": 0,
+            "activeAgents": 0,
+            "retention": 100
+        }
+
     db = mongo["watchsec"]
     collection = db["activity"]
     
     start_date = datetime.utcnow() - timedelta(days=days)
     pipeline = [
-        {"$match": {"Timestamp": {"$gte": start_date}}},
+        {"$match": {
+            "Timestamp": {"$gte": start_date},
+            "AgentId": {"$in": agent_ids}
+        }},
         {"$group": {
             "_id": "$ProcessName",
             "total_duration": {"$sum": "$DurationSeconds"},
@@ -177,7 +191,10 @@ async def get_pulse_summary(
     
     # New Pipeline for Efficiency Score
     pipeline_stats = [
-        {"$match": {"Timestamp": {"$gte": start_date}}},
+        {"$match": {
+            "Timestamp": {"$gte": start_date},
+            "AgentId": {"$in": agent_ids}
+        }},
         {"$group": {
             "_id": None,
             "total_duration": {"$sum": "$DurationSeconds"},

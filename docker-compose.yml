@@ -12,11 +12,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@watch-sec-mongo:27017/appdb?authSource=admin
-      - REDIS_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:monitorix2025@watch-sec-redis:6379/0
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - REDIS_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_BROKER_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -36,11 +36,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:Mongo!2025#Secure@watch-sec-mongo:27017/appdb?authSource=admin
-      - REDIS_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:monitorix2025@watch-sec-redis:6379/0
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - REDIS_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_BROKER_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -69,11 +69,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:monitorix2025@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:monitorix2025@watch-sec-mongo:27017/appdb?authSource=admin
-      - REDIS_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://:monitorix2025@watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:monitorix2025@watch-sec-redis:6379/0
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - REDIS_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_BROKER_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
       - ./backend:/app

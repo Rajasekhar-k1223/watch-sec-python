@@ -7,6 +7,7 @@ import logging # type: ignore
 import pyperclip # type: ignore
 from datetime import datetime # type: ignore
 from typing import Optional # type: ignore
+from agent_core.privacy_utils import PrivacyRedactor
 
 class ClipboardMonitor:
     def __init__(self, agent_id, api_key, backend_url, data_queue=None):
@@ -41,16 +42,26 @@ class ClipboardMonitor:
             self._thread.join(timeout=2) # type: ignore
             
     def _loop(self):
+        import hashlib
+        self.last_content_hash = ""
+        
         while self.running:
             try:
                 try:
-                    content = pyperclip.paste()
+                    raw_content = pyperclip.paste()
                 except:
-                    content = ""
+                    raw_content = ""
 
-                if content and content != self.last_content:
-                    self.last_content = content
-                    self._analyze_and_report(content)
+                if raw_content:
+                    # [v1.8.37] Forensic Memory Hardening: Use hash to detect changes
+                    current_hash = hashlib.sha256(raw_content.encode('utf-8', errors='replace')).hexdigest()
+                    
+                    if current_hash != self.last_content_hash:
+                        self.last_content_hash = current_hash
+                        
+                        # [v1.8.37] Privacy: Redact IMMEDIATELY at source
+                        redacted_content = PrivacyRedactor.redact_text(raw_content)
+                        self._analyze_and_report(redacted_content)
                 
             except Exception as e:
                 self.logger.error(f"Clipboard Loop Error: {e}")
@@ -72,10 +83,11 @@ class ClipboardMonitor:
 
         event_data = {
             "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
+            # [v1.8.38] Telemetry Stealth: Key suppression enforced.
+            # Signing handled by DataQueue.
             "ActivityType": "Clipboard",
             "ProcessName": "Clipboard",
-            "WindowTitle": preview, 
+            "WindowTitle": PrivacyRedactor.redact_text(preview), 
             "RiskLevel": risk_level,
             "Category": f"DLP:{','.join(flagged_types)}" if flagged_types else "General",
             "IdleSeconds": 0,

@@ -5,28 +5,47 @@ import logging # type: ignore
 import ctypes # type: ignore
 import sys # type: ignore
 import asyncio # type: ignore
+import base64
+import hmac
+import hashlib
+import json
+from agent_core.privacy_utils import PrivacyRedactor
 
 def log_remediation(msg):
+    # [v1.8.32] Privacy: Sanitize remediation logs
+    sanitized_msg = PrivacyRedactor.redact_text(msg)
     with open("remediation.log", "a") as f:
         from datetime import datetime # type: ignore
-        f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+        f.write(f"[{datetime.now().isoformat()}] {sanitized_msg}\n")
 
 class RemediationHandler:
-    def __init__(self, agent_id):
+    def __init__(self, agent_id, api_key=None, machine_secret=None, controllers=None):
         self.agent_id = agent_id
+        self.api_key = api_key
+        self.machine_secret = machine_secret
+        self.controllers = controllers or {}
 
     async def handle_command(self, data):
         """
         Expected data: 
         {
-            "action": "KillProcess" | "LockSession" | "SecurityPopup", 
-            "params": {"process_name": "chrome.exe", "message": "..."}, 
-            "policy_name": "..."
+            "action": "...", 
+            "params": {...}, 
+            "policy_name": "...",
+            "signature": "hmac_sha256_here",
+            "timestamp": "iso_format"
         }
         """
         action = data.get("action")
         params = data.get("params", {})
         policy = data.get("policy_name", "Unknown Policy")
+        signature = data.get("signature")
+        timestamp = data.get("timestamp")
+
+        # [v1.8.37] Command Sovereignty: Per-Message Signature Verification
+        if not self._verify_signature(data, signature):
+            log_remediation(f"SECURITY VIOLATION: Unsigned or invalid command rejected: {action} (Policy: {policy})")
+            return
 
         log_remediation(f"Remediation TRIGGERED: {action} (Policy: {policy})")
 
@@ -36,12 +55,83 @@ class RemediationHandler:
             await self._lock_session()
         elif action == "SecurityPopup":
             await self._show_popup(params.get("message", f"Security violation detected by policy: {policy}"))
+        elif action == "IsolateNetwork":
+            await self._isolate_network()
+        elif action == "WIPE_AGENT":
+            await self._self_destruct()
         else:
             log_remediation(f"Unknown remediation action received: {action}")
+
+    def _verify_signature(self, data, signature):
+        """[v1.8.37] Strict Sovereignty: Verifies HMAC-SHA256 signature."""
+        if not self.api_key or not self.machine_secret:
+            # [SECURITY] Deny-by-Default: If keys aren't loaded, remediation is locked.
+            # This prevents bypasses during early boot or initialization failure.
+            log_remediation("CRITICAL ERROR: Keys missing for signature verification. Denying command.")
+            return False 
+        
+        if not signature: 
+            return False
+
+        try:
+            # Reconstruct the message base for signing
+            # We sign the action, params, and timestamp to prevent replay/substitution
+            msg_parts = [
+                str(data.get("action", "")),
+                json.dumps(data.get("params", {}), sort_keys=True),
+                str(data.get("timestamp", ""))
+            ]
+            message = "|".join(msg_parts).encode('utf-8')
+            
+            # Derive HMAC Key
+            key = hashlib.sha256(self.api_key.encode() + self.machine_secret).digest()
+            
+            # Calculate expected signature
+            expected = hmac.new(key, message, hashlib.sha256).hexdigest()
+            
+            return hmac.compare_digest(expected, signature)
+        except Exception as e:
+            log_remediation(f"Signature Verification Error: {e}")
+            return False
+
+    async def _self_destruct(self):
+        """Remotely triggered forensic cleanup and uninstallation."""
+        try:
+            log_remediation("CRITICAL: Self-Destruct Command (WIPE_AGENT) received!")
+            import sys # type: ignore
+            main_mod = sys.modules.get("__main__")
+            if main_mod and hasattr(main_mod, 'tamper_mon') and main_mod.tamper_mon:
+                main_mod.tamper_mon.secure_panic_wipe(["config.json", "events.db", "events_user.db"])
+            else:
+                # Fallback simple delete
+                for f in ["config.json", "events.db", "events_user.db"]:
+                    try: os.remove(f)
+                    except: pass
+                os._exit(0)
+        except Exception as e:
+            log_remediation(f"Self-destruct failed: {e}")
 
     async def _kill_process(self, process_name):
         if not process_name:
             log_remediation("KillProcess failed: No process_name provided.")
+            return
+
+        # [v1.8.37] Remediation Command Sovereignty: Input Validation
+        import re
+        # Only allow alphanumeric, dots, dashes, and underscores. Block shell metacharacters.
+        if not re.match(r"^[a-zA-Z0-9\._\- \(\)]+$", process_name):
+            log_remediation(f"SECURITY VIOLATION: Blocked malformed process name (potential injection): {process_name}")
+            return
+
+        # [v1.8.37] Remediation Safeguard: Protected Process Shield
+        protected = {
+            "lsass.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe",
+            "smss.exe", "explorer.exe", "init", "systemd", "btm-agent", "monitorix-agent",
+            "avp.exe", "msmpeng.exe", "nssm.exe"
+        }
+        
+        if process_name.lower() in protected:
+            log_remediation(f"SECURITY ALERT: Blocked attempt to kill protected process: {process_name}")
             return
         
         try:
@@ -87,14 +177,52 @@ class RemediationHandler:
         try:
             log_remediation(f"Executing SecurityPopup: {message}")
             if platform.system() == "Windows":
-                # Using PowerShell to display a message box without extra dependencies
-                ps_cmd = (
-                    f"Add-Type -AssemblyName System.Windows.Forms; "
-                    f"[System.Windows.Forms.MessageBox]::Show('{message}', 'Monitorix Security Alert', 'OK', 'Warning')"
+                # [v1.8.32] ANTI-RCE: Using Base64 EncodedCommand to prevent PowerShell injection
+                # We escape single quotes for the PS string, then wrap the whole thing in Base64.
+                safe_msg = message.replace("'", "''")
+                script = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    f"[System.Windows.Forms.MessageBox]::Show('{safe_msg}', 'Monitorix Security Alert', 'OK', 'Warning')"
                 )
-                subprocess.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", ps_cmd])
+                encoded_script = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+                subprocess.Popen(["powershell", "-WindowStyle", "Hidden", "-EncodedCommand", encoded_script])
             else:
                 # Linux: notify-send is standard on most desktops
                 subprocess.run(["notify-send", "-u", "critical", "Monitorix Security Alert", message], check=False)
         except Exception as e:
             log_remediation(f"Error displaying SecurityPopup: {e}")
+
+    async def _isolate_network(self):
+        """Emergency Kill-Switch: Disconnects the machine."""
+        try:
+            log_remediation("Executing IsolateNetwork remediation...")
+            # 1. Try via injected controllers (Recommended)
+            if self.controllers.get("net"):
+                ctrl = self.controllers["net"]
+                # If it's a callable (lambda), call it to get the current instance
+                if callable(ctrl):
+                    ctrl = ctrl()
+                if ctrl and hasattr(ctrl, 'isolate_network'):
+                    ctrl.isolate_network()
+                    return
+
+            # 2. Try via global module access (Fallback)
+            try:
+                import sys # type: ignore
+                main_mod = sys.modules.get("__main__")
+                if main_mod and hasattr(main_mod, 'net_mon') and main_mod.net_mon:
+                    main_mod.net_mon.isolate_network()
+                    return
+                
+                # Fallback initialize if not running (manual invoke)
+                from modules.network_monitor import NetworkMonitor # type: ignore
+                nm = NetworkMonitor("REMEDIATION", "NONE", "NONE")
+                nm.isolate_network()
+            except Exception as ie:
+                log_remediation(f"Isolation module access failed: {ie}")
+                # Last resort: try to just run a raw command
+                if platform.system() == "Linux":
+                   # [v1.8.32] Security: Remove shell=True
+                   subprocess.run(["ip", "link", "set", "dev", "eth0", "down"], check=False)
+        except Exception as e:
+            log_remediation(f"Error executing IsolateNetwork: {e}")

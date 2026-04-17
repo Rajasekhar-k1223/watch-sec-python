@@ -18,10 +18,13 @@ class CreateTenantDto(BaseModel):
 
 class MaintenanceWindowDto(BaseModel):
     enabled: bool = False
+    mode: str = "automatic" # automatic, manual
     days: List[int] = [0, 1, 2, 3, 4, 5, 6] # 0=Monday
     startTime: str = "00:00"
     endTime: str = "23:59"
     timezone: str = "UTC"
+    oneTimeDate: Optional[str] = None # ISO Format YYYY-MM-DD
+    oneTimeEnabled: bool = False
 
 @router.get("")
 @router.get("/", include_in_schema=False)
@@ -131,10 +134,13 @@ async def get_tenant_maintenance_window(
         # Ensure default values if empty
         return {
             "enabled": data.get("enabled", False),
+            "mode": data.get("mode", "automatic"),
             "days": data.get("days", [0, 1, 2, 3, 4, 5, 6]),
             "startTime": data.get("startTime", "00:00"),
             "endTime": data.get("endTime", "23:59"),
-            "timezone": data.get("timezone", "UTC")
+            "timezone": data.get("timezone", "UTC"),
+            "oneTimeDate": data.get("oneTimeDate", None),
+            "oneTimeEnabled": data.get("oneTimeEnabled", False)
         }
     except:
         return MaintenanceWindowDto()

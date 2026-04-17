@@ -33,6 +33,54 @@ if not os.path.exists(PAYLOAD_PATH):
     log(f"CRITICAL: Payload not found at {PAYLOAD_PATH}")
     sys.exit(1)
 
+import hashlib
+import ecdsa
+
+# [v1.8.37] Ultimate Supply Chain Sovereignty: Root-of-Trust Public Key
+# This key is the hardcoded anchor for all bootable agent payloads.
+MASTER_PUBLIC_KEY_HEX = "dd6b5d79b359fb8309b1d211fc7fa0eeca6346bd9fc9bb60adc20119778308dfcefeca944a7157c30aab6a88d9f0bda998666dc03a68aa5bc1d3d0d73ae7dbe1"
+
+def verify_payload_integrity(path):
+    """[v1.8.37] Trusted Boot: Asymmetric Digital Signature Verification (ECDSA)."""
+    sig_path = path + ".sig"
+    if not os.path.exists(sig_path):
+        log("CRITICAL: Cryptographic Signature Manifest missing. Trusted Boot chain broken.")
+        return False
+    
+    try:
+        # 1. Read Payload
+        with open(path, "rb") as f:
+            data = f.read()
+        
+        # 2. Read Signature (Base64 or Hex)
+        with open(sig_path, "r") as f:
+            signature_hex = f.read().strip()
+        
+        # 3. Reconstruct Public Key Anchor
+        vk = ecdsa.VerifyingKey.from_string(
+            bytes.fromhex(MASTER_PUBLIC_KEY_HEX), 
+            curve=ecdsa.SECP256k1
+        )
+        
+        # 4. Verify Digital Signature
+        # [v1.8.37] Hard Lockdown: Only binaries signed by HQ can boot.
+        try:
+            vk.verify(bytes.fromhex(signature_hex), data, hashfunc=hashlib.sha256)
+            log("Trusted Boot: Cryptographic Signature VERIFIED (Asymmetric ECDSA/SECP256k1).")
+            return True
+        except ecdsa.BadSignatureError:
+            log("CRITICAL: Cryptographic Signature INVALID! Binary supply chain violation.")
+            return False
+            
+    except Exception as e:
+        log(f"Asymmetric Boot Failure: {e}")
+        return False
+
+# Enforce mandatory verification
+if not verify_payload_integrity(PAYLOAD_PATH):
+    log("SYSTEM HALT: Trusted Boot chain verification failed.")
+    sys.exit(1)
+
 try:
     # 3. Load Bundle
     with open(PAYLOAD_PATH, "r") as f:
