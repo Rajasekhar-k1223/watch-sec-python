@@ -129,6 +129,7 @@ class Agent(Base):
     LastUpdateAttempt = Column(DateTime, nullable=True)
     UpdateFailureReason = Column(Text, nullable=True)
     MachineId = Column(String(255), nullable=True)
+    AutoPatchEnabled = Column(Boolean, default=False)
 
 class AgentReportEntity(Base):
     __tablename__ = "AgentReports"

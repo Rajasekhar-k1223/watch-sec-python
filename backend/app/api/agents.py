@@ -26,6 +26,7 @@ router = APIRouter()
 from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, LATEST_AGENT_VERSION # type: ignore
 from ..core import trial_manager # type: ignore
 from ..tasks.security import scan_vulnerabilities_background # type: ignore
+from ..tasks.general import staggered_bulk_patch # type: ignore
 
 def verify_feature_access(tenant_plan: str, feature_key: str):
     plan_level = PLAN_LEVELS.get(tenant_plan, 1) # Default to Starter
@@ -514,6 +515,9 @@ async def agent_heartbeat(
         # 2. Find Agent
         result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
         agent = result_agent.scalars().first()
+        print(f"[DEBUG] Heartbeat lookup for {payload.AgentId}: {'FOUND' if agent else 'NOT FOUND'}")
+        if agent:
+             print(f"[DEBUG] Agent {agent.AgentId} current LastSeen: {agent.LastSeen}")
 
         # [SECURITY FIX] v1.8.28 - Verify Agent belongs to this Tenant
         if agent and agent.TenantId != tenant.Id:
@@ -633,6 +637,7 @@ async def agent_heartbeat(
                 except: pass
                 
                 auto_patch = data_mw.get("mode", "automatic") == "automatic"
+                print(f"[DEBUG] Auto-patch mode: {auto_patch}")
                 
                 if agent.Version != LATEST_AGENT_VERSION:
                     if agent.TargetVersion != LATEST_AGENT_VERSION:
@@ -668,6 +673,8 @@ async def agent_heartbeat(
                  print(f"[SECURITY ALERT] Tenant Conflict: Agent {agent.AgentId} claimed Tenant {agent.TenantId} but API Key is for {tenant.Id}")
                  raise HTTPException(status_code=403, detail="Agent does not belong to this tenant")
             
+            print(f"[DEBUG] Tenant check passed for {agent.AgentId}")
+            
             # Inventory & Vulnerability Scanning
             if payload.InstalledSoftwareJson and len(payload.InstalledSoftwareJson) > 2:
                 # [v1.8.16] Aggressive truncation to 64KB for safety (fits in all TEXT types)
@@ -682,6 +689,7 @@ async def agent_heartbeat(
                     from ..tasks.security import scan_vulnerabilities_background
                     
                     # Asyncify the synchronous kombu/celery connection attempt
+                    print(f"[DEBUG] Triggering Celery task for {agent.AgentId}")
                     # Use to_thread to offload the potentially blocking .delay() call
                     # [v1.8.42] Respect Maintenance Window for Scans
                     if is_in_maintenance_window(tenant):
@@ -708,6 +716,8 @@ async def agent_heartbeat(
         # --- CRITICAL: Ensure agent is not None before proceeding ---
         if not agent:
              raise HTTPException(status_code=500, detail="Internal Error: Failed to retrieve or create agent record.")
+
+        print(f"[DEBUG] Proceeding to policy lookup for {agent.AgentId}")
 
         # 3. Resolve Configuration (Bandwidth & Screenshot Interval)
         bandwidth_config = tenant.bandwidth_config or {}
@@ -743,8 +753,8 @@ async def agent_heartbeat(
         update_required = False
         update_url = ""
         if agent.Version != agent.TargetVersion:
-            # [v1.8.42] Bypass window if update was explicitly triggered via 'patch-now' (pending_manual_push)
-            if is_in_maintenance_window(tenant) or agent.UpdateStatus == "pending_manual_push":
+            # [v1.8.58] Manual-only updates to prevent server saturation
+            if agent.UpdateStatus == "pending_manual_push":
                 update_required = True
                 backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
                 # --- v1.8.41: Precision Architecture Detection ---
@@ -826,6 +836,9 @@ async def agent_heartbeat(
                             # HMAC Key derivation same as agent: SHA256(ApiKey + MachineSecret)
                             hmac_key = hashlib.sha256(tenant.ApiKey.encode() + m_secret.encode()).digest()
                             update_signature = hmac.new(hmac_key, update_hash.encode(), hashlib.sha256).hexdigest()
+                            
+                            # [v1.8.59] De-duplication: Move to dispatching state to avoid re-calculation
+                            agent.UpdateStatus = "dispatching_update"
                     else:
                         print(f"[PATCH] Binary not found at {bin_path}. Handshake will fail on agent.")
                 except Exception as e:
@@ -879,8 +892,11 @@ async def agent_heartbeat(
         db.add(new_report)
         # SINGLE COMMIT: agent update + report insert + IsPendingUninstall clear in one round-trip
         try:
+            print(f"[DEBUG] Attempting final commit for {agent.AgentId}...")
             await db.commit()
+            print(f"[DEBUG] Final commit SUCCESS for {agent.AgentId}")
         except Exception as e:
+            print(f"[DEBUG] Final commit FAILED for {agent.AgentId}: {e}")
             await db.rollback()
             # Non-blocking crash log write
             error_log = f"[HEARTBEAT RETRY] Data truncation issue for {agent.AgentId}: {e}\n"
@@ -903,7 +919,9 @@ async def agent_heartbeat(
                 'agentId': agent.AgentId, 'hostname': agent.Hostname, 'status': 'Online',
                 'version': agent.Version, 'targetVersion': agent.TargetVersion,
                 'cpuUsage': payload.CpuUsage, 'memoryUsage': payload.MemoryUsage,
-                'powerStatusJson': agent.PowerStatusJson, 'timestamp': report_ts.isoformat()
+                'powerStatusJson': agent.PowerStatusJson,
+                'latitude': agent.Latitude, 'longitude': agent.Longitude, 'country': agent.Country,
+                'timestamp': report_ts.isoformat()
             }, room=f"tenant_{tenant.Id}")
         except: pass
         
@@ -1742,3 +1760,44 @@ async def patch_now(
     await db.commit()
     
     return {"status": "success", "TargetVersion": target, "Message": "Agent will update on next heartbeat."}
+
+@router.post("/patch-batch")
+async def patch_agents_batch(
+    agent_ids: List[str],
+    batch_size: int = 10,
+    delay: int = 60,
+    current_user: User = Depends(get_current_user), 
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Administrator Utility: Triggers a staggered rolling update for a list of agents.
+    Useful for larger deployments (300+ agents) to avoid bandwidth spikes.
+    """
+    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
+         raise HTTPException(status_code=403, detail="Not authorized")
+
+    if not agent_ids:
+         raise HTTPException(status_code=400, detail="No Agent IDs provided.")
+
+    # [v1.8.60] Sovereignty Check: Ensure user only patches their own agents
+    if current_user.Role != "SuperAdmin":
+        check_query = select(Agent.AgentId).where(
+            Agent.AgentId.in_(agent_ids),
+            Agent.TenantId != current_user.TenantId
+        )
+        res = await db.execute(check_query)
+        unauthorized = res.scalars().all()
+        if unauthorized:
+             raise HTTPException(
+                 status_code=403, 
+                 detail=f"Security Violation: Cross-tenant batch patch blocked for {len(unauthorized)} IDs."
+             )
+
+    # Launch Celery Background Task
+    staggered_bulk_patch.delay(agent_ids, batch_size=batch_size, delay=delay)
+    
+    return {
+        "status": "success", 
+        "message": f"Staggered rolling update for {len(agent_ids)} agents dispatched to background worker.",
+        "parameters": {"batch_size": batch_size, "delay_seconds": delay}
+    }

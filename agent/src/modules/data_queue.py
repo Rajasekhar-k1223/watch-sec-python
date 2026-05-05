@@ -126,7 +126,7 @@ class DataQueue:
                     os.makedirs(db_dir, mode=0o700, exist_ok=True)
                 except: pass
 
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=5.0) as conn:
                 # [v1.8.37] Hardening: Restrict file permissions immediately
                 try: os.chmod(self.db_path, 0o600)
                 except: pass
@@ -134,8 +134,7 @@ class DataQueue:
                 # [v1.8.26] Enable Write-Ahead Logging for better concurrency
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
-                # [v1.8.37] Fortress Hardening: Exclusive File Locking
-                conn.execute("PRAGMA locking_mode=EXCLUSIVE")
+                # [v1.8.37] Optimized Concurrency: Removed EXCLUSIVE locking for multi-process sharing
                 # [v1.8.27] Memory Optimizations
                 conn.execute("PRAGMA cache_size=500") 
                 conn.execute("PRAGMA temp_store=MEMORY") 

@@ -134,35 +134,70 @@ from agent_core import AntiTamperMonitor, RemediationHandler, BandwidthManager, 
 from agent_core.privacy_utils import PrivacyRedactor
 from modules.audit_logger import AuditLogger # type: ignore
 
-# Milestone Version: 1.8.15
-AGENT_VERSION = "v1.8.38" # [NEW] v1.8.38 - Stealth Protocol Unified
+# Milestone Version: 1.8.46
+AGENT_VERSION = "v1.8.62"
 IS_WINDOWS = platform.system() == "Windows"
 IS_UPDATING = False # Global guard to prevent multiple update starts
-sovereign_mmap = None # [v1.8.50]
+sovereign_mmap = None
+
+# --- Global Logging & Identity [v1.8.38] ---
+audit_logger = None
+try:
+    current_user = getpass.getuser()
+except:
+    current_user = "Unknown"
+
+LOG_FILE = os.path.join(BASE_DIR, "monitorix_test.log")
+if platform.system() == "Windows":
+    if current_user.upper() == "SYSTEM" or current_user.endswith("$"): 
+        LOG_FILE = os.path.join(BASE_DIR, "monitorix_service.log")
+
+def log_to_file(msg):
+    """Logs a message with a timestamp to a local file, ensuring all PII is redacted."""
+    try:
+        # [v1.8.29] Security: Redact PII before writing to disk
+        sanitized_msg = PrivacyRedactor.redact_text(str(msg))
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_line = f"[{timestamp}] {sanitized_msg}"
+        
+        # Write to primary log
+        with open(LOG_FILE, "a+", encoding='utf-8') as f:
+            f.write(log_line + "\n")
+            f.flush()
+        
+        # Audit critical events
+        if audit_logger:
+            if any(k in str(msg) for k in ["Started", "Stopped", "CRITICAL", "ERROR", "FATAL", "Update", "Policy"]):
+                if "Heartbeat" not in str(msg):
+                    audit_logger.log("System", msg)
+    except:
+        try:
+            fallback_log = os.path.join(AGENT_LOGS_DIR, "fallback_" + os.path.basename(LOG_FILE))
+            with open(fallback_log, "a+", encoding='utf-8') as f:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{ts}] (FALLBACK) {msg}\n")
+                f.flush()
+        except: pass
+    try: print(msg)
+    except: pass
+
+# --- Sovereign Process Protection ---
 
 # [v1.8.50] Sovereign Process Protection: Multi-Platform "Hard-Lock"
 def set_process_critical():
     """System-level lock to prevent termination across all platforms."""
     sys_p = platform.system()
     
-    # 1. Windows: Native BSOD-on-kill
+    # 1. Windows: Native Resilience
     if sys_p == "Windows":
         try:
-            import ctypes
-            BREAK_ON_TERMINATION = 0x1D
-            is_critical = ctypes.c_int(1)
-            res = ctypes.windll.ntdll.NtSetInformationProcess(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                BREAK_ON_TERMINATION,
-                ctypes.byref(is_critical),
-                ctypes.sizeof(is_critical)
-            )
-            if res == 0:
-                log_to_file("[SECURITY] Sovereign Mode (Win): BSOD-on-kill engaged.")
-            else:
-                log_to_file(f"[SECURITY] Windows Sovereign Mode failed (NTSTATUS: {hex(res)})")
+            # [v1.8.44] CRITICAL SAFETY: Removed NtSetInformationProcess (ProcessBreakOnTermination)
+            # This feature caused BSOD (Stop: 0xEF) if the app exited.
+            # We now keep session-level monitoring without kernel-level critical bit.
+            log_to_file("[SECURITY] Resilience Mode (Win): Monitoring active.")
         except Exception as e:
-            log_to_file(f"[SECURITY] Windows Sovereign Exception: {e}")
+            log_to_file(f"[SECURITY] Windows resilience initialization error: {e}")
 
     # 2. Linux: Enable Kernel SysRq Panic
     elif sys_p == "Linux":
@@ -261,7 +296,6 @@ except ImportError:
 
 # --- Global Module Managers (Stubs) ---
 bandwidth_manager = None
-audit_logger = None
 data_queue = None
 remediation = None
 shadow_mon = None
@@ -339,8 +373,17 @@ def get_active_session_id():
 def get_hardware_id():
     """Generates a stable, hardware-based unique ID for the device."""
     try:
-        # 1. Try Motherboard Serial Number (Windows)
+        # 1. Try Machine Guidance (Windows Registry - Most Stable)
         if platform.system() == "Windows":
+            try:
+                import winreg # type: ignore
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, winreg.KEY_READ | 0x0100) as k:
+                    guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+                    if guid:
+                        return hashlib.md5(str(guid).encode()).hexdigest()[:8].upper()
+            except: pass
+
+            # 1b. Fallback to Motherboard Serial Number
             try:
                 cmd = "wmic bios get serialnumber"
                 output = subprocess.check_output(cmd, shell=True, timeout=5).decode().split('\n')
@@ -595,7 +638,32 @@ def save_config(new_config):
             with os.fdopen(fd, 'wb') as f_out:
                 f_out.write(vault_payload)
             os.chmod(temp_path, 0o600)
-            os.replace(temp_path, CONFIG_PATH)
+            
+            on_disk_hardener = None
+            # [STABILITY] Relax Sovereign Lock before replacing critical files
+            if 'tamper_mon' in globals() and tamper_mon:
+                try: tamper_mon.relax_protection()
+                except: pass
+            else:
+                # [v1.8.42] Autonomous Recovery: Handle permissions before tamper_mon is up
+                try:
+                    from agent_core.filesystem_hardening import FilesystemHardener
+                    on_disk_hardener = FilesystemHardener(BASE_DIR)
+                    on_disk_hardener.relax_immutability()
+                except: pass
+
+            try:
+                os.replace(temp_path, CONFIG_PATH)
+            finally:
+                # Always re-enforce after attempt
+                if 'tamper_mon' in globals() and tamper_mon:
+                    try: tamper_mon.enforce_protection()
+                    except: pass
+                elif on_disk_hardener:
+                    # Best effort re-lock if we were the ones who unlocked it
+                    try: on_disk_hardener.enforce_immutability()
+                    except: pass
+
             log_to_file("Vault Hardened: config.json encrypted with AES-256-GCM.")
         except Exception as e:
             if os.path.exists(temp_path): os.remove(temp_path)
@@ -675,47 +743,6 @@ def sync_config_to_file(current_config, update_keys):
         log_to_file("[Policy] Persistent configuration updated.")
 
 
-# Unique log file per user/session context
-current_user = getpass.getuser()
-LOG_FILE = os.path.join(BASE_DIR, f"monitorix_test.log")
-
-# [FIX] Force Windows Service (SYSTEM) to use a distinct log so User Agent can coexist
-if platform.system() == "Windows":
-    # Check for Service Environment (Session 0 or SYSTEM user)
-    if current_user.upper() == "SYSTEM" or current_user.endswith("$"): 
-            LOG_FILE = os.path.join(BASE_DIR, "monitorix_service.log")
-
-def log_to_file(msg):
-    """Logs a message with a timestamp to a local file, ensuring all PII is redacted."""
-    try:
-        # [v1.8.29] Security: Redact PII before writing to disk
-        sanitized_msg = PrivacyRedactor.redact_text(str(msg))
-        
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_line = f"[{timestamp}] {sanitized_msg}"
-        
-        # Write to primary log
-        with open(LOG_FILE, "a+", encoding='utf-8') as f:
-            f.write(log_line + "\n")
-            f.flush()
-        
-        # Audit critical events
-        if audit_logger:
-            # Simple heuristic to identify audit-worthy events
-            if any(k in msg for k in ["Started", "Stopped", "CRITICAL", "ERROR", "FATAL", "Update", "Policy"]):
-                if "Heartbeat" not in msg: # Ignore heartbeat noise
-                    audit_logger.log("System", msg)
-    except:
-        # Fallback to Secure Logs folder if primary is unwritable
-        try:
-            fallback_log = os.path.join(AGENT_LOGS_DIR, "fallback_" + os.path.basename(LOG_FILE))
-            with open(fallback_log, "a+", encoding='utf-8') as f:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"[{timestamp}] (FALLBACK) {msg}\n")
-                f.flush()
-        except: pass
-    try: print(msg)
-    except: pass
 
 log_to_file(f"--- Monitorix Agent v{AGENT_VERSION} Booting ---")
 log_to_file(f"User Context: {current_user}")
@@ -753,6 +780,7 @@ def acquire_lock():
     
     lock_file = primary_lock_file
     is_system = current_user.upper() == "SYSTEM" or current_user.endswith("$")
+    is_child = "--child" in sys.argv
 
     try:
         def remove_lock():
@@ -774,6 +802,10 @@ def acquire_lock():
                         content = f.read().strip()
                         if content:
                             old_pid = int(content)
+                            if old_pid == os.getpid():
+                                # [v1.8.48] Already have the lock (e.g. re-entry or stale self-record)
+                                return True
+                                
                             if psutil.pid_exists(old_pid):
                                 old_user = "Unknown"
                                 try:
@@ -782,6 +814,10 @@ def acquire_lock():
                                     is_old_system = "SYSTEM" in old_user.upper() or old_user.endswith("$")
                                     
                                     if (not is_system and is_old_system) or (current_user == old_user):
+                                        if is_child:
+                                            # [STABILITY] Allow child to proceed as it is legit offspring of the lock holder
+                                            # [v1.8.48] DO NOT return from here, we must prevent the child from writing to the file later.
+                                            return "CHILD_STABILITY"
                                         log_to_file(f"Terminating old instance (PID {old_pid}).")
                                         proc.terminate()
                                         # Wait a bit for termination
@@ -802,20 +838,92 @@ def acquire_lock():
                 except Exception as e:
                     log_to_file(f"Lock Check Error: {e}")
             
-            # 2. Acquire New Lock
+            # --- Acquire New Lock ---
+            if is_child:
+                # [v1.8.48] The agent child MUST NEVER write to the lock file.
+                # Ownership belongs exclusively to the Watchdog parent.
+                return True
+
             try:
                 with open(target_lock, 'w') as f:
                     f.write(str(os.getpid()))
+                return True
             except Exception as e:
-                log_to_file(f"Critical: Failed to write lock file {target_lock}: {e}")
-                sys.exit(1)
+                log_to_file(f"Warning: Could not write lock file {target_lock}: {e}")
+                return False
             lock_file = primary_lock_file
 
-        handle_existing_instance(primary_lock_file)
-        handle_existing_instance(fallback_lock_file)
+        # [v1.8.61] Permission-Aware Locking: If Program Files is read-only for current user, skip it.
+        primary_success = False
+        if os.access(BASE_DIR, os.W_OK):
+            primary_success = handle_existing_instance(primary_lock_file)
+            
+        if not primary_success:
+            handle_existing_instance(fallback_lock_file)
 
     except Exception as e:
         log_to_file(f"Lock Error: {e}")
+
+# --- [NEW v1.8.54] Windows SCM Compliance & Heartbeat ---
+_scm_handler_ref = None
+
+class WindowsServiceManager:
+    """Handles native communication with Windows Service Control Manager."""
+    @staticmethod
+    def notify_started():
+        global _scm_handler_ref
+        if platform.system() != "Windows" or not (current_user.upper() == "SYSTEM" or current_user.endswith("$")):
+            return
+            
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # Service types
+            SERVICE_WIN32_OWN_PROCESS = 0x00000010
+            SERVICE_RUNNING = 0x00000004
+            SERVICE_ACCEPT_STOP = 0x00000001
+            
+            advapi32 = ctypes.WinDLL('advapi32', use_last_error=True)
+            
+            # 1. Register Handler (Correct Name: MonitorixAgentService)
+            SERVICE_CONTROL_HANDLER = ctypes.WINFUNCTYPE(None, wintypes.DWORD)
+            
+            # Persist Reference to prevent Garbage Collection (Critical)
+            def handler(control):
+                log_to_file(f"[SCM] Received Control Signal: {control}")
+            
+            _scm_handler_ref = SERVICE_CONTROL_HANDLER(handler)
+            
+            # Correct Name from installer: MonitorixAgentService
+            h_status = advapi32.RegisterServiceCtrlHandlerW(u"MonitorixAgentService", _scm_handler_ref)
+            
+            if h_status:
+                # 2. Set Status to RUNNING
+                class SERVICE_STATUS(ctypes.Structure):
+                    _fields_ = [
+                        ("dwServiceType", wintypes.DWORD),
+                        ("dwCurrentState", wintypes.DWORD),
+                        ("dwControlsAccepted", wintypes.DWORD),
+                        ("dwWin32ExitCode", wintypes.DWORD),
+                        ("dwServiceSpecificExitCode", wintypes.DWORD),
+                        ("dwCheckPoint", wintypes.DWORD),
+                        ("dwWaitHint", wintypes.DWORD),
+                    ]
+                
+                status = SERVICE_STATUS(
+                    SERVICE_WIN32_OWN_PROCESS,
+                    SERVICE_RUNNING,
+                    SERVICE_ACCEPT_STOP,
+                    0, 0, 0, 0
+                )
+                advapi32.SetServiceStatus(h_status, ctypes.byref(status))
+                log_to_file("[SCM] Registered 'MonitorixAgentService' and reported state as RUNNING.")
+            else:
+                last_error = ctypes.get_last_error()
+                log_to_file(f"[SCM] Failed to register handler. WinError: {last_error}")
+        except Exception as e:
+            log_to_file(f"[SCM] Exception during heartbeat: {e}")
         if isinstance(e, SystemExit): raise
 
 def spawn_watchdog():
@@ -1129,7 +1237,7 @@ def apply_policy(config_src):
             global loc_mon
             if not loc_mon:
                 cls = load_module("LocationMonitor")
-                if cls: loc_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+                if cls: loc_mon = cls()
             if loc_mon: loc_mon.set_enabled(True)
         elif loc_mon: loc_mon.set_enabled(False)
         
@@ -2022,6 +2130,13 @@ async def on_stop_stream(data):
     if remediation:
         asyncio.create_task(remediation.handle_command(data))
 
+@sio.on('Remediation')
+async def on_remediation(data):
+    """[v1.8.62] Remote Remediation Gate: Executes signed system-level corrections."""
+    if remediation:
+        # RemediationHandler.handle_command handles its own signature verification
+        asyncio.create_task(remediation.handle_command(data))
+
 @sio.on('RemoteInput')
 async def on_remote_input(data):
     """[v1.8.37] Sovereignty Verified: Keyboard/Mouse Forwarding"""
@@ -2312,6 +2427,13 @@ async def main():
     acquire_lock()
 
     # 5. Initialization
+    # [v1.8.42] Clean Slate: Restore writability for boot-time configuration upgrades
+    try:
+        from agent_core.filesystem_hardening import FilesystemHardener
+        FilesystemHardener(BASE_DIR).relax_immutability()
+    except Exception as e:
+        log_to_file(f"Warning: Boot-time relaxation failed: {e}")
+
     load_heavy_modules()
     config = load_config()
     # [v1.8.36] Forensic String Shield (XOR Obfuscation)
@@ -2392,8 +2514,10 @@ async def main():
         log_to_file("  ✓ Generated New MachineSecret")
 
     if not current_id or not current_id.startswith(stable_id):
-        import random, string
-        new_id = f"{stable_id}-{''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(4))}"
+        # [v1.8.56] Deterministic Identity: Remove Random Suffix
+        # Use stable_id directly to ensure machine:identitiy 1:1 mapping.
+        # This prevents duplicate agents in the dashboard on re-installs.
+        new_id = stable_id
         AGENT_ID = new_id
         config["AgentId"] = new_id
         save_config(config)
@@ -2446,19 +2570,17 @@ async def main():
     shadow_mon = None
     usb_ctrl = None # Will be initialized in main loop if needed or here with lazy load
     
-    # Telemetry (Lazy loaded via apply_policy)
-    loc_mon = None
-    hw_mon = None
-    power_mon = None
+    # Telemetry (Baseline initialized for heartbeat)
+    global loc_mon, hw_mon, power_mon
     
+    hw_cls = load_module("Hardware")
+    if hw_cls: hw_mon = hw_cls()
+    
+    pwr_cls = load_module("Power")
+    if pwr_cls: power_mon = pwr_cls()
+
     # Networking & Shell (Lazy loaded via apply_policy)
-    net_mon = None
-    file_mon = None
-    mail_mon = None
-    remote_shell = None
-    app_blocker = None
-    print_mon = None
-    speech_mon = None
+    global net_mon, file_mon, mail_mon, remote_shell, app_blocker, print_mon, speech_mon
     
     # Managers (Lazy load core communication)
     rt_cls = load_module("WebRTCManager")
@@ -2499,8 +2621,10 @@ async def main():
     # Session Monitor Callbacks
     def on_lock_detected():
         if screen_cap and screen_cap.enabled:
-            log_to_file("[Session] Lock Detected. Taking final screenshot...")
-            screen_cap.capture_now()
+            log_to_file("[Session] Lock Detected. Pausing GUI workers...")
+            try:
+                screen_cap.capture_now() # Final glimpse
+            except: pass
             screen_cap.set_paused(True)
     
     def on_unlock_detected():
@@ -2566,10 +2690,8 @@ async def main():
         # We are the Parent / Watchdog
         try:
             # Masquerade Parent
-            import platform as pf
-            if pf.system() == "Windows":
-                 import ctypes
-                 ctypes.windll.kernel32.SetConsoleTitleW("Host Process for Windows Services")
+            # [v1.8.50] Notify SCM that we are healthy and running
+            WindowsServiceManager.notify_started()
             
             log_to_file("Starting Anti-Terminator Watchdog Shadow...")
             while True:

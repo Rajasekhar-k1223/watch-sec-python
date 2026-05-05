@@ -202,7 +202,20 @@ class AntiTamperMonitor:
             self.observer.stop()
             self.observer.join()
             self.observer = None
-        # Relax for clean shutdown if needed? No, keep it locked for persistence.
+        # Relax for cleanup
+        self.hardener.relax_immutability()
+
+    def relax_protection(self):
+        """Temporarily unlocks critical files for authorized updates."""
+        try:
+            self.hardener.relax_immutability()
+        except: pass
+
+    def enforce_protection(self):
+        """Re-enforces the Sovereign Immutability lock."""
+        try:
+            self.hardener.enforce_immutability()
+        except: pass
 
     def ignore_next_modification(self, filename):
         """Temporary ignore the next modification event for a file (self-update)."""

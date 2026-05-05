@@ -95,6 +95,7 @@ async def get_dashboard_status(
                 "memoryUsage": mem,
                 "timestamp": ts.isoformat() + "Z",
                 "hostname": agent.Hostname or "Unknown",
+                "version": agent.Version,
                 "latitude": agent.Latitude,
                 "longitude": agent.Longitude,
                 "hardwareJson": agent.HardwareJson,

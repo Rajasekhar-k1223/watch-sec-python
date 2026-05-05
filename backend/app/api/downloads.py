@@ -21,6 +21,36 @@ from .deps import get_current_user # type: ignore
 
 router = APIRouter()
 
+@router.get("/latest-binary")
+async def get_latest_binary_for_audit(current_user: User = Depends(get_current_user)):
+    """
+    Forensics & Audit: Serves the current latest Windows binary for external analysis (Redrainbow/VirusTotal).
+    """
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    base = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64"))
+    
+    if not os.path.exists(base):
+         raise HTTPException(status_code=404, detail="AgentTemplate volume not mounted.")
+
+    # Priority Match: Standard Binary Name
+    exe_path = os.path.join(base, "monitorixagent.exe")
+    if not os.path.exists(exe_path):
+        # Scan for ANY exe in the win-x64 folder
+        for f in os.listdir(base):
+            if f.endswith(".exe") and "vc_redist" not in f:
+                exe_path = os.path.join(base, f)
+                break
+                
+    if not exe_path or not os.path.exists(exe_path):
+        raise HTTPException(status_code=404, detail="Latest binary not found on server.")
+
+    return FileResponse(
+        exe_path,
+        media_type="application/vnd.microsoft.portable-executable",
+        filename=os.path.basename(exe_path),
+        headers={"Cache-Control": "no-cache"}
+    )
+
 # --- Helper Logic ---
 
 def _get_backend_url(request: Request) -> str:
@@ -354,7 +384,7 @@ EOF
     $SUDO systemctl daemon-reload 2>/dev/null
     $SUDO systemctl enable monitorix 2>/dev/null
     $SUDO systemctl restart monitorix 2>/dev/null
-    echo "Service installed and started!"
+    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v1.8.60 (Linux) is now running.\033[0m"
 
 # Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
@@ -431,7 +461,7 @@ EOF
              echo "  cd $dir_name && sudo python3 $(basename $MAIN_SCRIPT)"
         fi
     else
-        echo "Monitorix Agent is now running in the background."
+        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v1.8.60 (macOS) is now running.\033[0m"
     fi
 fi
 """
@@ -576,11 +606,11 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     
     binary_name = "monitorix.zip" # Default
     
-    if os_type.lower() == "linux": 
+    if "linux" in os_type.lower(): 
         binary_name = "monitorix-agent-linux"
-    elif os_type.lower() == "mac": 
+    elif "mac" in os_type.lower() or "osx" in os_type.lower(): 
         binary_name = "monitorix-agent-mac"
-    elif os_type.lower() == "windows":
+    elif "windows" in os_type.lower():
         # Check for zip payload (Preferred for automated installation)
         if os.path.exists(os.path.join(template_dir, "monitorix.zip")):
              binary_name = "monitorix.zip"
@@ -840,16 +870,35 @@ async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     # Resolve exe path  
     file_dir = os.path.dirname(os.path.abspath(__file__))
     base = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64"))
-    exe_path = os.path.join(base, "monitorixagent.exe")
     
-    if not os.path.exists(exe_path):
+    # Priority Match: Monolithic Hyphenated -> Legacy Compressed -> Standard
+    exe_names = ["monitorix-agent.exe", "monitorixagent.exe", "monitorix.exe"]
+    exe_path = None
+    final_name = "monitorix-agent.exe"
+
+    for name in exe_names:
+        p = os.path.join(base, name)
+        if os.path.exists(p):
+            exe_path = p
+            final_name = name
+            break
+    
+    if not exe_path:
+        # Final fallback: any exe in the folder
+        for f in os.listdir(base):
+            if f.endswith(".exe") and "vc_redist" not in f:
+                exe_path = os.path.join(base, f)
+                final_name = f
+                break
+
+    if not exe_path:
         raise HTTPException(status_code=404, detail="Agent binary not found on server.")
     
     # Serve the raw EXE - installer script will place config.json next to it
     return FileResponse(
         exe_path,
         media_type="application/vnd.microsoft.portable-executable",
-        filename="monitorixagent.exe",
+        filename=final_name,
         headers={"Cache-Control": "no-cache"}
     )
 

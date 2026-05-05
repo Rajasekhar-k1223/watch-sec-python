@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitorix v1.8.38 | Infinite architecture</title>
+    <style>
+        :root {
+            --bg: #0a0b10;
+            --surface: #141620;
+            --primary: #00f2ff;
+            --secondary: #00ff88;
+            --accent: #ff00ff;
+            --text: #e0e6ed;
+            --text-dim: #94a3b8;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+        }
+
+        #viewport {
+            transform-origin: center;
+            transition: transform 0.1s ease-out;
+            will-change: transform;
+        }
+
+        svg {
+            width: 1200px;
+            height: 800px;
+            overflow: visible;
+        }
+
+        /* Module Styles */
+        .module {
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .module-base {
+            fill: var(--surface);
+            stroke: var(--primary);
+            stroke-width: 2;
+            filter: drop-shadow(0 0 10px rgba(0, 242, 255, 0.2));
+        }
+
+        .module:hover .module-base {
+            fill: #1a1d2e;
+            stroke-width: 3;
+            filter: drop-shadow(0 0 20px rgba(0, 242, 255, 0.4));
+        }
+
+        .module-label {
+            font-size: 14px;
+            font-weight: 700;
+            fill: var(--text);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            pointer-events: none;
+        }
+
+        .module-number {
+            font-size: 32px;
+            font-weight: 900;
+            fill: var(--primary);
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        /* Connection Lines */
+        .path-bg {
+            fill: none;
+            stroke: #1e293b;
+            stroke-width: 3;
+        }
+
+        .path-flow {
+            fill: none;
+            stroke: var(--primary);
+            stroke-width: 3;
+            stroke-dasharray: 10, 50;
+            animation: flow 3s linear infinite;
+            filter: blur(1px);
+        }
+
+        .path-flow-alt {
+            stroke: var(--secondary);
+            animation: flow 5s linear infinite reverse;
+        }
+
+        @keyframes flow {
+            from { stroke-dashoffset: 100; }
+            to { stroke-dashoffset: 0; }
+        }
+
+        /* Tooltip */
+        #tooltip {
+            position: fixed;
+            background: rgba(20, 22, 32, 0.95);
+            border: 1px solid var(--primary);
+            padding: 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 280px;
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        #tooltip h3 {
+            margin: 0 0 8px 0;
+            color: var(--primary);
+            font-size: 16px;
+            text-transform: uppercase;
+        }
+
+        #tooltip p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text-dim);
+        }
+
+        /* Controls */
+        .controls {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            background: rgba(20, 22, 32, 0.8);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(5px);
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .btn {
+            background: none;
+            border: 1px solid var(--text-dim);
+            color: var(--text);
+            padding: 5px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .header {
+            position: fixed;
+            top: 40px;
+            left: 40px;
+            z-index: 10;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            margin: 5px 0 0 0;
+            color: var(--text-dim);
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>MONITORIX</h1>
+        <p>Unified Master Architecture v1.8.38</p>
+    </div>
+
+    <div id="container">
+        <div id="viewport">
+            <svg viewBox="0 0 1200 800">
+                <defs>
+                    <linearGradient id="grad-p" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" style="stop-color:var(--primary);stop-opacity:0.2" />
+                        <stop offset="100%" style="stop-color:var(--primary);stop-opacity:0" />
+                    </linearGradient>
+                </defs>
+
+                <!-- Connectivity Grid -->
+                <!-- 1 to 2 -->
+                <path class="path-bg" d="M250 550 L400 550 L400 450" />
+                <path class="path-flow" d="M250 550 L400 550 L400 450" />
+                
+                <!-- 2 to 3 -->
+                <path class="path-bg" d="M500 450 L600 450 L600 350" />
+                <path class="path-flow" d="M500 450 L600 450 L600 350" />
+
+                <!-- 3 to 4 -->
+                <path class="path-bg" d="M700 350 L850 350 L850 450" />
+                <path class="path-flow" d="M700 350 L850 350 L850 450" />
+
+                <!-- 3 to 5 -->
+                <path class="path-bg" d="M700 350 L850 350 L850 250" />
+                <path class="path-flow-alt" d="M700 350 L850 350 L850 250" />
+
+                <!-- 3 to 7 -->
+                <path class="path-bg" d="M600 250 L600 150 L850 150" />
+                <path class="path-flow" d="M600 250 L600 150 L850 150" />
+
+                <!-- 5 to 6 -->
+                <path class="path-bg" d="M850 250 L850 150 L450 150 L450 250" />
+                <path class="path-flow-alt" d="M850 250 L850 150 L450 150 L450 250" />
+
+                <!-- 1. Endpoint Layer -->
+                <g class="module" data-title="Endpoint Layer" data-desc="The source of forensic telemetry. Modular Win/Linux/Mac agents capturing FIM, Keylogs, and Screenshots.">
+                    <rect x="100" y="500" width="200" height="100" rx="10" class="module-base" />
+                    <text x="115" y="540" class="module-number">1</text>
+                    <text x="115" y="570" class="module-label">Endpoints</text>
+                </g>
+
+                <!-- 2. Secure Gateway -->
+                <g class="module" data-title="Secure Gateway" data-desc="The digital air-lock. Handles AES-256 GCM encrypted ingestion and WebSocket handshakes.">
+                    <rect x="350" y="400" width="200" height="100" rx="10" class="module-base" />
+                    <text x="365" y="440" class="module-number">2</text>
+                    <text x="365" y="470" class="module-label">Gateway</text>
+                </g>
+
+                <!-- 3. Backend Cluster -->
+                <g class="module" data-title="Backend Cluster" data-desc="High-performance FastAPI & Celery workers processing real-time forensic event streams.">
+                    <rect x="550" y="250" width="200" height="150" rx="10" class="module-base" style="stroke: var(--secondary);" />
+                    <text x="565" y="300" class="module-number">3</text>
+                    <text x="565" y="330" class="module-label">Backend</text>
+                </g>
+
+                <!-- 4. Intelligence Engine -->
+                <g class="module" data-title="AI Intelligence" data-desc="Neural processing core. Handles OCR text extraction from screenshots and anomaly detection.">
+                    <rect x="800" y="400" width="200" height="100" rx="10" class="module-base" />
+                    <text x="815" y="440" class="module-number">4</text>
+                    <text x="815" y="470" class="module-label">AI Engine</text>
+                </g>
+
+                <!-- 5. Data Vault -->
+                <g class="module" data-title="Data Vault" data-desc="Secure tiered storage. MongoDB for event logs, MySQL for relational data, Redis for live cache.">
+                    <rect x="800" y="200" width="200" height="100" rx="10" class="module-base" />
+                    <text x="815" y="240" class="module-number">5</text>
+                    <text x="815" y="270" class="module-label">Data Vault</text>
+                </g>
+
+                <!-- 6. Integration Hub -->
+                <g class="module" data-title="Integration Hub" data-desc="Unified alert distribution. Syncing forensic incidents to Slack, Email, and SIEM consoles.">
+                    <rect x="350" y="200" width="200" height="100" rx="10" class="module-base" />
+                    <text x="365" y="240" class="module-number">6</text>
+                    <text x="365" y="270" class="module-label">Integrations</text>
+                </g>
+
+                <!-- 7. Admin Dashboard -->
+                <g class="module" data-title="Admin Dashboard" data-desc="Single pane of glass. Visualizing live forensic streams, remote shell, and multi-tenant control.">
+                    <rect x="800" y="100" width="250" height="80" rx="10" class="module-base" style="stroke: var(--accent);" />
+                    <text x="815" y="140" class="module-number">7</text>
+                    <text x="815" y="165" class="module-label">Command Center</text>
+                </g>
+
+            </svg>
+        </div>
+    </div>
+
+    <div id="tooltip">
+        <h3>Module Name</h3>
+        <p>Description goes here...</p>
+    </div>
+
+    <div class="controls">
+        <span style="font-size: 11px; color: var(--text-dim);">ZOOM: Scroll / MouseWheel</span>
+        <button class="btn" onclick="resetZoom()">Reset View</button>
+        <span style="font-size: 11px; margin-left:10px; border-left: 1px solid #333; padding-left:10px;">V1.8.38 STABLE</span>
+    </div>
+
+    <script>
+        const viewport = document.getElementById('viewport');
+        const tooltip = document.getElementById('tooltip');
+        const modules = document.querySelectorAll('.module');
+
+        let scale = 1;
+        let isDragging = false;
+        let startX, startY, translateX = 0, translateY = 0;
+
+        // Zoom Handling
+        window.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            scale *= delta;
+            scale = Math.min(Math.max(0.5, scale), 5);
+            applyTransform();
+        }, { passive: false });
+
+        // Pan Handling
+        window.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX - translateX;
+            startY = e.clientY - translateY;
+            document.body.style.cursor = 'grabbing';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            translateX = e.clientX - startX;
+            translateY = e.clientY - startY;
+            applyTransform();
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            document.body.style.cursor = 'default';
+        });
+
+        function applyTransform() {
+            viewport.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        }
+
+        function resetZoom() {
+            scale = 1;
+            translateX = 0;
+            translateY = 0;
+            applyTransform();
+        }
+
+        // Tooltip Handling
+        modules.forEach(module => {
+            module.addEventListener('mouseenter', (e) => {
+                tooltip.style.opacity = 1;
+                tooltip.querySelector('h3').innerText = module.dataset.title;
+                tooltip.querySelector('p').innerText = module.dataset.desc;
+            });
+
+            module.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 20) + 'px';
+                tooltip.style.top = (e.clientY + 20) + 'px';
+            });
+
+            module.addEventListener('mouseleave', () => {
+                tooltip.style.opacity = 0;
+            });
+        });
+    </script>
+</body>
+</html>

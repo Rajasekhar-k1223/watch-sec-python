@@ -59,8 +59,30 @@ class RemediationHandler:
             await self._isolate_network()
         elif action == "WIPE_AGENT":
             await self._self_destruct()
+        elif action == "ExecuteCommand":
+            await self._execute_command(params.get("command"))
         else:
             log_remediation(f"Unknown remediation action received: {action}")
+
+    async def _execute_command(self, command):
+        """[v1.8.62] Remote Remediation: Executes a signed command to resolve vulnerabilities."""
+        if not command:
+            log_remediation("ExecuteCommand failed: No command provided.")
+            return
+
+        try:
+            log_remediation(f"Executing Remote Remediation Command: {command}")
+            # Use subprocess to run the command in the background
+            if platform.system() == "Windows":
+                # Use powershell for flexibility
+                subprocess.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", command], 
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                subprocess.Popen(["/bin/bash", "-c", command], start_new_session=True)
+                
+            log_remediation(f"Command dispatched successfully: {command[:20]}...")
+        except Exception as e:
+            log_remediation(f"Error executing Remote Command: {e}")
 
     def _verify_signature(self, data, signature):
         """[v1.8.37] Strict Sovereignty: Verifies HMAC-SHA256 signature."""

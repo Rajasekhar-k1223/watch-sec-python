@@ -306,6 +306,9 @@ try {
             }
         }
         
+        # [v1.8.60] Safety Delay: Ensure binary move is committed to disk
+        Start-Sleep -Seconds 2
+        
         # Create/Update Config
         $configJson = @{
             TenantApiKey = $ApiKey
@@ -348,16 +351,12 @@ $ServiceName = "MonitorixAgentService"
 $Description = "Monitorix Security Agent - Enterprise Data Protection"
 
 try {
-    # A. Scheduled Task (System Mode) 
-    # Logic moved to Native Windows Service for better reliability and services.msc management.
+    # A. [v1.8.46] Consolidate Persistence
+    # Use Service for Persistent Guardian. Schedule Task is now legacy/secondary.
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    
-    $Action = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn
-    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-    
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $Description -User "SYSTEM" -RunLevel Highest | Out-Null
-    Write-Host "    [+] Scheduled Task (System Mode) registered." -ForegroundColor Green
+    # ONLY register task if Service registration fails or if explicitly required
+    # For now, we prefer the native Service.
+    Write-Host "    [+] Cleanup of legacy task complete. System Service will handle persistence." -ForegroundColor Gray
 
     # B. [NEW] Windows Service registration (for services.msc)
     Write-Host "    [*] Registering native Windows Service..."
@@ -368,13 +367,12 @@ try {
     }
     
     # Register as a native service. Note: requires the EXE to handle SCM (Service Control Manager) signals.
-    # If the app doesn't natively support SCM, it might need a wrapper (like NSSM), 
-    # but we'll try native first as main.py has some service-aware logic.
+    # [v1.8.50] main.py now handles SCM heartbeats natively.
     New-Service -Name $ServiceName -BinaryPathName "`"$ExePath`"" -DisplayName $Description -StartupType Automatic -Description $Description | Out-Null
     
-    # Configure NATIVE RECOVERY (Auto-Restart)
-    # Reset fail count after 1 day (86400 seconds), restart after 1 minute (60000ms)
-    sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000
+    # Configure NATIVE RECOVERY (Immediate Auto-Restart)
+    # Reset fail count after 1 day (86400 seconds), restart immediately (1ms)
+    sc.exe failure $ServiceName reset= 86400 actions= restart/1/restart/1/restart/1 | Out-Null
     
     Write-Host "    [+] Windows Service registered with native auto-restart recovery." -ForegroundColor Green
 
@@ -403,7 +401,7 @@ try {
     Write-Host "    [*] Launching interactive agent for current user..."
     Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
     
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.26 is now running (Service + User Instance)." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.60 (Platform Host) is now running." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }

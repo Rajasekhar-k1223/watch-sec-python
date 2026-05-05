@@ -92,8 +92,11 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
         if vuln_count > 0:
             logger.warning(f"Agent {agent_id} has {vuln_count} vulnerabilities: {found_cves}")
             
-            from app.db.models import EventLog # type: ignore
+            from app.db.models import EventLog, Agent, Tenant # type: ignore
             from datetime import datetime # type: ignore
+            import hmac
+            import hashlib
+            from app.socket_instance import sio_sync
             
             alert = EventLog(
                 AgentId=agent_id,
@@ -104,6 +107,41 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
             session.add(alert)
             session.commit()
             logger.info(f"Alert recorded for Agent {agent_id}")
+
+            # [AUTO-PATCH] If enabled, dispatch background update command
+            agent_record = session.query(Agent).filter(Agent.AgentId == agent_id).first()
+            if agent_record and agent_record.AutoPatchEnabled:
+                logger.info(f"Auto-Patch ENABLED for Agent {agent_id}. Dispatching update...")
+                
+                tenant = session.query(Tenant).filter(Tenant.Id == agent_record.TenantId).first()
+                if tenant:
+                    # Construct Command
+                    command = ""
+                    if "win" in (agent_record.Hostname or "").lower() or "windows" in (agent_record.Version or "").lower():
+                        command = "winget upgrade --all --silent --accept-package-agreements --accept-source-agreements --include-unknown"
+                    else:
+                        command = "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get upgrade -y"
+
+                    # Sign Command
+                    timestamp = datetime.utcnow().isoformat()
+                    action = "ExecuteCommand"
+                    params = {"command": command}
+                    msg_parts = [str(action), json.dumps(params, sort_keys=True), str(timestamp)]
+                    message = "|".join(msg_parts).encode('utf-8')
+                    machine_id = agent_record.MachineId or agent_record.AgentId
+                    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id.encode()).digest()
+                    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+
+                    # Dispatch via Sync Manager
+                    payload = {
+                        "action": action,
+                        "params": params,
+                        "timestamp": timestamp,
+                        "signature": signature,
+                        "policy_name": "Automatic Vulnerability Remediation"
+                    }
+                    sio_sync.emit('Remediation', payload, room=agent_id)
+                    logger.info(f"Auto-Patch Command Dispatched to Agent {agent_id}")
         else:
             logger.info(f"No vulnerabilities found for Agent {agent_id}")
             

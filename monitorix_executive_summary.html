@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monitorix v1.8.38 | Executive Overview</title>
+    <style>
+        :root {
+            --bg: #030408;
+            --accent: #00f2ff;
+            --accent-soft: rgba(0, 242, 255, 0.1);
+            --text: #ffffff;
+            --text-dim: #8892b0;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .header h1 {
+            font-size: 48px;
+            font-weight: 300;
+            letter-spacing: 8px;
+            margin: 0;
+            background: linear-gradient(180deg, #fff 0%, #00f2ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            color: var(--text-dim);
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .main-container {
+            display: flex;
+            align-items: center;
+            gap: 100px;
+            position: relative;
+        }
+
+        .pillar {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 280px;
+            text-align: center;
+            z-index: 2;
+        }
+
+        .icon-circle {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 1px solid var(--accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 30px;
+            position: relative;
+            background: var(--accent-soft);
+            box-shadow: 0 0 50px var(--accent-soft);
+            animation: pulse 4s infinite ease-in-out;
+        }
+
+        .icon-circle svg {
+            width: 50px;
+            height: 50px;
+            fill: var(--accent);
+        }
+
+        .pillar h2 {
+            font-size: 22px;
+            font-weight: 500;
+            margin: 0 0 15px 0;
+            letter-spacing: 1px;
+        }
+
+        .pillar p {
+            color: var(--text-dim);
+            font-size: 15px;
+            line-height: 1.6;
+        }
+
+        .flow-line {
+            position: absolute;
+            top: 60px;
+            left: 120px;
+            width: 600px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            z-index: 1;
+        }
+
+        .pulse-dot {
+            position: absolute;
+            top: -4px;
+            width: 10px;
+            height: 10px;
+            background: var(--accent);
+            border-radius: 50%;
+            box-shadow: 0 0 15px var(--accent);
+            animation: flowMove 3s infinite linear;
+        }
+
+        @keyframes flowMove {
+            0% { left: 0; opacity: 0; }
+            50% { opacity: 1; }
+            100% { left: 100%; opacity: 0; }
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 0 40px var(--accent-soft); }
+            50% { transform: scale(1.05); box-shadow: 0 0 70px var(--accent-soft); }
+        }
+
+        .footer {
+            position: fixed;
+            bottom: 40px;
+            color: var(--text-dim);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>MONITORIX</h1>
+        <p>Strategic High-Level Architecture</p>
+    </div>
+
+    <div class="main-container">
+        <div class="flow-line">
+            <div class="pulse-dot"></div>
+            <div class="pulse-dot" style="animation-delay: 1.5s;"></div>
+        </div>
+
+        <div class="pillar">
+            <div class="icon-circle">
+                <svg viewBox="0 0 24 24"><path d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L5,8.09V15.91L12,19.85L19,15.91V8.09L12,4.15Z"/></svg>
+            </div>
+            <h2>Sovereign Agents</h2>
+            <p>Invisible endpoint security deployed at light-speed across your entire global fleet.</p>
+        </div>
+
+        <div class="pillar" id="core">
+            <div class="icon-circle" style="animation-delay: 0.5s;">
+                <svg viewBox="0 0 24 24"><path d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,7C13.1,7 14,7.9 14,9C14,10.1 13.1,11 12,11C10.9,11 10,10.1 10,9C10,7.9 10.9,7 12,7M12,13C13.33,13 16,13.67 16,15V16H8V15C8,13.67 10.67,13 12,13Z"/></svg>
+            </div>
+            <h2>The Secure Core</h2>
+            <p>A mission-critical AI engine that correlates thousands of forensic streams every second.</p>
+        </div>
+
+        <div class="pillar">
+            <div class="icon-circle" style="animation-delay: 1s;">
+                <svg viewBox="0 0 24 24"><path d="M3,17V19H9V17H3M3,5V7H21V5H3M13,17V19H21V17H13M3,11V13H15V11H3M19,11V13H21V11H19Z"/></svg>
+            </div>
+            <h2>Global Command</h2>
+            <p>Total administrative sovereignty via a single-pane-of-glass forensic dashboard.</p>
+        </div>
+    </div>
+
+    <div class="footer">
+        PROJECT MONITORIX v1.8.38 | PROPRIETARY & CONFIDENTIAL
+    </div>
+
+</body>
+</html>

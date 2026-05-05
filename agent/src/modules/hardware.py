@@ -222,6 +222,9 @@ class HardwareMonitor:
         return software_list
 
     def get_complete_specs(self):
+        return self.get_specs()
+
+    def get_specs(self):
         mem = psutil.virtual_memory()
         
         # Disk Usage (Root partition)

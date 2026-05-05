@@ -13,7 +13,90 @@ from ..db.models import EventLog, User, Agent, Tenant # type: ignore
 from .deps import get_current_user # type: ignore
 from .agents import verify_feature_access # type: ignore
 
+import hmac
+import hashlib
+from ..socket_instance import sio
+from .agents import is_in_maintenance_window
+
 router = APIRouter()
+
+@router.post("/patch/{agent_id}")
+async def patch_agent_system(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Manually triggers a system-wide software patch (e.g. winget/choco/apt upgrade).
+    """
+    # 1. Verify Agent & Access
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+    
+    result = await db.execute(query)
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 2. Get Tenant Info for Signing
+    res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = res_t.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # 3. Construct Command based on OS
+    # Note: We use silent flags to ensure background installation
+    command = ""
+    if "win" in (agent.Hostname or "").lower() or "windows" in (agent.Version or "").lower():
+        # Try winget first (built-in), fallback to choco if available
+        command = "winget upgrade --all --silent --accept-package-agreements --accept-source-agreements --include-unknown"
+    else:
+        command = "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get upgrade -y"
+
+    # 4. Sign the Command (Sovereign Security)
+    timestamp = datetime.utcnow().isoformat()
+    action = "ExecuteCommand"
+    params = {"command": command}
+    
+    # Message for signing: action | params_json | timestamp
+    msg_parts = [
+        str(action),
+        json.dumps(params, sort_keys=True),
+        str(timestamp)
+    ]
+    message = "|".join(msg_parts).encode('utf-8')
+    
+    # Derive Key (Sha256(ApiKey + MachineId))
+    machine_id = agent.MachineId or agent.AgentId # Fallback
+    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id.encode()).digest()
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+
+    # 5. Send via WebSocket
+    payload = {
+        "action": action,
+        "params": params,
+        "timestamp": timestamp,
+        "signature": signature,
+        "policy_name": "Manual Patch Trigger"
+    }
+    
+    try:
+        await sio.emit('Remediation', payload, room=agent_id)
+        
+        # Log the event
+        patch_event = EventLog(
+            AgentId=agent_id,
+            Type="System Patch Triggered",
+            Details=f"Manual system-wide patch dispatched by {current_user.Username}: {command[:50]}...",
+            Timestamp=datetime.utcnow()
+        )
+        db.add(patch_event)
+        await db.commit()
+        
+        return {"status": "dispatched", "command": command}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to relay command: {e}")
 
 @router.get("/alerts")
 async def get_vulnerability_alerts(
@@ -101,6 +184,30 @@ async def trigger_bulk_scan(
         triggered_count += 1
         
     return {"status": "triggered", "count": triggered_count}
+
+@router.post("/toggle-autopatch/{agent_id}")
+async def toggle_autopatch(
+    agent_id: str,
+    enabled: bool,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Toggles the automatic patching feature for a specific agent.
+    """
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query)
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    agent.AutoPatchEnabled = enabled
+    await db.commit()
+    
+    return {"status": "updated", "agentId": agent_id, "autoPatchEnabled": enabled}
 
 @router.get("/export/{agent_id}")
 async def export_agent_vulnerabilities(

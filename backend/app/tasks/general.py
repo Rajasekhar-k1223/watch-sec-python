@@ -137,3 +137,57 @@ def analyze_risk_background(log_id_str: str, title: str, process: str, url: str)
         print(f"[Celery] Error updating Mongo: {e}")
     
     return {"id": log_id_str, "score": score, "level": level, "category": category}
+
+@celery_app.task
+def staggered_bulk_patch(agent_ids: list, batch_size=10, delay=60):
+    """
+    Rolling Update: Sets agents to 'pending_manual_push' in batches to avoid server spikes.
+    This prevents the "Thundering Herd" problem when updating hundreds of agents.
+    """
+    from app.db.models import Agent, AuditLog # type: ignore
+    from app.core.constants import LATEST_AGENT_VERSION # type: ignore
+    from time import sleep
+    from datetime import datetime
+
+    total = len(agent_ids)
+    print(f"[Celery] Starting Staggered Bulk Patch for {total} agents (Batch: {batch_size}, Delay: {delay}s)")
+
+    if not SessionLocal:
+        print("[Celery] Error: SessionLocal not initialized for staggered_bulk_patch.")
+        return
+
+    for i in range(0, total, batch_size):
+        batch = agent_ids[i:i + batch_size]
+        print(f"[Celery] Processing Update Batch {i//batch_size + 1} ({len(batch)} agents)...")
+        
+        try:
+            with SessionLocal() as session:
+                # Update specific agents
+                agents_to_update = session.query(Agent).filter(Agent.AgentId.in_(batch)).all()
+                for agent in agents_to_update:
+                    agent.UpdateStatus = "pending_manual_push"
+                    agent.TargetVersion = LATEST_AGENT_VERSION
+                    
+                    # Log audit entry for tracking
+                    audit = AuditLog(
+                        TenantId=agent.TenantId,
+                        Actor="SYSTEM_BATCH",
+                        Action="Push Manual Patch",
+                        Target=f"{agent.Hostname} ({agent.AgentId})",
+                        Details=f"Rolling staggered update triggered by admin (Batch {i//batch_size + 1})",
+                        Timestamp=datetime.utcnow()
+                    )
+                    session.add(audit)
+                
+                session.commit()
+                print(f"[Celery] Batch {i//batch_size + 1} committed successfully.")
+        except Exception as e:
+            print(f"[Celery] Batch Error at {i}: {e}")
+
+        # Sleep only if there are more batches to process
+        if i + batch_size < total:
+            print(f"[Celery] Throttling: Waiting {delay}s before next batch to protect server bandwidth...")
+            sleep(delay)
+
+    print(f"[Celery] SUCCESS: Staggered rollout for {total} agents complete.")
+    return {"status": "completed", "total_agents": total}
