@@ -743,6 +743,49 @@ class SecurityAIService:
             
         # ── DYNAMIC GENERAL FALLBACK (Trained Local Naive Bayes Classifications!) ──
         else:
+            # 1. Concept Knowledge Base (Solves the "same repeating response" issue for general queries!)
+            concepts = {
+                ("edr", "xdr", "security", "protect", "defense", "secure"): (
+                    "**Endpoint Detection and Response (EDR)** is the core defense system of Monitorix. "
+                    "Unlike traditional antivirus which only scans for static file signatures, our EDR agent actively monitors "
+                    "active execution logs, process injection attempts, network handshakes, and file behaviors in real time. "
+                    "If a host exhibits suspicious anomalies, the agent can trigger auto-isolation to stop threats instantly."
+                ),
+                ("firewall", "port", "network", "exfiltration", "bandwidth"): (
+                    "**Network Firewall and Traffic Analyzer**: Monitorix tracks active outbound bandwidth and listening sockets "
+                    "on all deployed endpoints. This helps administrators detect unauthorized reverse shells, data exfiltration tunnels, "
+                    "or rogue processes communicating with blacklisted external IP addresses."
+                ),
+                ("dlp", "data loss", "data leakage", "leak", "usb", "exfiltrat"): (
+                    "**Data Loss Prevention (DLP)**: Monitorix monitors sensitive file migrations on your endpoints. "
+                    "It scans file operations targeting external USB drives, email attachments, and web uploads for critical patterns "
+                    "(e.g., payroll data, customer databases, SSNs, source code) and can isolate endpoints if it flags high-risk transfers."
+                ),
+                ("auth", "login", "password", "brute", "credential"): (
+                    "**Identity & Access Monitoring**: We audit terminal logins and access states. "
+                    "A high concentration of auth logs on a single host flags active dictionary or brute-force attacks. "
+                    "All active credentials should be rotated, and key-based SSH should be enforced."
+                ),
+                ("agent", "how it works", "tamper", "watchdog"): (
+                    "**Monitorix Agent Internals**: The agent runs as a persistent background daemon (under 150MB RAM base profile). "
+                    "It features active tamper-protection (preventing unauthorized process termination) and lazy-loads heavy video/audio "
+                    "libraries to remain exceptionally lightweight during nominal state monitoring."
+                )
+            }
+            
+            concept_response = None
+            for keywords, response in concepts.items():
+                if any(kw in query_lower for kw in keywords):
+                    concept_response = response
+                    break
+            
+            if concept_response:
+                return {
+                    "Response": concept_response,
+                    "SuggestedActions": ["Run a threat summary", "Show me high-risk agents"]
+                }
+            
+            # 2. General Classifier Prediction Fallback
             prediction = self.predict(query)
             category = prediction.get("category", "Unknown")
             confidence = prediction.get("confidence", "0.00%")
