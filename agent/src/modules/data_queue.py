@@ -25,13 +25,15 @@ class DataQueue:
         self.custom_logger = logger
         self.logger = logging.getLogger("DataQueue")
         self.session = requests.Session()
+        self.verify_ssl = True # [SEC v2.1.0] Default to secure
         
-        # [v1.8.37] Persistence Sovereignty: Derive Hardware-Locked encryption key
-        # We blend the API Key with the Machine Secret to anchor the buffer to this specific hardware
-        import hashlib # type: ignore
+        # [v2.1.0] Strong Encryption Anchor: Use Fernet for AES-256
+        from cryptography.fernet import Fernet # type: ignore
         key_seed = self.api_key.encode()
         if self.machine_secret: key_seed += self.machine_secret
-        self._enc_key = hashlib.sha256(key_seed).digest()
+        # Fernet requires a 32-byte URL-safe base64-encoded key
+        derived_key = hashlib.sha256(key_seed).digest()
+        self._fernet = Fernet(base64.urlsafe_b64encode(derived_key))
         # [v1.8.37] Transport Masquerading: Impersonate a standard Chromium browser
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -93,21 +95,20 @@ class DataQueue:
         return platform.node().encode()
 
     def _encrypt(self, text: str) -> str:
-        """Lightweight XOR encryption for data-at-rest security."""
+        """[v2.1.0] AES-256 Fernet Encryption for data-at-rest."""
         try:
-            data = text.encode()
-            # XOR with sha256 of API Key
-            encrypted = bytes([b ^ self._enc_key[i % len(self._enc_key)] for i, b in enumerate(data)])
-            return base64.b64encode(encrypted).decode()
-        except: return text
+            return self._fernet.encrypt(text.encode()).decode()
+        except Exception as e:
+            self._log(f"Encryption failed: {e}")
+            return text
 
     def _decrypt(self, encrypted_text: str) -> str:
-        """Lightweight XOR decryption for data-at-rest security."""
+        """[v2.1.0] AES-256 Fernet Decryption for data-at-rest."""
         try:
-            data = base64.b64decode(encrypted_text.encode())
-            decrypted = bytes([b ^ self._enc_key[i % len(self._enc_key)] for i, b in enumerate(data)])
-            return decrypted.decode()
-        except: return encrypted_text
+            return self._fernet.decrypt(encrypted_text.encode()).decode()
+        except Exception as e:
+            self._log(f"Decryption failed: {e}")
+            return encrypted_text
 
     def _init_db(self):
         try:
@@ -229,8 +230,23 @@ class DataQueue:
             except Exception as e:
                 self._log(f"Flush Error: {e}")
             
-            # [v1.8.37] Randomized Jitter: 2s base +/- 20% (1.6s to 2.4s)
-            jitter_sleep = 2.0 * random.uniform(0.8, 1.2)
+            # [v2.1.0] Adaptive Telemetry: Adjust frequency based on activity
+            base_sleep = 2.0
+            try:
+                # Check for "Drowsy Mode" (Idle > 15 mins)
+                import psutil # type: ignore
+                if hasattr(psutil, "users") and not psutil.users():
+                    # No active sessions (e.g., Server or Locked Desktop)
+                    base_sleep = 60.0 # Sync every minute
+                
+                # Further optimization: check for "Night Mode" (Off-hours)
+                now = datetime.now()
+                if now.hour < 7 or now.hour > 20: # 8PM to 7AM
+                    base_sleep = max(base_sleep, 30.0)
+            except: pass
+
+            # [v1.8.37] Randomized Jitter: base +/- 20%
+            jitter_sleep = base_sleep * random.uniform(0.8, 1.2)
             time.sleep(jitter_sleep) 
 
     def _flush(self):
@@ -315,7 +331,7 @@ class DataQueue:
                         time.sleep(delay)
 
                 url = f"{self.backend_url}{endpoint}"
-                resp = self.session.post(url, data=decrypted_payload.encode('utf-8'), headers=req_headers, timeout=10, verify=False)
+                resp = self.session.post(url, data=decrypted_payload.encode('utf-8'), headers=req_headers, timeout=10, verify=self.verify_ssl)
                 
                 if 200 <= resp.status_code < 300:
                     ids_to_delete.append(row_id)

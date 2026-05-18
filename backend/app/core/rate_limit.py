@@ -32,8 +32,13 @@ class RateLimiter:
     async def __call__(self, request: Request):
         client = get_redis_client()
         
-        # Identifier: IP or TenantID (if available)
-        client_ip = request.client.host
+        # Identifier: IP (Robust detection for WAF/Proxy compatibility)
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+        else:
+            client_ip = request.headers.get("X-Real-IP", request.client.host if request.client else "Unknown")
+            
         key = f"rate_limit:{client_ip}:{request.url.path}"
         
         try:

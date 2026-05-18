@@ -173,6 +173,15 @@ async def get_dashboard_stats(
 
     total_hours = (end_dt - start_dt).total_seconds() / 3600
     
+    tenant_agent_ids = []
+    try:
+        if tenantId:
+            res_agents = await db.execute(select(Agent.AgentId).where(Agent.TenantId == tenantId))
+            tenant_agent_ids = res_agents.scalars().all()
+            if not tenant_agent_ids:
+                tenant_agent_ids = ["__dummy_none__"]
+    except Exception:
+        pass
     try:
         total_agents = 0
         online_agents = 0
@@ -272,7 +281,7 @@ async def get_dashboard_stats(
         try:
             q_type = select(EventLog.Type, func.count(EventLog.Id))
             if tenantId:
-                q_type = q_type.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
+                q_type = q_type.where(EventLog.AgentId.in_(tenant_agent_ids))
             
             q_type = q_type.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)).group_by(EventLog.Type)
             
@@ -296,7 +305,7 @@ async def get_dashboard_stats(
                 
             q_evt_trend = select(evt_time_expr.label("time_bucket"), func.count(EventLog.Id).label("c"))
             if tenantId:
-                q_evt_trend = q_evt_trend.join(Agent, Agent.AgentId == EventLog.AgentId).where(Agent.TenantId == tenantId)
+                q_evt_trend = q_evt_trend.where(EventLog.AgentId.in_(tenant_agent_ids))
             q_evt_trend = q_evt_trend.where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt))
             q_evt_trend = q_evt_trend.group_by(evt_time_expr).order_by(evt_time_expr)
             
@@ -319,27 +328,49 @@ async def get_dashboard_stats(
         # 5. Recent Logs
         recent_logs = []
         try:
-            q_logs = select(ActivityLogModel).where(
-                (ActivityLogModel.Timestamp >= start_dt) & (ActivityLogModel.Timestamp <= end_dt)
-            ).order_by(ActivityLogModel.Timestamp.desc()).limit(20) # Fetch more to filter
-            
+            # Fetch recent EventLog rows
+            q_evts = select(EventLog).order_by(EventLog.Timestamp.desc()).limit(20)
             if tenantId:
-                q_logs = q_logs.where(ActivityLogModel.TenantId == tenantId)
-                
-            res_logs = await db.execute(q_logs)
-            log_docs = res_logs.scalars().all()
+                q_evts = q_evts.where(EventLog.AgentId.in_(tenant_agent_ids))
+            res_evts = await db.execute(q_evts)
+            evt_docs = res_evts.scalars().all()
             
-            for doc in log_docs:
-                # [NEW] Filter Logs by Plan
-                if not is_type_allowed(doc.ActivityType): continue
-
-                recent_logs.append({
-                    "type": doc.ActivityType,
-                    "details": f"{doc.ProcessName or ''} {doc.WindowTitle or ''}",
-                    "timestamp": doc.Timestamp.isoformat(),
+            # Fetch recent ActivityLog rows
+            q_acts = select(ActivityLogModel).order_by(ActivityLogModel.Timestamp.desc()).limit(20)
+            if tenantId:
+                q_acts = q_acts.where(ActivityLogModel.TenantId == tenantId)
+            res_acts = await db.execute(q_acts)
+            act_docs = res_acts.scalars().all()
+            
+            merged = []
+            for doc in evt_docs:
+                if not is_type_allowed(doc.Type): continue
+                merged.append({
+                    "type": doc.Type,
+                    "details": doc.Details or "Security Incident",
+                    "timestamp": doc.Timestamp,
                     "agentId": doc.AgentId
                 })
-                if len(recent_logs) >= 10: break
+                
+            for doc in act_docs:
+                if not is_type_allowed(doc.ActivityType): continue
+                merged.append({
+                    "type": doc.ActivityType,
+                    "details": f"{doc.ProcessName or ''} {doc.WindowTitle or ''}".strip(),
+                    "timestamp": doc.Timestamp,
+                    "agentId": doc.AgentId
+                })
+                
+            # Sort by timestamp desc
+            merged.sort(key=lambda x: x["timestamp"], reverse=True)
+            
+            for item in merged[:15]:
+                recent_logs.append({
+                    "type": item["type"],
+                    "details": item["details"],
+                    "timestamp": item["timestamp"].isoformat(),
+                    "agentId": item["agentId"]
+                })
         except Exception as e: 
              print(f"[Dashboard] Recent Logs Error: {e}")
 
@@ -381,6 +412,15 @@ async def get_dashboard_stats(
             q_prod = q_prod.group_by(ActivityLog.Category)
             res_prod = await db.execute(q_prod)
             prod_items = res_prod.all()
+            
+            # Fallback to all-time data if 24h is empty
+            if not prod_items:
+                q_prod_fallback = select(ActivityLog.Category, func.count(ActivityLog.Id))
+                if tenantId:
+                    q_prod_fallback = q_prod_fallback.where(ActivityLog.TenantId == tenantId)
+                q_prod_fallback = q_prod_fallback.group_by(ActivityLog.Category)
+                res_prod = await db.execute(q_prod_fallback)
+                prod_items = res_prod.all()
             
             for cat, count in prod_items:
                 cat_name = cat or "Neutral"

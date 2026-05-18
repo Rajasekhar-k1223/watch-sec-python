@@ -15,7 +15,7 @@ from .api import ( # type: ignore
     uploads, reports, dashboard, ai, system, # type: ignore
     ocr, thesaurus, speech, hashbank, fingerprints, # type: ignore
     searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
-    notifications, report_downloads # type: ignore
+    notifications, report_downloads, incidents, network # type: ignore
 ) # type: ignore
 import asyncio # type: ignore
 
@@ -161,6 +161,8 @@ app.include_router(trials.router, prefix="/api/trials", tags=["Trials"])
 app.include_router(bandwidth.router, prefix="/api", tags=["Bandwidth"])
 app.include_router(notifications.router, prefix="/api", tags=["Notifications"])
 app.include_router(report_downloads.router, prefix="/api", tags=["Report Downloads"])
+app.include_router(incidents.router, prefix="/api/incidents", tags=["Incidents"])
+app.include_router(network.router, prefix="/api/network", tags=["Network"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

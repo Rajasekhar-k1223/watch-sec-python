@@ -1,4 +1,4 @@
-from typing import Optional # type: ignore
+from typing import Optional, List # type: ignore
 from fastapi import Depends, HTTPException, status, Header # type: ignore
 from fastapi.security import OAuth2PasswordBearer # type: ignore
 from jose import JWTError, jwt # type: ignore
@@ -94,3 +94,19 @@ async def get_tenant_by_key(x_tenant_api_key: Optional[str] = Header(None, alias
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return tenant
+
+# --- RBAC Helper ---
+def check_role(required_roles: List[str]):
+    """
+    Dependency that ensures the current user has one of the required roles.
+    Example: Depends(check_role(["SuperAdmin", "TenantAdmin"]))
+    """
+    from typing import List as ListType # type: ignore
+    async def role_checker(current_user: User = Depends(get_current_active_user)):
+        if current_user.Role not in required_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: This operation requires one of the following roles: {', '.join(required_roles)}"
+            )
+        return current_user
+    return role_checker

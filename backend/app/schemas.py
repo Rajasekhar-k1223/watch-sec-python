@@ -77,13 +77,33 @@ class ScreenshotDto(BaseModel):
     Url: str
 
 class AgentSettingsUpdate(BaseModel):
+    # Professional Terminology [v2.0]
+    VisualActivityEnabled: Optional[bool] = None
+    InputAuditEnabled: Optional[bool] = None
+    ClipboardAuditEnabled: Optional[bool] = None
+    AppEnforcementEnabled: Optional[bool] = None
+    BrowserComplianceEnabled: Optional[bool] = None
+    PrintAuditEnabled: Optional[bool] = None
+    ShadowAuditEnabled: Optional[bool] = None
+    SessionForensicEnabled: Optional[bool] = None
+    RemoteRemediationEnabled: Optional[bool] = None
+    MailIntelligenceEnabled: Optional[bool] = None
+    VoiceIntelligenceEnabled: Optional[bool] = None
+    LocationAuditEnabled: Optional[bool] = None
+    UsbComplianceEnabled: Optional[bool] = None
+    NetworkAuditEnabled: Optional[bool] = None
+    DataLossPreventionEnabled: Optional[bool] = None
+    VulnerabilityIntelligenceEnabled: Optional[bool] = None
+    MonitoringConsentRequired: Optional[bool] = None
+
+    # Legacy Compatibility & Quality Settings
     ScreenshotQuality: Optional[int] = 80
     ScreenshotResolution: Optional[str] = "Original"
     MaxScreenshotSize: Optional[int] = 0
-    BlockedApps: Optional[List[str]] = [] # [NEW]
-    ShadowPaths: Optional[List[str]] = [] # [NEW] Enterprise Shadow Vault
-    ScreenshotInterval: Optional[int] = 60 # [NEW] v1.8.20
-    GeolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
+    BlockedApps: Optional[List[str]] = None
+    ShadowPaths: Optional[List[str]] = None
+    ScreenshotInterval: Optional[int] = 60
+    GeolocationEnabled: Optional[bool] = None
 
 class AgentHeartbeat(BaseModel):
     AgentId: str

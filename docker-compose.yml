@@ -14,9 +14,9 @@ services:
     environment:
       - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
       - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
-      - REDIS_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - REDIS_URL=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
+      - CELERY_BROKER_URL=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
+      - CELERY_RESULT_BACKEND=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -38,9 +38,9 @@ services:
     environment:
       - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
       - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
-      - REDIS_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:${DB_PASSWORD}@watch-sec-redis:6379/0
+      - REDIS_URL=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
+      - CELERY_BROKER_URL=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
+      - CELERY_RESULT_BACKEND=redis://default:${DB_PASSWORD}@172.18.0.8:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:

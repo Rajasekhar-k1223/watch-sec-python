@@ -2,7 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException # type: ignore
 from pydantic import BaseModel # type: ignore
 from ..services.ai_service import ai_service # type: ignore
 from .deps import get_current_user # type: ignore
-from ..db.models import User # type: ignore
+from ..db.models import User, Agent, EventLog, Vulnerability, ActivityLog # type: ignore
+from ..db.session import get_db # type: ignore
+from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
+from sqlalchemy import select, func # type: ignore
 
 router = APIRouter()
 
@@ -67,3 +70,48 @@ async def analyze_security_event(
         "Triggers": triggers,
         "Recommendation": "Isolate Host" if risk_level in ["High", "Critical"] else "Monitor"
     }
+
+class IncidentSummaryRequest(BaseModel):
+    agent_id: str
+    lookback_hours: int = 24
+
+@router.post("/incident/summarize")
+async def summarize_incident(
+    req: IncidentSummaryRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """[v2.1.0] Generates a human-readable summary of recent security events for an agent."""
+    # 1. Fetch Events (Mocked for demo, should fetch from DB)
+    from datetime import datetime, timedelta
+    mock_events = [
+        {"Type": "Auth Failure", "Details": "Failed login for root from 192.168.1.50", "Timestamp": (datetime.utcnow() - timedelta(minutes=10)).isoformat()},
+        {"Type": "DLP Match", "Details": "USB Copy detected: payroll_2026.xlsx", "Timestamp": (datetime.utcnow() - timedelta(minutes=5)).isoformat()},
+        {"Type": "Network Alert", "Details": "Outbound connection to known C2 IP: 45.33.22.11", "Timestamp": datetime.utcnow().isoformat()}
+    ]
+    
+    summary = ai_service.generate_incident_summary(mock_events)
+    threat_assessment = ai_service.calculate_threat_score(req.agent_id, mock_events)
+    
+    return {
+        "AgentId": req.agent_id,
+        "Summary": summary,
+        "ThreatAssessment": threat_assessment,
+        "RemediationSteps": [
+            "Disable network adapter via remediation handler",
+            "Revoke all active sessions for User: root",
+            "Trigger full malware scan on Agent storage"
+        ]
+    }
+
+class AssistantChatRequest(BaseModel):
+    query: str
+
+@router.post("/assistant/chat")
+async def security_assistant_chat(
+    req: AssistantChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """[v2.6.0] Interactive LLM-based Security Assistant with live SQL mapping."""
+    return await ai_service.generate_conversational_response(req.query, current_user, db)
+

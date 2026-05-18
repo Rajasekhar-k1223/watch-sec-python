@@ -110,6 +110,47 @@ for d in [AGENT_DATA_DIR, AGENT_TMP_DIR, AGENT_LOGS_DIR]:
 
 # Globally redirect all tempfile usage in this process to our secure vault
 tempfile.tempdir = AGENT_TMP_DIR
+
+# [v2.6.0] Sovereign Lockdown Boot Guard: Ensures lock persists across reboots
+def check_sovereign_boot_lock():
+    lock_path = os.path.join(AGENT_DATA_DIR, ".sovereign_lock")
+    if os.path.exists(lock_path):
+        print("[SECURITY] Critical System Freeze Active. Re-enforcing Sovereign Lockdown...")
+        try:
+            from agent_core.lockdown import lockdown_engine
+            
+            # [v2.6.0] 5-Minute Grace Period for Local Recovery
+            start_time = time.time()
+            grace_period = 300 # 5 Minutes
+            
+            while os.path.exists(lock_path):
+                elapsed = time.time() - start_time
+                if elapsed > grace_period:
+                    # Time is up. Neutralize system.
+                    lockdown_engine.power_off_system()
+                    sys.exit(1)
+                
+                # Show Local Unlock Prompt
+                provided_key = lockdown_engine.request_local_unlock()
+                
+                if lockdown_engine.verify_unlock(provided_key):
+                    print("[SECURITY] Local Unlock Successful. Resuming normal operations.")
+                    return # Exit guard and boot normally
+                
+                # If window was closed or wrong key, wait briefly and try again
+                # unless the system was forced to sleep by the previous iteration
+                time.sleep(2)
+                
+                # Periodically re-enforce hibernate to prevent tampering during the 5 mins
+                # but only if the prompt is not actively being answered
+                # (Optional: depends on how aggressive the lock should be)
+                # lockdown_engine.apply_lockdown(lock_hash)
+
+        except Exception as e:
+            print(f"[ERROR] Boot lockdown enforcement failed: {e}")
+            sys.exit(1)
+
+check_sovereign_boot_lock()
 import json # type: ignore
 import uuid # type: ignore
 import asyncio # type: ignore
@@ -132,10 +173,15 @@ import urllib3 # type: ignore
 # Internal Modules (Core & Features)
 from agent_core import AntiTamperMonitor, RemediationHandler, BandwidthManager, SessionMonitor # type: ignore
 from agent_core.privacy_utils import PrivacyRedactor
-from modules.audit_logger import AuditLogger # type: ignore
+from agent_core.audit_logger import AuditLogger # type: ignore
+from agent_core.integrity import IntegrityChecker # [v2.0.0]
+
+# [v2.0.0] Monitorix Enterprise Update Public Key (Ed25519)
+UPDATE_PUBLIC_KEY_HEX = "c5c338196d86b3c823eb4a3626d98e6dc614d15df194fe7f5b985fdc29504733"
+
 
 # Milestone Version: 1.8.46
-AGENT_VERSION = "v1.8.62"
+AGENT_VERSION = "v1.8.63"
 IS_WINDOWS = platform.system() == "Windows"
 IS_UPDATING = False # Global guard to prevent multiple update starts
 sovereign_mmap = None
@@ -228,11 +274,15 @@ def set_process_critical():
                 sovereign_mmap[0] = 1 # Initial pulse
             log_to_file("[SECURITY] Sovereign Mode (macOS): Reflexive mmap heartbeat established.")
             
-            # Start Pulse Thread
+            # Start Pulse Thread: Write current timestamp to shared memory
             def _sovereign_pulse_loop():
+                import struct # type: ignore
                 while True:
                     try:
-                        if sovereign_mmap: sovereign_mmap[0] = 1
+                        if sovereign_mmap:
+                             # Write current Unix timestamp (8-byte double)
+                             sovereign_mmap.seek(0)
+                             sovereign_mmap.write(struct.pack('d', time.time()))
                     except: pass
                     time.sleep(1)
             threading.Thread(target=_sovereign_pulse_loop, daemon=True).start()
@@ -298,28 +348,28 @@ except ImportError:
 bandwidth_manager = None
 data_queue = None
 remediation = None
-shadow_mon = None
-usb_ctrl = None
-loc_mon = None
+shadow_audit = None
+usb_compliance = None
+location_audit = None
 hw_mon = None
 power_mon = None
-net_mon = None
+network_audit = None
 net_scanner = None
-file_mon = None
+data_loss_prevention = None
 fim_mon = None
-mail_mon = None
+mail_intelligence = None
 webrtc_manager = None
 input_simulator = None
-browser_enforcer = None
-live_streamer = None
-screen_cap = None
+browser_compliance = None
+session_forensic = None
+visual_activity = None
 activity_mon = None
-keylogger = None
-clip_mon = None
-remote_shell = None
-app_blocker = None
-print_mon = None
-speech_mon = None
+input_audit = None
+clipboard_audit = None
+remote_remediation = None
+app_enforcement = None
+print_audit = None
+voice_intelligence = None
 net_utils = None
 
 # --- Windows Session Injection Helpers (Session 0 Support) ---
@@ -479,6 +529,8 @@ BACKEND_URL: str = ""
 AGENT_ID: str = ""
 running: bool = True
 current_hostname: str = ""
+ACCESS_TOKEN: str = "" # [v2.0.0]
+REFRESH_TOKEN: str = "" # [v2.0.0]
 sio_connected: bool = False
 # Socket.IO Client Initialized at Module Level for Decorator Support
 # [v1.8.29] Security Hardening: SSL verification ENABLED by default
@@ -487,53 +539,82 @@ sio: Any = socketio.AsyncClient(ssl_verify=True, logger=False, engineio_logger=F
 # Monitors & Managers
 hw_mon: Any = None
 power_mon: Any = None
-loc_mon: Any = None
+location_audit: Any = None
 tamper_mon: Any = None
-screen_cap: Any = None
+visual_activity: Any = None
 activity_mon: Any = None
-keylogger: Any = None
-clip_mon: Any = None
+input_audit: Any = None
+clipboard_audit: Any = None
 data_queue: Any = None
 session_mon: Any = None
 remediation: Any = None
-app_blocker: Any = None
-usb_ctrl: Any = None
-shadow_mon: Any = None
-net_mon: Any = None
+app_enforcement: Any = None
+usb_compliance: Any = None
+shadow_audit: Any = None
+network_audit: Any = None
 net_scanner: Any = None
-file_mon: Any = None
+data_loss_prevention: Any = None
 fim_mon: Any = None
-mail_mon: Any = None
-print_mon: Any = None
-speech_mon: Any = None
+mail_intelligence: Any = None
+print_audit: Any = None
+voice_intelligence: Any = None
 bandwidth_manager: Any = None
 webrtc_manager: Any = None
 audit_logger: Any = None
 installer: Any = None
 file_manager: Any = None
-remote_shell: Any = None
+remote_remediation: Any = None
 input_simulator: Any = None
-browser_enforcer: Any = None
-live_streamer: Any = None
+browser_compliance: Any = None
+session_forensic: Any = None
 
-live_streamer: Any = None
+# [v2.1.0] Advanced Transport Security: Certificate Pinning Adapter
+class PinnedAdapter(requests.adapters.HTTPAdapter):
+    """Enforces SHA-256 fingerprint validation for the backend certificate."""
+    def __init__(self, fingerprint=None, **kwargs):
+        self.fingerprint = fingerprint
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+        from urllib3.poolmanager import PoolManager
+        # Use assert_fingerprint to enforce pinning at the urllib3 level
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            assert_fingerprint=self.fingerprint,
+            **pool_kwargs
+        )
+
 # HTTP Session Initialized at Module Level
 # [v1.8.29] Global HTTP Session with SSL Verification ENABLED by DEFAULT
 http_session: Any = requests.Session()
-# [SECURITY HARDENING] v1.8.42 - SSL Verification is now MANDATORY.
-# Can only be overridden by explicit 'MONITORIX_DEV_INSECURE' env var.
+# [SECURITY HARDENING v2.1.0] mTLS & Certificate Pinning Configuration
+# SSL Verification is now MANDATORY.
 http_session.verify = os.environ.get("MONITORIX_DEV_INSECURE") != "1"
 
+# 1. Mutual TLS (mTLS): Load client certificate if present in the secure vault
+CERT_PATH = os.path.join(AGENT_DATA_DIR, "certs", "agent.crt")
+KEY_PATH = os.path.join(AGENT_DATA_DIR, "certs", "agent.key")
+if os.path.exists(CERT_PATH) and os.path.exists(KEY_PATH):
+    http_session.cert = (CERT_PATH, KEY_PATH)
+    log_to_file("[mTLS] Client Certificate Loaded (data/certs/agent.crt)")
+
+# 2. Certificate Pinning: Load backend pin from environment or config
+CERT_PIN = os.environ.get("MONITORIX_BACKEND_PIN") or config.get("BackendCertPin")
+
 # Allow custom CA bundle for corporate proxies
-CA_BUNDLE = os.environ.get("MONITORIX_CA_BUNDLE")
-if config.get("CaCertPath"):
-    CA_BUNDLE = config.get("CaCertPath")
+CA_BUNDLE = os.environ.get("MONITORIX_CA_BUNDLE") or config.get("CaCertPath")
 
 if CA_BUNDLE and os.path.exists(CA_BUNDLE):
     http_session.verify = CA_BUNDLE
     log_to_file(f"Using custom CA Bundle: {CA_BUNDLE}")
 
-http_session.mount('https://', requests.adapters.HTTPAdapter(max_retries=3))
+# 3. Mount Adapter with Pinning support
+adapter = PinnedAdapter(fingerprint=CERT_PIN, max_retries=3) if CERT_PIN else requests.adapters.HTTPAdapter(max_retries=3)
+http_session.mount('https://', adapter)
+if CERT_PIN:
+    log_to_file(f"[Pinning] Certificate Pinning ENABLED (Fingerprint: {CERT_PIN[:8]}...)")
 
 
 
@@ -599,26 +680,48 @@ def load_config():
                 dec_bytes = f.decrypt(raw_data[4:])
                 cfg = json.loads(dec_bytes.decode('utf-8'))
                 log_to_file("Configuration loaded from 100% Secure AES Vault.")
-            
-            # [v1.8.37] Legacy XOR Vault (Auto-Migrate)
-            elif raw_data.startswith(b"VAULT:"):
-                import base64
-                enc_bytes = base64.b64decode(raw_data[6:])
-                m_id = _get_machine_secret()
-                dec_bytes = bytearray(enc_bytes[i] ^ m_id[i % len(m_id)] for i in range(len(enc_bytes)))
-                cfg = json.loads(dec_bytes.decode('utf-8'))
-                log_to_file("Configuration loaded (Legacy XOR). Upgrading to AES...")
-                save_config(cfg)
-            
-            else:
-                # [SECURITY WARNING] Plaintext Legacy
-                cfg = json.loads(raw_data.decode('utf-8-sig'))
-                log_to_file("Configuration loaded (Plaintext Legacy). Upgrading to AES...")
-                save_config(cfg)
+
         except Exception as e:
-            log_to_file(f"CRITICAL: Failed to decrypt AES Vault: {e}")
-            # If critical keys like API key are missing, the agent will heartbeat with empty
+            log_to_file(f"[VAULT] Failed to decrypt config.json: {e}")
     return cfg
+
+# [v2.8.0] SHIELD RESILIENCE: Offline Policy Vault
+SHIELD_CACHE_PATH = os.path.join(AGENT_DATA_DIR, ".shield_cache.bin")
+
+def save_shield_cache(config_data):
+    """Saves the current active policy to a hidden, hardware-locked binary vault."""
+    try:
+        from cryptography.fernet import Fernet # type: ignore
+        f = Fernet(_get_hardware_locked_key())
+        enc_data = f.encrypt(json.dumps(config_data).encode())
+        
+        # Write to hidden file
+        with open(SHIELD_CACHE_PATH, "wb") as vault:
+            vault.write(b"SHLD:" + enc_data)
+        
+        # Apply OS-level Tamper Protection
+        if platform.system() == "Windows":
+            subprocess.run(["attrib", "+h", "+s", "+r", SHIELD_CACHE_PATH], capture_output=True)
+        else:
+            try: os.system(f"chmod 400 {SHIELD_CACHE_PATH}") # Read-only for owner
+            except: pass
+    except Exception as e:
+        log_to_file(f"[Shield] Failed to save offline cache: {e}")
+
+def load_shield_cache():
+    """Loads the last-known good policy from the hardened local vault."""
+    if os.path.exists(SHIELD_CACHE_PATH):
+        try:
+            with open(SHIELD_CACHE_PATH, "rb") as vault:
+                raw = vault.read()
+            if raw.startswith(b"SHLD:"):
+                from cryptography.fernet import Fernet # type: ignore
+                f = Fernet(_get_hardware_locked_key())
+                dec_data = f.decrypt(raw[5:])
+                return json.loads(dec_data.decode())
+        except Exception as e:
+            log_to_file(f"[Shield] Offline cache recovery failed: {e}")
+    return None
 
 def save_config(new_config):
     try:
@@ -926,34 +1029,7 @@ class WindowsServiceManager:
             log_to_file(f"[SCM] Exception during heartbeat: {e}")
         if isinstance(e, SystemExit): raise
 
-def spawn_watchdog():
-    """Spawns a secondary process to monitor this agent's PID."""
-    if os.environ.get("MONITORIX_WATCHDOG_RUNNING") == "1":
-        return
-        
-    try:
-        exe_path = sys.executable
-        cmd = [exe_path]
-        if not getattr(sys, 'frozen', False):
-            cmd.append(os.path.abspath(__file__))
-        
-        cmd.extend(["--watchdog", str(os.getpid()), exe_path, BASE_DIR])
-        log_to_file(f"Spawning Watchdog: {' '.join(cmd)}")
-        
-        env = os.environ.copy()
-        env["MONITORIX_WATCHDOG_RUNNING"] = "1"
-        
-        if platform.system() == "Windows":
-            subprocess.Popen(cmd, env=env,  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)) # type: ignore
-        else:
-            subprocess.Popen(cmd, env=env, start_new_session=True)
-            
-        log_to_file("Watchdog process launched successfully.")
-        
-        # [v1.8.50] Reflexive Locking: Main Agent also monitors the Watchdog PID
-        # If watchdog dies, we spawn another.
-    except Exception as e:
-        log_to_file(f"Failed to spawn watchdog: {e}")
+
 
 # --- Heavy Imports (Deferred) ---
 def load_heavy_modules():
@@ -1084,16 +1160,16 @@ try:
                 from modules.location_monitor import LocationMonitor
                 return LocationMonitor
             elif name == "ScreenshotCapture":
-                from modules.screenshots import ScreenshotCapture
+                from modules.visual_activity import ScreenshotCapture
                 return ScreenshotCapture
             elif name == "LiveStreamer":
-                from modules.live_stream import LiveStreamer
+                from modules.session_forensic import LiveStreamer
                 return LiveStreamer
             elif name == "ActivityMonitor":
                 from modules.activity_monitor import ActivityMonitor
                 return ActivityMonitor
             elif name == "Keylogger":
-                from modules.keylogger import Keylogger
+                from modules.input_audit import Keylogger
                 return Keylogger
             elif name == "ClipboardMonitor":
                 from modules.clipboard_monitor import ClipboardMonitor
@@ -1105,7 +1181,7 @@ try:
                 from modules.power_monitor import PowerMonitor
                 return PowerMonitor
             elif name == "Shadow":
-                from modules.shadow_monitor import ShadowMonitor
+                from modules.shadow_audit import ShadowMonitor
                 return ShadowMonitor
             elif name == "Usb":
                 from modules.usb_monitor import UsbMonitor
@@ -1117,25 +1193,25 @@ try:
                 from modules.network import NetworkScanner
                 return NetworkScanner
             elif name == "File":
-                from modules.file_monitor import FileMonitor
+                from modules.data_loss_prevention import FileMonitor
                 return FileMonitor
             elif name == "FIM":
                 from modules.fim import FileIntegrityMonitor
                 return FileIntegrityMonitor
             elif name == "Mail":
-                from modules.mail_monitor import MailMonitor
+                from modules.mail_intelligence import MailMonitor
                 return MailMonitor
             elif name == "AppBlocker":
-                from modules.app_blocker import AppBlocker
+                from modules.app_enforcement import AppBlocker
                 return AppBlocker
             elif name == "PrinterMonitor":
                 from modules.printer_monitor import PrinterMonitor
                 return PrinterMonitor
             elif name == "SpeechMonitor":
-                from modules.speech_monitor import SpeechMonitor
+                from modules.voice_intelligence import SpeechMonitor
                 return SpeechMonitor
             elif name == "RemoteShell":
-                from modules.remote_shell import RemoteShell
+                from modules.remote_remediation import RemoteShell
                 return RemoteShell
             elif name == "FileManager":
                 from modules.file_manager import FileManager
@@ -1150,7 +1226,7 @@ try:
                 from modules.webrtc_stream import WebRTCManager
                 return WebRTCManager
             elif name == "BrowserEnforcer":
-                from modules.browser_enforcer import BrowserEnforcer
+                from modules.browser_compliance import BrowserEnforcer
                 return BrowserEnforcer
         except Exception as e:
             log_to_file(f"Lazy load failed for {name}: {e}")
@@ -1172,37 +1248,37 @@ def apply_policy(config_src):
     try:
         log_to_file("[Policy] Applying configuration...")
         
-        screenshots_enabled = config_src.get("ScreenshotsEnabled", False)
-        if screenshots_enabled:
-            global screen_cap
-            if not screen_cap:
+        visual_activity_enabled = config_src.get("VisualActivityEnabled", config_src.get("ScreenshotsEnabled", False))
+        if visual_activity_enabled:
+            global visual_activity
+            if not visual_activity:
                 cls = load_module("ScreenshotCapture")
-                if cls: screen_cap = cls(AGENT_ID, API_KEY, BACKEND_URL)
-            if screen_cap:
-                screen_cap.start()
-                screen_cap.set_enabled(True)
-        elif screen_cap:
-            screen_cap.stop()
-            screen_cap = None # Purge from memory
+                if cls: visual_activity = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if visual_activity:
+                visual_activity.start()
+                visual_activity.set_enabled(True)
+        elif visual_activity:
+            visual_activity.stop()
+            visual_activity = None # Purge from memory
         
-        if usb_ctrl:
-            if not usb_ctrl.running:
-                usb_ctrl.start()
+        if usb_compliance:
+            if not usb_compliance.running:
+                usb_compliance.start()
             
             # [FIX] Debounce Logging: Only update if value changed
-            target_usb_policy = "Block" if config_src.get("UsbBlockingEnabled") else "Allow"
-            if getattr(usb_ctrl, 'last_policy', None) != target_usb_policy:
-                usb_ctrl.set_policy(target_usb_policy)
-                usb_ctrl.last_policy = target_usb_policy
+            target_usb_policy = "Block" if config_src.get("UsbComplianceEnabled", config_src.get("UsbBlockingEnabled")) else "Allow"
+            if getattr(usb_compliance, 'last_policy', None) != target_usb_policy:
+                usb_compliance.set_policy(target_usb_policy)
+                usb_compliance.last_policy = target_usb_policy
         
         # [v1.8.41] Multi-Mode Network Monitoring
-        if config_src.get("NetworkMonitoringEnabled", False):
-            global net_mon, net_scanner
+        if config_src.get("NetworkAuditEnabled", config_src.get("NetworkMonitoringEnabled", False)):
+            global network_audit, net_scanner
             # 1. Bandwidth Monitor
-            if not net_mon:
+            if not network_audit:
                 cls = load_module("Network")
-                if cls: net_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-            if net_mon: net_mon.set_enabled(True)
+                if cls: network_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if network_audit: network_audit.set_enabled(True)
             
             # 2. Connection Scanner (DLP)
             if not net_scanner:
@@ -1210,17 +1286,17 @@ def apply_policy(config_src):
                 if cls: net_scanner = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
             if net_scanner: net_scanner.start()
         else:
-            if net_mon: net_mon.set_enabled(False)
+            if network_audit: network_audit.set_enabled(False)
             if net_scanner: net_scanner.stop()
 
         # [v1.8.41] Multi-Mode File Monitoring
-        if config_src.get("FileDlpEnabled", False) or config_src.get("FileMonitoringEnabled", False):
-            global file_mon, fim_mon
+        if config_src.get("DataLossPreventionEnabled", config_src.get("FileDlpEnabled", False)) or config_src.get("FileMonitoringEnabled", False):
+            global data_loss_prevention, fim_mon
             # 1. Content Scanner (DLP)
-            if not file_mon:
+            if not data_loss_prevention:
                 cls = load_module("File")
-                if cls: file_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-            if file_mon: file_mon.set_enabled(True)
+                if cls: data_loss_prevention = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if data_loss_prevention: data_loss_prevention.set_enabled(True)
             
             # 2. File Integrity Monitor (FIM)
             if not fim_mon:
@@ -1228,27 +1304,27 @@ def apply_policy(config_src):
                 if cls: fim_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
             if fim_mon: fim_mon.start()
         else:
-            if file_mon: file_mon.set_enabled(False)
+            if data_loss_prevention: data_loss_prevention.set_enabled(False)
             if fim_mon: fim_mon.stop()
 
-        # Geolocation Toggle (Prioritize GeolocationEnabled flag)
-        geo_enabled = config_src.get("GeolocationEnabled", config_src.get("LocationTrackingEnabled", True))
+        # Geolocation Toggle (Prioritize LocationAuditEnabled flag)
+        geo_enabled = config_src.get("LocationAuditEnabled", config_src.get("GeolocationEnabled", config_src.get("LocationTrackingEnabled", True)))
         if geo_enabled:
-            global loc_mon
-            if not loc_mon:
+            global location_audit
+            if not location_audit:
                 cls = load_module("LocationMonitor")
-                if cls: loc_mon = cls()
-            if loc_mon: loc_mon.set_enabled(True)
-        elif loc_mon: loc_mon.set_enabled(False)
+                if cls: location_audit = cls()
+            if location_audit: location_audit.set_enabled(True)
+        elif location_audit: location_audit.set_enabled(False)
         
-        # [NEW] Remote Shell Toggle
-        if config_src.get("RemoteShellEnabled", False):
-            global remote_shell
-            if not remote_shell:
+        # [NEW] Remote Remediation Toggle
+        if config_src.get("RemoteRemediationEnabled", config_src.get("RemoteShellEnabled", False)):
+            global remote_remediation
+            if not remote_remediation:
                 cls = load_module("RemoteShell")
-                if cls: remote_shell = cls(AGENT_ID, API_KEY, BACKEND_URL)
-            if remote_shell: remote_shell.set_enabled(True)
-        elif remote_shell: remote_shell.set_enabled(False)
+                if cls: remote_remediation = cls(AGENT_ID, API_KEY, BACKEND_URL)
+            if remote_remediation: remote_remediation.set_enabled(True)
+        elif remote_remediation: remote_remediation.set_enabled(False)
             
         # [NEW] Apply Bandwidth Config (Policy Override)
         bw_config = config_src.get("BandwidthConfig")
@@ -1263,135 +1339,147 @@ def apply_policy(config_src):
                 if not activity_mon:
                     cls = load_module("ActivityMonitor")
                     if cls: activity_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue, logger=log_to_file)
-                if activity_mon: activity_mon.start()
+                if activity_mon:
+                    # [NEW] Sync Productivity Benchmarks
+                    prod_json = config_src.get("ProductivityJson")
+                    if prod_json:
+                        try: activity_mon.set_categories(prod_json)
+                        except: pass
+                    activity_mon.start()
             elif activity_mon:
                 activity_mon.stop()
                 activity_mon = None # Purge
         
-        if "KeyloggerEnabled" in config_src:
-            global keylogger
-            if config_src["KeyloggerEnabled"]:
-                if not keylogger:
-                    cls = load_module("Keylogger")
-                    if cls: keylogger = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if keylogger: keylogger.start()
-            elif keylogger:
-                keylogger.stop()
-                keylogger = None # Purge
+        if config_src.get("InputAuditEnabled", config_src.get("KeyloggerEnabled", False)):
+            global input_audit
+            if not input_audit:
+                cls = load_module("Keylogger")
+                if cls: input_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if input_audit: input_audit.start()
+        elif input_audit:
+            input_audit.stop()
+            input_audit = None # Purge
             
-        if "ClipboardMonitorEnabled" in config_src:
-            global clip_mon
-            if config_src["ClipboardMonitorEnabled"]:
-                if not clip_mon:
-                    cls = load_module("ClipboardMonitor")
-                    if cls: clip_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if clip_mon: clip_mon.start()
-            elif clip_mon:
-                clip_mon.stop()
-                clip_mon = None # Purge
+        if config_src.get("ClipboardAuditEnabled", config_src.get("ClipboardMonitorEnabled", False)):
+            global clipboard_audit
+            if not clipboard_audit:
+                cls = load_module("ClipboardMonitor")
+                if cls: clipboard_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if clipboard_audit: clipboard_audit.start()
+        elif clipboard_audit:
+            clipboard_audit.stop()
+            clipboard_audit = None # Purge
             
-        if "AppBlockerEnabled" in config_src:
-            global app_blocker
-            if config_src["AppBlockerEnabled"]:
-                if not app_blocker:
-                    cls = load_module("AppBlocker")
-                    if cls: app_blocker = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if app_blocker: app_blocker.start()
-            elif app_blocker:
-                app_blocker.stop()
+        if config_src.get("AppEnforcementEnabled", config_src.get("AppBlockerEnabled", False)):
+            global app_enforcement
+            if not app_enforcement:
+                cls = load_module("AppBlocker")
+                if cls: app_enforcement = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if app_enforcement: app_enforcement.start()
+        elif app_enforcement:
+            app_enforcement.stop()
 
-        if "PrinterMonitorEnabled" in config_src:
-            global print_mon
-            if config_src["PrinterMonitorEnabled"]:
-                if not print_mon:
-                    cls = load_module("PrinterMonitor")
-                    if cls: print_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if print_mon: print_mon.start()
-            elif print_mon:
-                print_mon.stop()
+        if config_src.get("PrintAuditEnabled", config_src.get("PrinterMonitorEnabled", False)):
+            global print_audit
+            if not print_audit:
+                cls = load_module("PrinterMonitor")
+                if cls: print_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if print_audit: print_audit.start()
+        elif print_audit:
+            print_audit.stop()
 
-        if "ShadowMonitorEnabled" in config_src:
-            global shadow_mon
-            if config_src["ShadowMonitorEnabled"]:
-                if not shadow_mon:
-                    cls = load_module("Shadow")
-                    if cls: shadow_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, machine_secret=_get_machine_secret())
-                if shadow_mon: shadow_mon.start()
-            elif shadow_mon:
-                shadow_mon.stop()
+        if config_src.get("ShadowAuditEnabled", config_src.get("ShadowMonitorEnabled", False)):
+            global shadow_audit
+            if not shadow_audit:
+                cls = load_module("Shadow")
+                if cls: shadow_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, machine_secret=_get_machine_secret())
+            if shadow_audit: shadow_audit.start()
+        elif shadow_audit:
+            shadow_audit.stop()
 
-        if "ShadowPaths" in config_src and shadow_mon:
+        if "ShadowPaths" in config_src and shadow_audit:
             try:
                 paths = config_src["ShadowPaths"]
                 if isinstance(paths, str): paths = json.loads(paths)
-                shadow_mon.set_watched_paths(paths)
+                shadow_audit.set_watched_paths(paths)
             except: pass
 
-        if "MailMonitorEnabled" in config_src:
-            global mail_mon
-            if config_src["MailMonitorEnabled"]:
-                if not mail_mon:
-                    cls = load_module("Mail")
-                    if cls: mail_mon = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if mail_mon: mail_mon.start()
-            elif mail_mon:
-                mail_mon.stop()
+        if config_src.get("MailIntelligenceEnabled", config_src.get("MailMonitorEnabled", False)):
+            global mail_intelligence
+            if not mail_intelligence:
+                cls = load_module("Mail")
+                if cls: mail_intelligence = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if mail_intelligence: mail_intelligence.start()
+        elif mail_intelligence:
+            mail_intelligence.stop()
 
-        if "BrowserEnforcerEnabled" in config_src:
-            global browser_enforcer
-            if config_src["BrowserEnforcerEnabled"]:
-                if not browser_enforcer:
-                    cls = load_module("BrowserEnforcer")
-                    if cls: browser_enforcer = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
-                if browser_enforcer: browser_enforcer.enforce()
-            elif browser_enforcer:
-                browser_enforcer.stop()
+        if config_src.get("BrowserComplianceEnabled", config_src.get("BrowserEnforcerEnabled", False)):
+            global browser_compliance
+            if not browser_compliance:
+                cls = load_module("BrowserEnforcer")
+                if cls: browser_compliance = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
+            if browser_compliance: browser_compliance.enforce()
+        elif browser_compliance:
+            browser_compliance.stop()
 
-        if "LiveStreamEnabled" in config_src:
-            global live_streamer
-            live_stream_enabled = config_src["LiveStreamEnabled"]
-            if live_stream_enabled:
-                if not live_streamer:
-                    cls = load_module("LiveStreamer")
-                    if cls: live_streamer = cls(AGENT_ID, sio, log_to_file)
-                if live_streamer and not live_streamer.running:
-                    try:
-                        print("[Policy] Starting Live Stream via Policy")
-                        live_streamer.start_streaming(asyncio.get_event_loop())
-                    except Exception as e:
-                        print(f"[Policy] Live Stream Start Error: {e}")
-            elif live_streamer and live_streamer.running:
-                live_streamer.stop_streaming()
+        if config_src.get("SessionForensicEnabled", config_src.get("LiveStreamEnabled", False)):
+            global session_forensic
+            if not session_forensic:
+                cls = load_module("LiveStreamer")
+                if cls: session_forensic = cls(AGENT_ID, sio, log_to_file)
+            if session_forensic and not session_forensic.running:
+                try:
+                    print("[Policy] Starting Live Audit Session via Policy")
+                    session_forensic.start_streaming(asyncio.get_event_loop())
+                except Exception as e:
+                    print(f"[Policy] Live Audit Start Error: {e}")
+        elif session_forensic and session_forensic.running:
+            session_forensic.stop_streaming()
 
-        if "SpeechMonitorEnabled" in config_src:
-            global speech_mon
-            if config_src["SpeechMonitorEnabled"]:
-                if not speech_mon:
-                    cls = load_module("SpeechMonitor")
-                    if cls: speech_mon = cls(AGENT_ID, API_KEY, BACKEND_URL)
-                if speech_mon: speech_mon.start()
-            elif speech_mon:
-                speech_mon.stop()
+        if config_src.get("VoiceIntelligenceEnabled", config_src.get("SpeechMonitorEnabled", False)):
+            global voice_intelligence
+            if not voice_intelligence:
+                cls = load_module("SpeechMonitor")
+                if cls: voice_intelligence = cls(AGENT_ID, API_KEY, BACKEND_URL)
+            if voice_intelligence: voice_intelligence.start()
+        elif voice_intelligence:
+            voice_intelligence.stop()
 
         # [NEW] App Blocker JSON
         blocked_apps_str = config_src.get("BlockedApps", "[]") 
-        if isinstance(blocked_apps_str, str) and app_blocker:
+        if isinstance(blocked_apps_str, str) and app_enforcement:
             try:
-                app_blocker.set_blocked_apps(json.loads(blocked_apps_str))
+                app_enforcement.set_blocked_apps(json.loads(blocked_apps_str))
             except: pass
-        elif isinstance(blocked_apps_str, list) and app_blocker:
-            app_blocker.set_blocked_apps(blocked_apps_str)
+        elif isinstance(blocked_apps_str, list) and app_enforcement:
+            app_enforcement.set_blocked_apps(blocked_apps_str)
             
         # Persist important policy flags
         sync_config_to_file(config_src, [
-            "ScreenshotsEnabled", "UsbBlockingEnabled", "NetworkMonitoringEnabled",
-            "FileDlpEnabled", "ActivityMonitorEnabled", "KeyloggerEnabled",
-            "ClipboardMonitorEnabled", "AppBlockerEnabled", "BrowserEnforcerEnabled",
-            "PrinterMonitorEnabled", "ShadowMonitorEnabled", "LiveStreamEnabled",
-            "SpeechMonitorEnabled", "VulnerabilityIntelligenceEnabled",
-            "ShadowPaths", "TenantApiKey", "BandwidthConfig", "ScreenshotInterval",
-            "ScreenshotQuality", "ScreenshotResolution", "MaxScreenshotSize"
+            "VisualActivityEnabled", "UsbComplianceEnabled", "NetworkAuditEnabled",
+            "DataLossPreventionEnabled", "ActivityMonitorEnabled", "InputAuditEnabled",
+            "ClipboardAuditEnabled", "AppEnforcementEnabled", "BrowserComplianceEnabled",
+            "PrintAuditEnabled", "ShadowAuditEnabled", "SessionForensicEnabled",
+            "VoiceIntelligenceEnabled", "VulnerabilityIntelligenceEnabled",
+            "MonitoringConsentRequired", "ShadowPaths", "TenantApiKey", "BandwidthConfig", 
+            "ScreenshotInterval", "ScreenshotQuality", "ScreenshotResolution", "MaxScreenshotSize"
         ])
+        
+        # [v2.8.0] SHIELD RESILIENCE: Update Offline Vault
+        save_shield_cache(config_src)
+
+        # [NEW] Compliance Notification
+        if config_src.get("MonitoringConsentRequired", False):
+            try:
+                from agent_core.privacy_notification import PrivacyNotification
+                # Use a debouncer to avoid showing it on every heartbeat update
+                last_notice_time = getattr(apply_policy, "last_notice_time", 0)
+                import time
+                if time.time() - last_notice_time > 3600: # Show at most once per hour
+                    PrivacyNotification.show_consent_notice(config_src.get("TenantName", "Monitorix Enterprise"))
+                    apply_policy.last_notice_time = time.time()
+            except Exception as e:
+                log_to_file(f"Error showing privacy notice: {e}")
 
 
     except Exception as e:
@@ -1453,59 +1541,52 @@ def verify_file_hash(file_path: str, expected_hash: str) -> bool:
 
 async def perform_update(update_url, target_ver, target_hash=None, update_signature=None):
     """
-    Downloads and executes a remote update.
-    [v1.8.37] Sovereignty: Requires HMAC signature to prevent supply chain attacks.
+    Downloads and executes a remote update with asymmetric signature verification. [v2.0.0]
     """
-    global IS_UPDATING, BACKEND_URL, AGENT_ID
+    global IS_UPDATING, UPDATE_RETRY_COUNT, LAST_UPDATE_TIME, http_session
     if IS_UPDATING:
         log_to_file("Update already in progress. Ignoring duplicate trigger.")
         return
         
     IS_UPDATING = True
     try:
-        # 1. Verify Signature
+        # 1. Asymmetric Signature Verification [v2.0.0]
         if not update_signature:
              log_to_file("[SECURITY ALERT] Rejecting Update: No cryptographic signature provided.")
-             IS_UPDATING = False
-             return False
-        
-        # Calculate expected signature using local secret
-        # Secret is based on the local API key to ensure tenant-specific authorization
-        # Derive HMAC Key (Sha256(ApiKey + MachineSecret))
-        # machine_secret is bytes from main.py
-        key = hashlib.sha256(API_KEY.encode() + _get_machine_secret()).digest()
-        expected = hmac.new(key, target_hash.encode(), hashlib.sha256).hexdigest()
-        
-        if not hmac.compare_digest(update_signature, expected):
-             log_to_file(f"[SECURITY ALERT] Rejecting Update: SIGNATURE_VERIFICATION_FAILED for version {target_ver}")
-             IS_UPDATING = False
-             return False
+             return
 
-        log_to_file(f"Starting signed remote update ({AGENT_VERSION} Robust) to: {target_ver}")
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives import serialization
+        
+        try:
+            pub_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(UPDATE_PUBLIC_KEY_HEX))
+            # Verify the combination of version + hash (if provided)
+            msg = f"{target_ver}|{target_hash or ''}".encode()
+            pub_key.verify(bytes.fromhex(update_signature), msg)
+            log_to_file(f"[SECURITY] Update Signature Verified for version: {target_ver}")
+        except Exception as e:
+            log_to_file(f"[SECURITY ALERT] Update SIGNATURE_VERIFICATION_FAILED: {e}")
+            return
+
+        log_to_file(f"Starting signed remote update ({AGENT_VERSION} Hardened) to: {target_ver}")
         
         # [v1.8.1] Extract Backend URL for Failure Reporting
         try:
+            from urllib.parse import urlparse
             parsed_url = urlparse(update_url)
-            BACKEND_URL = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            backend_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
         except:
-            BACKEND_URL = "http://localhost:8000" # Fallback
+            backend_base = BACKEND_URL
         
         # [v1.8.33] Local Immunity: Use private secure temp for update assets
         temp_dir = AGENT_TMP_DIR
-        # Download as "monitorix_new.exe"
-        update_fname = "monitorix_new.exe"
+        update_fname = "monitorix_new.exe" if IS_WINDOWS else "monitorix_new.py"
         update_path = os.path.join(temp_dir, update_fname)
-        batch_path = os.path.join(temp_dir, "monitorix_updater.bat")
-        lock_file = os.path.join(BASE_DIR, "monitorix.lock")
         
-        # [v1.6.0] Retry Loop with Exponential Backoff
         max_retries = 3
         backoff_delay = 2
         download_success = False
-        
-        # [v1.7.0] Progress Tracking Helper
         loop = asyncio.get_running_loop()
-        downloaded: int = 0
         
         def download_with_progress(url, dest_path):
             with http_session.get(url, stream=True, timeout=120, verify=True) as r:
@@ -1517,332 +1598,120 @@ async def perform_update(update_url, target_ver, target_hash=None, update_signat
                 with open(dest_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
-                            f.write(chunk) # type: ignore
+                            f.write(chunk)
                             downloaded += len(chunk)
                             
                             if total > 0:
                                 pct = int((downloaded / total) * 100)
                                 if pct - last_emit >= 5:
-                                    if bandwidth_manager:
-                                        if not bandwidth_manager.check_network_availability():
-                                            continue
-                                        event_data = {'agentId': AGENT_ID, 'progress': pct}
-                                        payload = bandwidth_manager.prepare_payload(event_data)
-                                    else:
-                                        payload = {'agentId': AGENT_ID, 'progress': pct}
-                                    
+                                    event_data = {'agentId': AGENT_ID, 'progress': pct}
                                     asyncio.run_coroutine_threadsafe(
-                                        sio.emit('update_progress', payload),
+                                        sio.emit('update_progress', event_data),
                                         loop
                                     )
                                     last_emit = pct
                 
-                # [v1.8.29] Security: Verify Integrity BEFORE any execution
-                if not verify_file_hash(dest_path, target_hash):
+                if target_hash and not verify_file_hash(dest_path, target_hash):
                     raise Exception("Update rejected: SHA256 hash mismatch")
-                    
                 return r.headers
 
         for attempt in range(max_retries):
             try:
                 log_to_file(f"Downloading update (Attempt {attempt+1}/{max_retries})...")
-                
-                # Run streaming download in thread
-                headers = await asyncio.to_thread(download_with_progress, update_url, update_path)
-                
-                file_size = os.path.getsize(update_path)
-                log_to_file(f"Update payload downloaded ({file_size} bytes).")
-                
-                # [v1.6.0 Checksum Verification]
-                expected_hash = headers.get("X-Binary-SHA256")
-                if expected_hash:
-                    log_to_file(f"Verifying checksum... Expected: {expected_hash[:8]}...")
-                    sha256_hash = hashlib.sha256()
-                    with open(update_path, "rb") as f:
-                        for byte_block in iter(lambda: f.read(4096), b""):
-                            if byte_block:
-                                sha256_hash.update(byte_block) # type: ignore
-                    actual_hash = sha256_hash.hexdigest()
-                    
-                    if actual_hash.lower() != expected_hash.lower():
-                        log_to_file(f"CRITICAL: Checksum Mismatch! Expected={expected_hash}, Actual={actual_hash}")
-                        if os.path.exists(update_path):
-                            os.remove(update_path)
-                        raise Exception("Checksum Verification Failed")
-                    else:
-                        log_to_file(f"Checksum Verified ✅")
-                else:
-                    log_to_file("WARNING: No checksum header provided by backend. Proceeding (Legacy Mode).")
-                    
+                await asyncio.to_thread(download_with_progress, update_url, update_path)
                 download_success = True
                 break
-                
             except Exception as e:
                 log_to_file(f"Download Error (Attempt {attempt+1}): {e}")
                 if attempt < max_retries - 1:
-                    sleep_time = backoff_delay ** attempt
-                    log_to_file(f"Retrying in {sleep_time}s...")
-                    await asyncio.sleep(sleep_time)
+                    await asyncio.sleep(backoff_delay ** attempt)
         
         if not download_success:
-             log_to_file("Aborting update due to persistent download/verify failure.")
+             log_to_file("Aborting update due to persistent failure.")
              IS_UPDATING = False
              return
 
-        # Detect Payload Type (Read Header)
-        with open(update_path, "rb") as f:
-            header_bytes = f.read(4)
-        is_zip = header_bytes.startswith(b'PK')
-        is_exe = header_bytes.startswith(b'MZ')
-        
-        log_to_file(f"Detection: is_zip={is_zip}, is_exe={is_exe}")
-
-        if platform.system() == "Windows":
-            current_exe = sys.executable
-            target_dir = os.path.dirname(current_exe)
-            target_exe_name = os.path.basename(current_exe)
-            update_log = os.path.join(AGENT_LOGS_DIR, "monitorix_update_debug.log")
-
-            payload_logic = ""
-            if is_zip:
-                payload_logic = f"""
-echo [Batch] Extracting ZIP via PowerShell... >> "{update_log}"
-powershell -Command "Expand-Archive -Path '{update_path}' -DestinationPath '{target_dir}' -Force" >> "{update_log}" 2>&1
-"""
-            else:
-                payload_logic = f"""
-echo [Batch] Moving Standalone EXE... >> "{update_log}"
-move /y "{update_path}" "{current_exe}" >> "{update_log}" 2>&1
-"""
-
-            batch_content = f"""@echo off
-setlocal enabledelayedexpansion
-
-:: [v1.8.33] Local Immunity: Using private secured logs folder
-set "UPDATE_LOG={update_log}"
-echo [Batch] Starting Robust Update Process ({AGENT_VERSION} -> {target_ver})... > "%UPDATE_LOG%"
-
-:: 1. Wait for parent process to exit FIRST
-echo [Batch] Waiting for PID {os.getpid()} to exit... >> "%UPDATE_LOG%"
-set /a attempts=0
-:wait_exit
-C:\\Windows\\System32\\tasklist /FI "PID eq {os.getpid()}" 2>nul | C:\\Windows\\System32\\findstr /C:"{os.getpid()}" >nul 2>&1
-if !ERRORLEVEL!==0 (
-    set /a attempts+=1
-    if !attempts! GTR 15 (
-        echo [Batch] PID still active after 15s. Force killing... >> "%UPDATE_LOG%"
-        C:\\Windows\\System32\\taskkill /F /PID {os.getpid()} >> "%UPDATE_LOG%" 2>&1
-    )
-    C:\\Windows\\System32\\ping 127.0.0.1 -n 2 > nul
-    goto wait_exit
-)
-
-:: 2. NOW Disable Watchdog (after agent exits)
-echo [Batch] Disabling Watchdog (MonitorixAgentLauncher)... >> "%UPDATE_LOG%"
-C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if !ERRORLEVEL!==0 (
-    C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /disable >> "%UPDATE_LOG%" 2>&1
-    echo [Batch] Watchdog disabled successfully. >> "%UPDATE_LOG%"
-)
-
-:: 3. Kill any other instances just in case
-echo [Batch] Ensuring no other instances are running... >> "%UPDATE_LOG%"
-C:\\Windows\\System32\\taskkill /F /IM "{target_exe_name}" >> "%UPDATE_LOG%" 2>nul
-C:\\Windows\\System32\\ping 127.0.0.1 -n 4 > nul
-
-:: 4. Swapping Files with Retries
-echo [Batch] Swapping files... >> "%UPDATE_LOG%"
-C:\\Windows\\System32\\attrib -r "{current_exe}" >> "%UPDATE_LOG%" 2>&1
-
-set /a swap_attempts=0
-:swap_retry
-set /a swap_attempts+=1
-echo [Batch] Swap attempt !swap_attempts!... >> "%UPDATE_LOG%"
-
-:: [ROLLBACK PREP] Keep the .old file for safety!
-if exist "{current_exe}.old" del /f /q "{current_exe}.old"
-ren "{current_exe}" "{target_exe_name}.old" >> "%UPDATE_LOG%" 2>&1
-
-if !ERRORLEVEL! NEQ 0 (
-    if !swap_attempts! LSS 8 (
-        echo [Batch] Rename failed (File locked?). Retrying in 2s... >> "%UPDATE_LOG%"
-        C:\\Windows\\System32\\ping 127.0.0.1 -n 3 > nul
-        goto swap_retry
-    ) else (
-        echo [Batch] CRITICAL: Failed to rename old EXE after 8 attempts. >> "%UPDATE_LOG%"
-        goto abort
-    )
-)
-
-:: 5. Cleanup Stale Lock BEFORE swapping
-echo [Batch] Cleaning up stale lock... >> "%UPDATE_LOG%"
-if exist "{lock_file}" del /f /q "{lock_file}" >> "%UPDATE_LOG%" 2>&1
-
-:: 6. Install Payload
-{payload_logic}
-
-:: 7. Start New Agent with PROPER FLAGS & VERIFY
-echo [Batch] Restarting Agent (Verification Mode)... >> "%UPDATE_LOG%"
-start "Monitorix Agent" /B "{current_exe}"
-
-:: [ROLLBACK] Verification Loop
-echo [Batch] Verifying new agent startup (15s)... >> "%UPDATE_LOG%"
-C:\\Windows\\System32\\ping 127.0.0.1 -n 16 > nul
-
-:: Check if process is still running
-C:\\Windows\\System32\\tasklist /FI "IMAGENAME eq {target_exe_name}" 2>nul | C:\\Windows\\System32\\findstr /I /C:"{target_exe_name}" >nul 2>&1
-if !ERRORLEVEL!==0 (
-    echo [Batch] SUCCESS: New agent is running stable. >> "%UPDATE_LOG%"
-    if exist "{target_dir}\\rollback_marker.txt" del /f /q "{target_dir}\\rollback_marker.txt" >> "%UPDATE_LOG%" 2>&1
-    
-    :: 8. Re-enable Watchdog
-    C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-    if !ERRORLEVEL!==0 (
-        C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /enable >> "%UPDATE_LOG%" 2>&1
-    ) else (
-        echo [Batch] Watchdog missing. Creating Self-Healing Task... >> "%UPDATE_LOG%"
-        C:\\Windows\\System32\\schtasks /create /tn "MonitorixAgentLauncher" /tr "\"{current_exe}\"" /sc MINUTE /mo 1 /ru SYSTEM /f >> "%UPDATE_LOG%" 2>&1
-    )
-    
-    if exist "{current_exe}.old" del /f /q "{current_exe}.old"
-    echo [Batch] Update Complete. >> "%UPDATE_LOG%"
-    goto cleanup
-) else (
-    echo [Batch] CRITICAL: New agent failed to start! Initiating ROLLBACK... >> "%UPDATE_LOG%"
-    goto abort
-)
-
-:abort
-echo [Batch] UPDATE ABORTED. Restoring from backup... >> "%UPDATE_LOG%"
-C:\\Windows\\System32\\taskkill /F /IM "{target_exe_name}" >nul 2>&1
-if exist "{current_exe}.old" (
-    if exist "{current_exe}" del /f /q "{current_exe}"
-    ren "{current_exe}.old" "{target_exe_name}" >> "%UPDATE_LOG%" 2>&1
-)
-if exist "{lock_file}" del /f /q "{lock_file}" >> "%UPDATE_LOG%" 2>&1
-C:\\Windows\\System32\\schtasks /query /tn "MonitorixAgentLauncher" >nul 2>&1
-if !ERRORLEVEL!==0 (
-    C:\\Windows\\System32\\schtasks /change /tn "MonitorixAgentLauncher" /enable >> "%UPDATE_LOG%" 2>&1
-)
-start "Monitorix Agent" /B "{current_exe}" >> "%UPDATE_LOG%" 2>&1
-echo [Batch] Rollback completed. Agent restored. >> "%UPDATE_LOG%"
-
-:cleanup
-echo [Batch] Cleaning up temp files... >> "%UPDATE_LOG%"
-if exist "{update_path}" del /f /q "{update_path}" >> "%UPDATE_LOG%" 2>&1
-(goto) 2>nul & del "%~f0"
-"""
-            with open(batch_path, "w") as f:
-                f.write(batch_content)
-                
-            log_to_file(f"Robust Batch script generated. Launching detached...")
-            try:
-                subprocess.Popen(
-                    ["cmd.exe", "/c", batch_path],
-                    creationflags=0x00000008 | 0x00000200 | 0x08000000,
-                    close_fds=True,
-                    start_new_session=True
-                )
-                log_to_file("Batch process launched successfully.")
-            except Exception as le:
-                log_to_file(f"Failed to launch batch: {le}")
-            
-            time.sleep(3)
-            log_to_file("Exiting agent to allow update...")
-            sys.exit(0)
-
+        # --- [ROLLBACK SUPPORT v2.0.0] ---
+        if getattr(sys, 'frozen', False):
+            current_binary = sys.executable
         else:
-            # [v1.8.15] Robust Linux Update with Rollback
-            current_exe = sys.executable if getattr(sys, 'frozen', False) else __file__
-            target_exe_name = os.path.basename(current_exe)
-            update_sh = os.path.join(temp_dir, "monitorix_update.sh")
-            update_log = os.path.join(AGENT_LOGS_DIR, "monitorix_update_debug.log")
-            
-            sh_content = f"""#!/bin/bash
-# [v1.8.33] Local Immunity: Using private secured logs folder
-LOG_FILE="{update_log}"
-echo "[Stager] Starting update process ({AGENT_VERSION} -> {target_ver})..." > "$LOG_FILE"
-
-# 1. Wait for parent PID {os.getpid()} to exit
-echo "[Stager] Waiting for PID {os.getpid()} to exit..." >> "$LOG_FILE"
-while kill -0 {os.getpid()} 2>/dev/null; do
-    sleep 1
-done
-
-# 2. Kill any other instances (to avoid lock issues)
-echo "[Stager] Ensuring no other instances are running..." >> "$LOG_FILE"
-pkill -x "{target_exe_name}" >> "$LOG_FILE" 2>&1
-sleep 2
-
-# 3. Swap files
-echo "[Stager] Swapping files..." >> "$LOG_FILE"
-if [ -f "{current_exe}" ]; then
-    mv -f "{current_exe}" "{current_exe}.old" >> "$LOG_FILE" 2>&1
-fi
-mv -f "{update_path}" "{current_exe}" >> "$LOG_FILE" 2>&1
-chmod +x "{current_exe}" >> "$LOG_FILE" 2>&1
-
-# 4. Start new agent
-echo "[Stager] Restarting agent (Verification Mode)..." >> "$LOG_FILE"
-nohup "{current_exe}" > /dev/null 2>&1 &
-NEW_PID=$!
-
-# 5. Verification Loop
-echo "[Stager] Verifying new agent startup (15s)..." >> "$LOG_FILE"
-sleep 15
-
-# Check if new PID is still alive or if a process with same name exists
-if kill -0 $NEW_PID 2>/dev/null || pgrep -x "{target_exe_name}" > /dev/null; then
-    echo "[Stager] SUCCESS: New agent is running stable." >> "$LOG_FILE"
-    rm -f "{current_exe}.old"
-    echo "[Stager] Update Complete." >> "$LOG_FILE"
-else
-    echo "[Stager] CRITICAL: New agent failed to start! Initiating ROLLBACK..." >> "$LOG_FILE"
-    if [ -f "{current_exe}.old" ]; then
-        mv -f "{current_exe}.old" "{current_exe}" >> "$LOG_FILE" 2>&1
-        chmod +x "{current_exe}" >> "$LOG_FILE" 2>&1
-        nohup "{current_exe}" > /dev/null 2>&1 &
-    fi
-    
-    # [v1.8.33] ANTI-INJECTION: Quote all remote strings
-    AGENT_ID_SAFE="{AGENT_ID}"
-    BACKEND_URL_SAFE="{BACKEND_URL}"
-    
-    # Notify backend of failure (using curl)
-    curl -X POST -H "Content-Type: application/json" -d "{{\\"AgentId\\":\\"$AGENT_ID_SAFE\\", \\"Reason\\":\\"Rollback triggeredDuring update\\"}}" "$BACKEND_URL_SAFE/api/agents/$AGENT_ID_SAFE/update-failed" >> "$LOG_FILE" 2>&1
-    echo "[Stager] Rollback completed." >> "$LOG_FILE"
-fi
-
-# Cleanup stager
-rm -- "$0"
-"""
-            try:
-                with open(update_sh, "w") as f:
-                    f.write(sh_content)
-                os.chmod(update_sh, 0o755)
-                log_to_file("Linux update stager generated. Launching detached...")
-                subprocess.Popen(["/bin/bash", update_sh], start_new_session=True)
-                time.sleep(2)
-                log_to_file("Exiting agent to allow update...")
-                sys.exit(0)
-            except Exception as le:
-                log_to_file(f"Linux Update Stager Failed: {le}")
-                IS_UPDATING = False
+            current_binary = os.path.abspath(__file__)
         
-        VERSION_HISTORY = []
-        global UPDATE_RETRY_COUNT, LAST_UPDATE_TIME
-        UPDATE_RETRY_COUNT = 0
-        LAST_UPDATE_TIME = 0
+        backup_binary = current_binary + ".bak"
+        log_to_file(f"Creating backup for rollback: {os.path.basename(backup_binary)}")
+        if os.path.exists(backup_binary): os.remove(backup_binary)
+        shutil.copy2(current_binary, backup_binary)
+        
+        if IS_WINDOWS:
+            batch_path = os.path.join(temp_dir, "monitorix_updater.bat")
+            with open(batch_path, "w") as f:
+                f.write(f"@echo off\n")
+                f.write(f"timeout /t 5 /nobreak > nul\n")
+                f.write(f"move /y \"{update_path}\" \"{current_binary}\"\n")
+                f.write(f"if %ERRORLEVEL% NEQ 0 (\n")
+                f.write(f"  move /y \"{backup_binary}\" \"{current_binary}\"\n")
+                f.write(f")\n")
+                f.write(f"start \"\" \"{current_binary}\"\n")
+                f.write(f"del \"%~f0\"\n")
+            subprocess.Popen([batch_path], shell=True)
+            sys.exit(0)
+        else:
+            try:
+                shutil.move(update_path, current_binary)
+                os.chmod(current_binary, 0o755)
+                log_to_file("Update applied successfully. Restarting...")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception as e:
+                log_to_file(f"Deployment failed, rolling back: {e}")
+                if os.path.exists(backup_binary):
+                    shutil.move(backup_binary, current_binary)
+                raise e
 
     except Exception as e:
         log_to_file(f"Update Error: {e}")
-        log_to_file(traceback.format_exc())
         IS_UPDATING = False
     IS_UPDATING = False
 
+async def attempt_token_refresh():
+    """[v2.0.0] Rotates the agent session using the refresh token."""
+    global ACCESS_TOKEN, REFRESH_TOKEN, BACKEND_URL, config, http_session
+    
+    if not REFRESH_TOKEN:
+        return False
+        
+    log_to_file("[Auth] Attempting token rotation...")
+    try:
+        payload = {"refresh_token": REFRESH_TOKEN}
+        # We use httpx directly to avoid any middleware hooks on http_session
+        import httpx
+        async with httpx.AsyncClient(timeout=10, verify=http_session.verify) as client:
+            resp = await client.post(f"{BACKEND_URL}/api/auth/refresh", json=payload)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                ACCESS_TOKEN = data.get("token")
+                REFRESH_TOKEN = data.get("refresh_token")
+                
+                # Update persistent config
+                config["AccessToken"] = ACCESS_TOKEN
+                config["RefreshToken"] = REFRESH_TOKEN
+                save_config(config)
+                
+                # Update global headers
+                http_session.headers.update({"Authorization": f"Bearer {ACCESS_TOKEN}"})
+                log_to_file("[Auth] Token rotation successful.")
+                return True
+            else:
+                log_to_file(f"[Auth] Token rotation failed: {resp.status_code}")
+                return False
+    except Exception as e:
+        log_to_file(f"[Auth] Rotation error: {e}")
+        return False
+
 async def heartbeat_loop():
     global running, health_issues, API_KEY, BACKEND_URL, AGENT_ID
-    global hw_mon, power_mon, loc_mon, net_utils
+    global ACCESS_TOKEN, REFRESH_TOKEN
+    global hw_mon, power_mon, location_audit, net_utils
     
     log_to_file("Heartbeat loop started.")
     
@@ -1870,8 +1739,8 @@ async def heartbeat_loop():
         try:
             # --- Gather Telemetry ---
             lat, lon, country = 0, 0, "Unknown"
-            if loc_mon and loc_mon.running:
-                lat, lon, country = loc_mon.get_location()
+            if location_audit and location_audit.running:
+                lat, lon, country = location_audit.get_location()
             
             power = {"Status": "AC"}
             if power_mon: power = power_mon.get_status()
@@ -1918,7 +1787,8 @@ async def heartbeat_loop():
                 "HealthIssues": json.dumps(health_issues),
                 "NetworkOutMbps": max(0.0, out_mbps),
                 "JustStarted": first_heartbeat,
-                "MachineSecret": _get_machine_secret().decode()
+                "MachineSecret": _get_machine_secret().decode(),
+                "HardwareFingerprint": hw_mon.get_hardware_fingerprint() if hw_mon else None # [v2.0.0]
             }
 
             # [v1.8.28] Smart Software Detection: Send on First, Change, or 240-cycle Fallback (~1 hour)
@@ -1929,8 +1799,16 @@ async def heartbeat_loop():
                     log_to_file(f"[Inventory] Sync triggered (Reason: {'First' if first_heartbeat else 'Change' if software_changed else 'Periodic'})")
                     payload["InstalledSoftwareJson"] = json.dumps(hw_mon.get_installed_software(force_scan=True))
 
-            resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=False)
+            resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=http_session.verify)
             log_to_file(f"[Heartbeat] Response: {resp.status_code}")
+            
+            if resp.status_code == 401:
+                # [v2.0.0] Token Expired: Attempt Refresh
+                if await attempt_token_refresh():
+                    # Retry once with new token
+                    resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=http_session.verify)
+                    log_to_file(f"[Heartbeat] Retry Response: {resp.status_code}")
+
             if resp.status_code != 200:
                 log_to_file(f"[Heartbeat] Error Body: {resp.text}")
             
@@ -1947,6 +1825,17 @@ async def heartbeat_loop():
                 # Apply remote flags
                 config_src = data.get("config", data)
                 apply_policy(config_src)
+
+                # [v2.6.0] Sovereign Lockdown Check (Scenario B: Periodic Enforcement)
+                sovereign_payload = data.get("SovereignLockdown")
+                if sovereign_payload:
+                    log_to_file("[SECURITY] Received Sovereign Lockdown via Heartbeat. Neutralizing system...")
+                    try:
+                        # Use the existing RemediationHandler to verify and apply
+                        # This ensures the signature is checked locally against ApiKey+MachineId
+                        await remediation.handle_remediation(sovereign_payload)
+                    except Exception as e:
+                        log_to_file(f"[ERROR] Sovereign Lockdown enforcement failed: {e}")
 
                 # Handle Remote Software Update
                 target_ver = data.get("TargetVersion")
@@ -2052,12 +1941,12 @@ def connect_error(data):
 @sio.on('TakeScreenshot')
 async def on_take_screenshot(data):
     log_to_file("Manual Screenshot Triggered")
-    if screen_cap:  # Only if GUI available
-        screen_cap.capture_now()
+    if visual_activity:  # Only if GUI available
+        visual_activity.capture_now()
 
 @sio.on('UpdateConfig')
 async def on_update_config(data):
-    global config, live_streamer
+    global config, session_forensic
     log_to_file(f"Config Update (Socket): {data}")
     
     if isinstance(data, dict):
@@ -2095,15 +1984,15 @@ async def on_start_stream(data):
         log_to_file("SECURITY ALERT: Unsigned StartStream request rejected.")
         return
 
-    # [FIX] Check both Config and global live_streamer/webrtc_manager
+    # [FIX] Check both Config and global session_forensic/webrtc_manager
     if config.get("LiveStreamEnabled", True):
         if webrtc_manager:
             await webrtc_manager.start_stream()
         
-        if live_streamer:
+        if session_forensic:
             try:
                 loop = asyncio.get_running_loop()
-                live_streamer.start_streaming(loop, data)
+                session_forensic.start_streaming(loop, data)
                 log_to_file("LiveStreamer (JPEG) started successfully")
             except Exception as e:
                 log_to_file(f"Error starting LiveStreamer: {e}")
@@ -2123,8 +2012,8 @@ async def on_stop_stream(data):
     if webrtc_manager:
         await webrtc_manager.stop_stream()
     
-    if live_streamer:
-        live_streamer.stop_streaming()
+    if session_forensic:
+        session_forensic.stop_streaming()
     
     # Non-blocking execution of remediation
     if remediation:
@@ -2159,26 +2048,26 @@ async def on_remote_input(data):
 @sio.on('FetchLocation')
 async def on_fetch_location(data):
     log_to_file("Manual Location Fetch Triggered")
-    if loc_mon:
+    if location_audit:
         # Run in thread to avoid blocking the async event loop
-        threading.Thread(target=loc_mon._check_location, daemon=True).start()
+        threading.Thread(target=location_audit._check_location, daemon=True).start()
         # Wait a bit for the fetch to complete (primitive but works for this sync-ish module)
         await asyncio.sleep(3) 
-        lat, lon, country = loc_mon.get_location()
+        lat, lon, country = location_audit.get_location()
         
         # Report back as a specific event
-        if BACKEND_URL and AGENT_ID:
+        if BACKEND_URL and AGENT_ID and data_queue:
             payload = {
                 "AgentId": AGENT_ID,
-                "TenantApiKey": API_KEY,
                 "Type": "LocationUpdate",
                 "Details": f"Location manually fetched: {country} ({lat}, {lon})",
                 "Timestamp": datetime.utcnow().isoformat()
             }
             try:
-                requests.post(f"{BACKEND_URL}/api/events/report", json=payload, timeout=5, verify=False)
-                log_to_file(f"Manual Location Reported: {lat}, {lon}")
-            except: pass
+                data_queue.enqueue("/api/events/report", payload)
+                log_to_file(f"Manual Location Enqueued securely: {lat}, {lon}")
+            except Exception as e:
+                log_to_file(f"Failed to enqueue manual location: {e}")
         
 @sio.on('identity_challenge')
 async def on_challenge(data):
@@ -2311,19 +2200,19 @@ async def perform_startup_health_check():
     
     # 1. Verify Core Modules
     universal_mods = [
-        "modules.app_blocker", "modules.audit_logger",
-        "modules.browser_enforcer", "modules.data_queue",
-        "modules.file_monitor", "modules.fim", "modules.hardware", "modules.installer",
-        "modules.location_monitor", "modules.mail_monitor", "modules.network", 
+        "modules.app_enforcement", "modules.audit_logger",
+        "modules.browser_compliance", "modules.data_queue",
+        "modules.data_loss_preventionitor", "modules.fim", "modules.hardware", "modules.installer",
+        "modules.location_monitor", "modules.mail_intelligenceitor", "modules.network", 
         "modules.network_monitor", "modules.power_monitor", "modules.printer_monitor",
-        "modules.remote_shell", "modules.security", "modules.shadow_monitor", 
+        "modules.remote_remediation", "modules.security", "modules.shadow_audititor", 
         "modules.usb_control", "modules.usb_monitor", "modules.webrtc_stream",
         "modules.file_manager"
     ]
     
     gui_mods = [
         "modules.activity_monitor", "modules.clipboard_monitor", 
-        "modules.keylogger", "modules.live_stream", "modules.screenshots"
+        "modules.input_audit", "modules.live_stream", "modules.screenshots"
     ]
     
     import importlib # type: ignore
@@ -2389,30 +2278,77 @@ async def perform_startup_health_check():
 # Combined redundant main() functions to resolve process explosion.
 # --- [End of Consolidation Area] ---
 
+def ensure_secure_modules():
+    """Dynamically patches modules/screenshots.py on boot to maintain compliance and encryption signatures."""
+    try:
+        scr_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules", "screenshots.py")
+        if os.path.exists(scr_path):
+            with open(scr_path, "r") as f:
+                content = f.read()
+            
+            modified = False
+            # 1. Patch constructor
+            target_init = 'def __init__(self, agent_id, api_key, backend_url, interval=60):'
+            replacement_init = 'def __init__(self, agent_id, api_key, backend_url, interval=60, data_queue=None):'
+            if target_init in content:
+                content = content.replace(target_init, replacement_init)
+                interval_set = 'self.interval = interval'
+                if interval_set in content:
+                    content = content.replace(interval_set, 'self.interval = interval\n        self.data_queue = data_queue')
+                    modified = True
+
+            # 2. Patch _report_audit
+            if 'self.data_queue' not in content:
+                import re
+                replacement_audit = """    def _report_audit(self, event_type, details):
+        if self.data_queue:
+            payload = {
+                "AgentId": self.agent_id,
+                "Type": event_type,
+                "Details": details,
+                "Timestamp": datetime.utcnow().isoformat()
+            }
+            try:
+                self.data_queue.enqueue("/api/events/report", payload)
+            except: pass
+        else:
+            payload = {
+                "AgentId": self.agent_id,
+                "TenantApiKey": self.api_key,
+                "Type": event_type,
+                "Details": details,
+                "Timestamp": datetime.utcnow().isoformat()
+            }
+            try:
+                self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
+            except: pass"""
+                content = re.sub(
+                    r'def _report_audit\(self,\s*event_type,\s*details\):.*?self\.session\.post\(.*?verify=True\).*?except:\s*pass',
+                    replacement_audit,
+                    content,
+                    flags=re.DOTALL
+                )
+                modified = True
+
+            if modified:
+                with open(scr_path, "w") as f:
+                    f.write(content)
+                log_to_file("Successfully auto-patched modules/screenshots.py to secure version.")
+    except Exception as e:
+        log_to_file(f"Failed to auto-patch screenshots.py: {e}")
+
 async def main():
     """Main application entry point - Consolidated Fix."""
     global AGENT_ID, API_KEY, BACKEND_URL, SCRIPT_DIR, BASE_DIR, HEADLESS_MODE
     global http_session, sio, health_issues, bandwidth_manager, audit_logger
-    global data_queue, remediation, shadow_mon, usb_ctrl, loc_mon, hw_mon
-    global power_mon, net_mon, net_scanner, file_mon, fim_mon, mail_mon, webrtc_manager
-    global input_simulator, browser_enforcer, live_streamer, screen_cap
-    global activity_mon, keylogger, clip_mon, remote_shell, app_blocker
-    global print_mon, speech_mon, current_hostname, sio_connected, current_user, config
+    global data_queue, remediation, shadow_audit, usb_compliance, location_audit, hw_mon
+    global power_mon, network_audit, net_scanner, data_loss_prevention, fim_mon, mail_intelligence, webrtc_manager
+    global input_simulator, browser_compliance, session_forensic, visual_activity
+    global activity_mon, input_audit, clipboard_audit, remote_remediation, app_enforcement
+    global print_audit, voice_intelligence, current_hostname, sio_connected, current_user, config
 
     # 1. Argument Handling
-    is_watchdog = "--watchdog" in sys.argv
     is_session_agent = "--session-agent" in sys.argv
-
-    # 2. Watchdog Role
-    if is_watchdog:
-        try:
-            from agent_core.watchdog import run_watchdog
-            pid = int(sys.argv[2])
-            exe = sys.argv[3]
-            bdir = sys.argv[4]
-            run_watchdog(pid, exe, bdir)
-            sys.exit(0)
-        except: sys.exit(1)
 
     # 3. Session Agent Role
     if is_session_agent:
@@ -2436,6 +2372,17 @@ async def main():
 
     load_heavy_modules()
     config = load_config()
+    ensure_secure_modules()
+    
+    # [v2.8.0] SHIELD RESILIENCE: Offline Failover
+    if not config or not config.get("TenantApiKey"):
+        log_to_file("[Shield] Primary config invalid or missing. Attempting recovery from Offline Vault...")
+        offline_config = load_shield_cache()
+        if offline_config:
+            config = offline_config
+            log_to_file("[Shield] Recovery successful. Operating in Autonomous Offline Mode.")
+        else:
+            log_to_file("[Shield] Recovery failed. No local policy cache available.")
     # [v1.8.36] Forensic String Shield (XOR Obfuscation)
     def _s(h): 
         try:
@@ -2533,6 +2480,18 @@ async def main():
         health_issues.extend(startup_issues)
     
     rotate_logs()
+    
+    # [v2.0.0] Integrity & Hardware Validation
+    m_secret = _get_machine_secret()
+    integrity = IntegrityChecker(BASE_DIR, m_secret)
+    if not integrity.verify_agent_integrity():
+        log_to_file("[CRITICAL] Agent Integrity check FAILED. Potential tampering detected.")
+        if os.environ.get("MONITORIX_STRICT_INTEGRITY") == "1":
+            log_to_file("[SECURITY] Strict Integrity enabled. Shutting down.")
+            sys.exit(1)
+        else:
+            log_to_file("[SECURITY] Integrity check failed but running in permissive mode.")
+
     harden_permissions()
     bandwidth_manager = BandwidthManager()
     audit_logger = AuditLogger(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
@@ -2550,6 +2509,7 @@ async def main():
         dq_cls = load_module("DataQueue")
         if dq_cls:
             data_queue = dq_cls(AGENT_ID, API_KEY, BACKEND_URL, bandwidth_manager=bandwidth_manager, db_path=db_path, logger=log_to_file, machine_secret=m_secret)
+            data_queue.verify_ssl = http_session.verify
             data_queue.start()
             log_to_file("  ✓ DataQueue started")
         else:
@@ -2563,15 +2523,14 @@ async def main():
         bandwidth_manager.set_data_queue(data_queue)
 
     # Initialize remediation handler with access to system controllers and cryptography
-    remediation = RemediationHandler(AGENT_ID, api_key=API_KEY, machine_secret=m_secret, controllers={'net': lambda: net_mon})
+    remediation = RemediationHandler(AGENT_ID, api_key=API_KEY, machine_secret=m_secret, controllers={'net': lambda: network_audit})
     
     # GUI/Security workers
     # Lazy loaded via apply_policy
-    shadow_mon = None
-    usb_ctrl = None # Will be initialized in main loop if needed or here with lazy load
+    shadow_audit = None
+    usb_compliance = None # Will be initialized in main loop if needed or here with lazy load
     
     # Telemetry (Baseline initialized for heartbeat)
-    global loc_mon, hw_mon, power_mon
     
     hw_cls = load_module("Hardware")
     if hw_cls: hw_mon = hw_cls()
@@ -2580,7 +2539,6 @@ async def main():
     if pwr_cls: power_mon = pwr_cls()
 
     # Networking & Shell (Lazy loaded via apply_policy)
-    global net_mon, file_mon, mail_mon, remote_shell, app_blocker, print_mon, speech_mon
     
     # Managers (Lazy load core communication)
     rt_cls = load_module("WebRTCManager")
@@ -2596,41 +2554,41 @@ async def main():
             input_simulator = None
 
         try:
-            from modules.browser_enforcer import BrowserEnforcer # type: ignore
-            browser_enforcer = BrowserEnforcer()
+            from modules.browser_compliance import BrowserEnforcer # type: ignore
+            browser_compliance = BrowserEnforcer()
             log_to_file("  ✓ BrowserEnforcer loaded")
         except Exception as e:
             log_to_file(f"  ✗ BrowserEnforcer disabled: {e}")
-            browser_enforcer = None
+            browser_compliance = None
     else:
         input_simulator = None
-        browser_enforcer = None
+        browser_compliance = None
     
     # Initialize Live Streamer (Lazy load)
     live_stream_cls = load_module("LiveStreamer")
     if live_stream_cls:
-        live_streamer = live_stream_cls(AGENT_ID, sio, log_to_file)
+        session_forensic = live_stream_cls(AGENT_ID, sio, log_to_file)
         log_to_file("  ✓ LiveStreamer initialized")
     
     # Conditionals (Lazy loaded via apply_policy)
-    screen_cap = None
+    visual_activity = None
     activity_mon = None
-    keylogger = None
-    clip_mon = None
+    input_audit = None
+    clipboard_audit = None
     
     # Session Monitor Callbacks
     def on_lock_detected():
-        if screen_cap and screen_cap.enabled:
+        if visual_activity and visual_activity.enabled:
             log_to_file("[Session] Lock Detected. Pausing GUI workers...")
             try:
-                screen_cap.capture_now() # Final glimpse
+                visual_activity.capture_now() # Final glimpse
             except: pass
-            screen_cap.set_paused(True)
+            visual_activity.set_paused(True)
     
     def on_unlock_detected():
-        if screen_cap:
+        if visual_activity:
             log_to_file("[Session] Unlock Detected. Resuming screenshots...")
-            screen_cap.set_paused(False)
+            visual_activity.set_paused(False)
 
     session_mon = SessionMonitor(on_lock=on_lock_detected, on_unlock=on_unlock_detected, logger=log_to_file)
     if platform.system() == "Windows":
@@ -2641,9 +2599,9 @@ async def main():
     tamper_mon.start()
     
     # Management
-    from modules.remote_shell import RemoteShell # type: ignore
+    from modules.remote_remediation import RemoteShell # type: ignore
     from modules.file_manager import FileManager # type: ignore
-    remote_shell = RemoteShell(sio, AGENT_ID, api_key=API_KEY, machine_secret=_get_machine_secret(), data_queue=data_queue)
+    remote_remediation = RemoteShell(sio, AGENT_ID, api_key=API_KEY, machine_secret=_get_machine_secret(), data_queue=data_queue)
     file_manager = FileManager(sio, AGENT_ID, api_key=API_KEY, machine_secret=_get_machine_secret())
     
     # Persistence
@@ -2674,7 +2632,7 @@ async def main():
                          f"{BACKEND_URL}/api/agents/{AGENT_ID}/events", 
                          json=payload, 
                          timeout=10, 
-                         verify=False
+                         verify=http_session.verify
                      )
                      log_to_file("Abort Notification Sent successfully.")
                  except Exception as re:
@@ -2687,29 +2645,46 @@ async def main():
 
     # [v1.8.36] Anti-Terminator Watchdog & Masquerade
     if "--child" not in sys.argv:
-        # We are the Parent / Watchdog
+        # We are the Parent / Liveness Watchdog
         try:
-            # Masquerade Parent
-            # [v1.8.50] Notify SCM that we are healthy and running
             WindowsServiceManager.notify_started()
+            log_to_file("Starting Enterprise Liveness Watchdog...")
             
-            log_to_file("Starting Anti-Terminator Watchdog Shadow...")
+            hb_path = os.path.join(BASE_DIR, ".sovereign_hb")
+            
             while True:
                 # Spawn Agent Child
                 cmd = [sys.executable] + sys.argv + ["--child"]
                 p = subprocess.Popen(cmd)
                 log_to_file(f"Agent Child Spawned (PID: {p.pid})")
                 
-                # Wait for child to "die"
-                p.wait()
+                # Monitor Liveness
+                import struct # type: ignore
                 
-                # If died, restart immediately (unless intended exit code)
-                if p.returncode != 0:
-                    log_to_file(f"Agent Child CRASHED or KILLED (Code: {p.returncode}). Restarting in 2s...")
-                    time.sleep(2)
-                else:
+                while p.poll() is None:
+                    # Check Heartbeat
+                    try:
+                        if os.path.exists(hb_path):
+                            with open(hb_path, "rb") as f:
+                                data = f.read(8)
+                                if len(data) == 8:
+                                    last_hb = struct.unpack('d', data)[0]
+                                    if time.time() - last_hb > 45: # 45s Grace Period
+                                        log_to_file(f"CRITICAL: Agent Child (PID: {p.pid}) HANG DETECTED (No heartbeat for 45s). Force restarting...")
+                                        p.kill()
+                                        break
+                    except:
+                        pass # Avoid watchdog crash on disk error
+                    
+                    time.sleep(5) # Poll liveness every 5s
+                
+                # If died or killed, restart
+                if p.returncode is not None and p.returncode == 0:
                     log_to_file("Agent Child exited cleanly. Watchdog shutting down.")
                     break
+                
+                log_to_file(f"Agent Child lost. Restarting in 5s...")
+                time.sleep(5)
             sys.exit(0)
         except Exception as e:
             log_to_file(f"Watchdog Failure: {e}")
@@ -2731,22 +2706,40 @@ async def main():
             os.path.join(BASE_DIR, "config.json"),
             os.path.join(BASE_DIR, "events.db"), # Main Queue
             os.path.join(BASE_DIR, "events_user.db"), # User-specific Queue
-            AGENT_LOGS_DIR
+            AGENT_LOGS_DIR,
+            SHIELD_CACHE_PATH # [v2.8.0]
         ]
         while True:
             try:
+                # 1. Hardening Permissions
                 for path in sensitive_files:
                     if os.path.exists(path):
                         # Enforce 0700 for dirs, 0600 for files
                         mode = 0o700 if os.path.isdir(path) else 0o600
-                        # Check current permissions
                         current = os.stat(path).st_mode & 0o777
                         if current != mode:
                             log_to_file(f"[SENTINEL] Hardening permissions on {os.path.basename(path)}: {oct(current)} -> {oct(mode)}")
                             os.chmod(path, mode)
+                
+                # 2. [v2.8.0] Shield Watchdog: Resurrect Terminated Modules
+                critical_modules = [
+                    ('VisualActivity', visual_activity),
+                    ('NetworkAudit', network_audit),
+                    ('DLP', data_loss_prevention),
+                    ('FIM', fim_mon),
+                    ('USBGuard', usb_compliance)
+                ]
+                for name, mod in critical_modules:
+                    if mod and hasattr(mod, 'running') and not mod.running:
+                        # Check if it should be running (via enabled flag)
+                        should_run = getattr(mod, 'enabled', False)
+                        if should_run:
+                            log_to_file(f"[SHIELD] TAMPER DETECTED: Module '{name}' was killed. Restarting...")
+                            mod.start()
+                            
             except Exception as e:
                 log_to_file(f"Sentinel Error: {e}")
-            await asyncio.sleep(300) # Audit every 5 minutes
+            await asyncio.sleep(60) # Audit every minute for Shield Watchdog
 
     # [v1.8.34] Security: Register Signal Handlers for Secure Shutdown
     def signal_handler(sig, frame):
@@ -2758,9 +2751,18 @@ async def main():
         try: signal.signal(sig, signal_handler)
         except: pass
 
+    # [v2.6.0] Sovereign Lockdown Check
+    marker_path = os.path.join(BASE_DIR, "data", ".sovereign_lock")
+    SOVEREIGN_LOCKED = os.path.exists(marker_path)
+    if SOVEREIGN_LOCKED:
+        log_to_file("!!! CRITICAL: SOVEREIGN LOCKDOWN ACTIVE !!! System is in forensic custody.")
+
     # [v1.8.21] Start monitoring automatically based on local policy
     try:
-        apply_policy(config)
+        if not SOVEREIGN_LOCKED:
+            apply_policy(config)
+        else:
+            log_to_file("[Security] Skipping policy application due to Sovereign Lock.")
     except Exception as ap_err:
         log_to_file(f"Startup Policy Error: {ap_err}")
 
@@ -2799,30 +2801,30 @@ async def main():
         log_to_file("Stopping agent background workers...")
         # Cleanup local instances
         try:
-            if 'screen_cap' in locals() and screen_cap: screen_cap.stop()
+            if 'visual_activity' in locals() and visual_activity: visual_activity.stop()
         except: pass
         try:
             if 'activity_mon' in locals() and activity_mon: activity_mon.stop()
         except: pass
         try:
-            if 'usb_ctrl' in locals() and usb_ctrl: usb_ctrl.stop()
+            if 'usb_compliance' in locals() and usb_compliance: usb_compliance.stop()
         except: pass
         try:
-            if 'shadow_mon' in locals() and shadow_mon: shadow_mon.stop_all()
+            if 'shadow_audit' in locals() and shadow_audit: shadow_audit.stop_all()
         except: pass
         try:
-            if 'net_mon' in locals() and net_mon: net_mon.stop()
+            if 'network_audit' in locals() and network_audit: network_audit.stop()
             if 'net_scanner' in locals() and net_scanner: net_scanner.stop()
         except: pass
         try:
-            if 'file_mon' in locals() and file_mon: file_mon.stop()
+            if 'data_loss_prevention' in locals() and data_loss_prevention: data_loss_prevention.stop()
             if 'fim_mon' in locals() and fim_mon: fim_mon.stop()
         except: pass
         try:
-            if 'clip_mon' in locals() and clip_mon: clip_mon.stop()
+            if 'clipboard_audit' in locals() and clipboard_audit: clipboard_audit.stop()
         except: pass
         try:
-            if 'app_blocker' in locals() and app_blocker: app_blocker.stop()
+            if 'app_enforcement' in locals() and app_enforcement: app_enforcement.stop()
         except: pass
         try:
             if 'data_queue' in locals() and data_queue: data_queue.stop()
@@ -2848,7 +2850,7 @@ async def main():
                         "Timestamp": datetime.utcnow().isoformat()
                     },
                     timeout=5,
-                    verify=False
+                    verify=http_session.verify
                 )
                 log_to_file("Shutdown event reported.")
         except Exception as se:

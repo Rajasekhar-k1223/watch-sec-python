@@ -15,8 +15,8 @@ class LiveStreamer:
         self.stop_event = threading.Event()
         self.frames_sent = 0
         self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.quality = 95
-        self.width = 1920
+        self.quality = 80
+        self.width = 1280
 
     def start_streaming(self, loop, data=None):
         # Always extract quality settings if provided

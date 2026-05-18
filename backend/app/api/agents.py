@@ -17,7 +17,7 @@ _policy_cache: dict = {}  # key: PolicyId, value: (policy_obj, cached_at)
 
 from ..db.session import get_db # type: ignore
 from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog # type: ignore
-from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible # type: ignore
+from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible, check_role, get_current_active_user # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate # type: ignore
 
@@ -167,7 +167,7 @@ async def get_agents(
                 "latitude": get_safe(a, "Latitude"),
                 "longitude": get_safe(a, "Longitude"),
                 "country": get_safe(a, "Country"),
-                # Feature flags
+                # Feature flags (Legacy)
                 "screenshotsEnabled": a.ScreenshotsEnabled,
                 "locationTrackingEnabled": getattr(a, "GeolocationEnabled", getattr(a, "LocationTrackingEnabled", False)),
                 "usbBlockingEnabled": a.UsbBlockingEnabled,
@@ -177,12 +177,30 @@ async def get_agents(
                 "keyloggerEnabled": a.KeyloggerEnabled,
                 "clipboardMonitorEnabled": a.ClipboardMonitorEnabled,
                 "appBlockerEnabled": a.AppBlockerEnabled,
-                "browserEnforcerEnabled": a.BrowserEnforcerEnabled,
+                "browserEnforcerEnabled": a.BrowserComplianceEnabled, # Corrected
                 "printerMonitorEnabled": a.PrinterMonitorEnabled,
                 "shadowMonitorEnabled": a.ShadowMonitorEnabled,
                 "liveStreamEnabled": a.LiveStreamEnabled,
                 "remoteShellEnabled": a.RemoteShellEnabled,
                 "mailMonitorEnabled": a.MailMonitorEnabled,
+                
+                # Professional Terminology [v2.0]
+                "visualActivityEnabled": a.VisualActivityEnabled,
+                "locationAuditEnabled": a.LocationAuditEnabled,
+                "usbComplianceEnabled": a.UsbComplianceEnabled,
+                "networkAuditEnabled": a.NetworkAuditEnabled,
+                "dataLossPreventionEnabled": a.DataLossPreventionEnabled,
+                "inputAuditEnabled": a.InputAuditEnabled,
+                "clipboardAuditEnabled": a.ClipboardAuditEnabled,
+                "appEnforcementEnabled": a.AppEnforcementEnabled,
+                "browserComplianceEnabled": a.BrowserComplianceEnabled,
+                "printAuditEnabled": a.PrintAuditEnabled,
+                "shadowAuditEnabled": a.ShadowAuditEnabled,
+                "sessionForensicEnabled": a.SessionForensicEnabled,
+                "remoteRemediationEnabled": a.RemoteRemediationEnabled,
+                "mailIntelligenceEnabled": a.MailIntelligenceEnabled,
+                "voiceIntelligenceEnabled": a.VoiceIntelligenceEnabled,
+                "monitoringConsentRequired": a.MonitoringConsentRequired,
                 "powerStatusJson": a.PowerStatusJson,
                 "hardwareJson": a.HardwareJson,
                 "version": a.Version,
@@ -191,6 +209,7 @@ async def get_agents(
                 "updateFailureReason": get_safe(a, "UpdateFailureReason"),
                 "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if get_safe(a, "LastUpdateAttempt") else None,
                 "policyId": get_safe(a, "PolicyId"),
+                "behavioralMetadataJson": get_safe(a, "BehavioralMetadataJson"),
                 "screenshotInterval": get_safe(a, "ScreenshotInterval", 60),
             })
             
@@ -322,6 +341,88 @@ async def trigger_agent_update(
     
     return {"status": "success", "message": f"Target version set to {agent.TargetVersion}"}
 
+@router.post("/{agent_id}/lockdown")
+async def trigger_sovereign_lockdown(
+    agent_id: str,
+    payload: dict, # { "unlock_key": "..." }
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Find agent
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query)
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    unlock_key = payload.get("unlock_key")
+    reason = payload.get("reason", "No reason provided")
+    
+    if not unlock_key or len(unlock_key) < 6:
+        raise HTTPException(status_code=400, detail="Unlock key must be at least 6 characters")
+    
+    # [v2.6.8] Sovereign Governance Audit
+    new_event = EventLog(
+        AgentId=agent_id,
+        TenantId=agent.TenantId,
+        EventType="SOVEREIGN_GOVERNANCE",
+        Severity="CRITICAL",
+        Description=f"INDIVIDUAL LOCKDOWN: Node {agent.Hostname or agent_id} neutralized by {current_user.Username}. Reason: {reason}",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(new_event)
+    
+    # Hash the key (SHA256) for the agent to use
+    unlock_hash = hashlib.sha256(unlock_key.encode()).hexdigest()
+    
+    # [v1.8.37] Command Sovereignty: Signature Generation
+    timestamp = datetime.utcnow().isoformat()
+    action = "SOVEREIGN_LOCKDOWN"
+    params = {"unlock_hash": unlock_hash}
+    
+    # Derive HMAC Key (Same logic as agent)
+    msg_parts = [action, json.dumps(params, sort_keys=True), timestamp]
+    message = "|".join(msg_parts).encode('utf-8')
+    
+    # We need the tenant to get the api_key for signing
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    
+    if not tenant or not agent.MachineId:
+        raise HTTPException(status_code=500, detail="Keys not synchronized for this agent")
+        
+    key = hashlib.sha256(tenant.ApiKey.encode() + agent.MachineId).digest()
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+    
+    command_data = {
+        "action": action,
+        "params": params,
+        "policy_name": "Administrative Lockdown",
+        "timestamp": timestamp,
+        "signature": signature
+    }
+    
+    # [REAL-TIME] Push to Agent
+    await sio.emit('RemediationCommand', command_data, room=agent.AgentId)
+    
+    # [AUDIT]
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="Sovereign Lockdown",
+        Target=agent.Hostname,
+        Details="Emergency system lockdown triggered remotely.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return {"status": "success", "message": "Sovereign Lockdown command dispatched."}
+
 @router.get("/{agent_id}/software")
 async def get_agent_software(
     agent_id: str,
@@ -337,13 +438,20 @@ async def get_agent_software(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
         
-    import json
-    if agent.InstalledSoftwareJson:
-        try:
-            return json.loads(agent.InstalledSoftwareJson)
-        except:
-            return []
-    return []
+    # [v2.6.0] Use relational AgentSoftware table
+    from ..db.models import AgentSoftware # type: ignore
+    sw_query = select(AgentSoftware).where(AgentSoftware.AgentId == agent_id)
+    sw_result = await db.execute(sw_query)
+    software_list = sw_result.scalars().all()
+    
+    return [
+        {
+            "Name": s.Name,
+            "Version": s.Version,
+            "Type": s.Type,
+            "LastSeen": s.LastSeen.isoformat() if s.LastSeen else None
+        } for s in software_list
+    ]
 
 @router.get("/{agent_id}/shadow-vault")
 async def get_shadow_vault(
@@ -754,9 +862,10 @@ async def agent_heartbeat(
         update_url = ""
         if agent.Version != agent.TargetVersion:
             # [v1.8.58] Manual-only updates to prevent server saturation
-            if agent.UpdateStatus == "pending_manual_push":
+            if agent.UpdateStatus in ["pending_manual_push", "dispatching_update"]:
                 update_required = True
                 backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
+                hostname_lower = agent.Hostname.lower() if agent.Hostname else ""
                 # --- v1.8.41: Precision Architecture Detection ---
                 os_type = "windows"
                 arch = "x64"
@@ -829,16 +938,17 @@ async def agent_heartbeat(
                                 sha_calc.update(chunk)
                         update_hash = sha_calc.hexdigest()
                         
-                        # 3. Generate HMAC Signature (Derive key using Machine Secret)
-                        # machine_secret = agent.MachineId (sent by agent in heartbeat)
-                        if agent.MachineId:
-                            m_secret = agent.MachineId
-                            # HMAC Key derivation same as agent: SHA256(ApiKey + MachineSecret)
-                            hmac_key = hashlib.sha256(tenant.ApiKey.encode() + m_secret.encode()).digest()
-                            update_signature = hmac.new(hmac_key, update_hash.encode(), hashlib.sha256).hexdigest()
+                        # 3. Generate Ed25519 Asymmetric Signature [v2.0.0]
+                        try:
+                            from app.core.security import sign_payload_asymmetric
+                            msg = f"{agent.TargetVersion}|{update_hash or ''}".encode()
+                            update_signature = sign_payload_asymmetric(msg)
+                            print(f"[PATCH] Generated Ed25519 signature: {update_signature} for version: {agent.TargetVersion}")
                             
                             # [v1.8.59] De-duplication: Move to dispatching state to avoid re-calculation
                             agent.UpdateStatus = "dispatching_update"
+                        except Exception as sig_err:
+                            print(f"[PATCH] Ed25519 signature calculation failed: {sig_err}")
                     else:
                         print(f"[PATCH] Binary not found at {bin_path}. Handshake will fail on agent.")
                 except Exception as e:
@@ -934,14 +1044,39 @@ async def agent_heartbeat(
             req_level = FEATURE_TIERS.get(key, 3)
             return db_val if plan_level >= req_level else False
 
+        # 6. [v2.6.0] Sovereign Lockdown Enforcement (Scenario B: Ejected Tenants)
+        sovereign_payload = None
+        if tenant.IsLocked:
+            # Construct a signed lockdown command for this agent
+            action = "SOVEREIGN_LOCKDOWN"
+            params = {"unlock_hash": tenant.UnlockKeyHash}
+            timestamp = datetime.utcnow().isoformat()
+            
+            # Sign the Command (SHA256(ApiKey + MachineId))
+            machine_id = agent.MachineId or agent.AgentId
+            key = hashlib.sha256(tenant.ApiKey.encode() + machine_id.encode()).digest()
+            msg_parts = [str(action), json.dumps(params, sort_keys=True), str(timestamp)]
+            message = "|".join(msg_parts).encode('utf-8')
+            signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+            
+            sovereign_payload = {
+                "action": action,
+                "params": params,
+                "timestamp": timestamp,
+                "signature": signature,
+                "policy_name": "Sovereign Lockdown (Tenant-Wide Enforcement)"
+            }
+
         return {
             "status": "ok",
+            "SovereignLockdown": sovereign_payload,
             "UpdateRequired": update_required,
             "UpdateUrl": update_url,
             "UpdateHash": update_hash if update_required else "",
             "UpdateSignature": update_signature if update_required else "",
             "TargetVersion": agent.TargetVersion,
             "config": {
+                # Legacy Support
                 "ScreenshotsEnabled": check_feat_final("ScreenshotsEnabled", agent.ScreenshotsEnabled),
                 "UsbBlockingEnabled": check_feat_final("UsbBlockingEnabled", agent.UsbBlockingEnabled),
                 "NetworkMonitoringEnabled": check_feat_final("NetworkMonitoringEnabled", agent.NetworkMonitoringEnabled),
@@ -958,12 +1093,33 @@ async def agent_heartbeat(
                 "MailMonitorEnabled": check_feat_final("MailMonitorEnabled", agent.MailMonitorEnabled),
                 "LocationTrackingEnabled": check_feat_final("LocationTrackingEnabled", agent.LocationTrackingEnabled),
                 "SpeechMonitorEnabled": check_feat_final("SpeechMonitorEnabled", agent.SpeechMonitorEnabled),
+                "GeolocationEnabled": geolocation_enabled,
+                
+                # Professional Terminology [v2.0]
+                "VisualActivityEnabled": check_feat_final("ScreenshotsEnabled", agent.VisualActivityEnabled),
+                "UsbComplianceEnabled": check_feat_final("UsbBlockingEnabled", agent.UsbComplianceEnabled),
+                "NetworkAuditEnabled": check_feat_final("NetworkMonitoringEnabled", agent.NetworkAuditEnabled),
+                "DataLossPreventionEnabled": check_feat_final("FileDlpEnabled", agent.DataLossPreventionEnabled),
+                "InputAuditEnabled": check_feat_final("KeyloggerEnabled", agent.InputAuditEnabled),
+                "ClipboardAuditEnabled": check_feat_final("ClipboardMonitorEnabled", agent.ClipboardAuditEnabled),
+                "AppEnforcementEnabled": check_feat_final("AppBlockerEnabled", agent.AppEnforcementEnabled),
+                "BrowserComplianceEnabled": check_feat_final("BrowserEnforcerEnabled", agent.BrowserComplianceEnabled),
+                "PrintAuditEnabled": check_feat_final("PrinterMonitorEnabled", agent.PrintAuditEnabled),
+                "ShadowAuditEnabled": check_feat_final("ShadowMonitorEnabled", agent.ShadowAuditEnabled),
+                "SessionForensicEnabled": check_feat_final("LiveStreamEnabled", agent.SessionForensicEnabled),
+                "RemoteRemediationEnabled": check_feat_final("RemoteShellEnabled", agent.RemoteRemediationEnabled),
+                "MailIntelligenceEnabled": check_feat_final("MailMonitorEnabled", agent.MailIntelligenceEnabled),
+                "VoiceIntelligenceEnabled": check_feat_final("SpeechMonitorEnabled", agent.VoiceIntelligenceEnabled),
+                "LocationAuditEnabled": check_feat_final("LocationTrackingEnabled", agent.LocationAuditEnabled),
+                "MonitoringConsentRequired": agent.MonitoringConsentRequired,
                 "VulnerabilityIntelligenceEnabled": check_feat_final("VulnerabilityIntelligenceEnabled", agent.VulnerabilityIntelligenceEnabled),
+                
+                # Common Settings
+                "TenantName": tenant.Name,
                 "ScreenshotQuality": agent.ScreenshotQuality,
                 "ScreenshotResolution": agent.ScreenshotResolution,
                 "MaxScreenshotSize": agent.MaxScreenshotSize,
                 "ScreenshotInterval": screenshot_interval,
-                "GeolocationEnabled": geolocation_enabled,
                 "BlockedApps": agent.BlockedAppsJson or "[]",
                 "ShadowPaths": agent.ShadowPathsJson or "[]",
                 "BandwidthConfig": bandwidth_config
@@ -1571,6 +1727,35 @@ async def take_screenshot(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
+@router.post("/{agent_id}/sbom")
+async def update_agent_sbom(
+    agent_id: str,
+    payload: list, # List of { "name": "...", "version": "...", "type": "..." }
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_active_user)
+):
+    """[v2.6.0] Updates the Software Bill of Materials for an agent."""
+    from ..db.models import AgentSoftware # type: ignore
+    from sqlalchemy import delete # type: ignore
+    
+    # 1. Clear old inventory for this agent
+    await db.execute(delete(AgentSoftware).where(AgentSoftware.AgentId == agent_id))
+    
+    # 2. Bulk insert new inventory
+    new_items = [
+        AgentSoftware(
+            AgentId=agent_id,
+            Name=item.get("name"),
+            Version=item.get("version"),
+            Type=item.get("type", "OS"),
+            LastSeen=datetime.utcnow()
+        ) for item in payload
+    ]
+    
+    db.add_all(new_items)
+    await db.commit()
+    return {"status": "success", "count": len(new_items)}
+
 def validate_shadow_paths(paths: List[str]):
     """
     Prevents administrators from configuring agents to shadow (steal) 
@@ -1604,7 +1789,7 @@ from ..schemas import AgentSettingsUpdate # type: ignore
 async def update_settings(
     agent_string_id: str,
     settings: AgentSettingsUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(check_role(["SuperAdmin", "TenantAdmin"])),
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
@@ -1625,8 +1810,38 @@ async def update_settings(
     if settings.MaxScreenshotSize is not None:
         agent.MaxScreenshotSize = settings.MaxScreenshotSize
     if settings.ScreenshotInterval is not None:
-        agent.ScreenshotInterval = settings.ScreenshotInterval # [NEW]
+        agent.ScreenshotInterval = settings.ScreenshotInterval
     
+    # Toggle Mapping for Professional Terminology [v2.0]
+    toggle_map = {
+        "VisualActivityEnabled": "VisualActivityEnabled",
+        "InputAuditEnabled": "InputAuditEnabled",
+        "ClipboardAuditEnabled": "ClipboardAuditEnabled",
+        "AppEnforcementEnabled": "AppEnforcementEnabled",
+        "BrowserComplianceEnabled": "BrowserComplianceEnabled",
+        "PrintAuditEnabled": "PrintAuditEnabled",
+        "ShadowAuditEnabled": "ShadowAuditEnabled",
+        "SessionForensicEnabled": "SessionForensicEnabled",
+        "RemoteRemediationEnabled": "RemoteRemediationEnabled",
+        "MailIntelligenceEnabled": "MailIntelligenceEnabled",
+        "VoiceIntelligenceEnabled": "VoiceIntelligenceEnabled",
+        "LocationAuditEnabled": "LocationAuditEnabled",
+        "UsbComplianceEnabled": "UsbComplianceEnabled",
+        "NetworkAuditEnabled": "NetworkAuditEnabled",
+        "DataLossPreventionEnabled": "DataLossPreventionEnabled",
+        "VulnerabilityIntelligenceEnabled": "VulnerabilityIntelligenceEnabled",
+        "MonitoringConsentRequired": "MonitoringConsentRequired"
+    }
+    
+    changed_features = []
+    for schema_key, db_attr in toggle_map.items():
+        val = getattr(settings, schema_key, None)
+        if val is not None:
+            old_val = getattr(agent, db_attr)
+            if old_val != val:
+                setattr(agent, db_attr, val)
+                changed_features.append(f"{schema_key}: {val}")
+
     # [NEW] Enforce Plan Limits
     from ..db.models import Tenant # type: ignore
     t_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
@@ -1651,12 +1866,18 @@ async def update_settings(
 
     # [AUDIT]
     from datetime import datetime # type: ignore
+    details = f"Quality: {settings.ScreenshotQuality}, Interval: {settings.ScreenshotInterval}s"
+    if changed_features:
+        details += f" | Toggles: {', '.join(changed_features)}"
+    if settings.BlockedApps is not None:
+        details += f" | Blocked: {len(settings.BlockedApps)}"
+        
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
-        Action="Update Agent Settings",
+        Action="Update Security Policy",
         Target=f"{agent.Hostname} ({agent.AgentId})",
-        Details=f"Quality: {settings.ScreenshotQuality}, Interval: {settings.ScreenshotInterval}s, Blocked: {len(settings.BlockedApps or [])}",
+        Details=details,
         Timestamp=datetime.utcnow()
     )
     db.add(audit)

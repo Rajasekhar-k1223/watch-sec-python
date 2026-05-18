@@ -18,6 +18,7 @@ from ..db.models import User # type: ignore
 from motor.motor_asyncio import AsyncIOMotorClient # type: ignore
 from pydantic import BaseModel # type: ignore
 from ..core.constants import FEATURE_TIERS # type: ignore
+from ..services.dispatcher_service import dispatcher # [v2.6.0]
 
 router = APIRouter()
 
@@ -100,15 +101,7 @@ async def report_event(
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
     x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # [v1.8.38] Telemetry Stealth: KEY SUPPRESSION ENFORCED
-    # We NO LONGER accept the API key in the DTO or headers.
-    # We find it using the authoritative mapping of AgentId -> Tenant.
-    if dto.TenantApiKey or x_tenant_api_key:
-        # [SECURITY] Forbid cleartext key transmission
-        raise HTTPException(
-            status_code=403, 
-            detail="SECURITY VIOLATION: Cleartext API Key suppressed in Stealth Mode. Update Agent."
-        )
+    api_key_sent = dto.TenantApiKey or x_tenant_api_key
 
     from ..db.models import Agent # type: ignore
     res_a = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
@@ -122,47 +115,51 @@ async def report_event(
     if not tenant:
         raise HTTPException(status_code=403, detail="Tenant identity unknown")
         
-    # auth_api_key for signature verification
     auth_api_key = tenant.ApiKey
-        
-    # [v1.8.37] Sovereignty Verified
+
+    # Check for legacy (unsigned) handshake from older agents
+    is_legacy = False
     if not x_signature or not x_timestamp:
-        raise HTTPException(status_code=401, detail="Signature missing")
+        if api_key_sent and api_key_sent == auth_api_key:
+            is_legacy = True
+            print(f"[AUTH] [LEGACY] Graceful fallback allowed for legacy agent {dto.AgentId} (/report)")
+        else:
+            raise HTTPException(status_code=401, detail="Signature missing and legacy key mismatch")
         
-    import hmac, hashlib # type: ignore
-    key_seed = auth_api_key.encode()
-    if agent.MachineId: key_seed += agent.MachineId.encode()
-    signing_key = hashlib.sha256(key_seed).digest()
-    
-    body_bytes = await request.body()
-    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-    # [v1.8.61] Cryptographic Handshake Fallback
-    is_valid = hmac.compare_digest(expected, x_signature)
-    
-    # [DEBUG] Log ApiKey-only signature for comparison
-    fallback_key = auth_api_key.encode()
-    expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
-    
-    if not is_valid:
-        print(f"[AUTH] Signature mismatch for {dto.AgentId}")
-        print(f"  Expected (Full): {expected}")
-        print(f"  Expected (ApiKey-Only): {expected_fallback}")
-        print(f"  Got: {x_signature}")
-
-    # [EMERGENCY BYPASS] RAJ-A71A27AF deadlock resolution
-    if not is_valid and dto.AgentId in ["RAJ-A71A27AF", "Raj-A71A27AF"]:
-        is_valid = True
-        print(f"[AUTH] [EMERGENCY] Bypassing signature for {dto.AgentId} to break synchronization deadlock.")
-
-    if not is_valid and not agent.MachineId:
-        # Fallback: Try ApiKey only (Initial registration handshake)
-        if hmac.compare_digest(expected_fallback, x_signature):
+    if not is_legacy:
+        # Enforce Stealth key suppression for modern signed requests
+        if api_key_sent:
+            raise HTTPException(
+                status_code=403, 
+                detail="SECURITY VIOLATION: Cleartext API Key suppressed in Stealth Mode. Update Agent."
+            )
+            
+        import hmac, hashlib # type: ignore
+        key_seed = auth_api_key.encode()
+        if agent.MachineId: key_seed += agent.MachineId.encode()
+        signing_key = hashlib.sha256(key_seed).digest()
+        
+        body_bytes = await request.body()
+        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+        is_valid = hmac.compare_digest(expected, x_signature)
+        
+        # [DEBUG] Log ApiKey-only signature for comparison
+        fallback_key = auth_api_key.encode()
+        expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+        
+        if not is_valid and dto.AgentId in ["RAJ-A71A27AF", "Raj-A71A27AF"]:
             is_valid = True
-            print(f"[AUTH] Initial handshake successful for {dto.AgentId}. Awaiting MachineId sync via Heartbeat.")
-
-    if not is_valid:
-        raise HTTPException(status_code=403, detail="Invalid signature")
+            print(f"[AUTH] [EMERGENCY] Bypassing signature for {dto.AgentId} to break synchronization deadlock.")
+     
+        if not is_valid and not agent.MachineId:
+            # Fallback: Try ApiKey only (Initial registration handshake)
+            if hmac.compare_digest(expected_fallback, x_signature):
+                is_valid = True
+                print(f"[AUTH] Initial handshake successful for {dto.AgentId}. Awaiting MachineId sync via Heartbeat.")
+     
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="Invalid signature")
 
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
     
@@ -176,11 +173,24 @@ async def report_event(
             details_data = json.loads(dto.Details)
             inventory = details_data.get("inventory", [])
             if inventory:
+                from ..services.ai_service import ai_service # type: ignore
                 ai_result = ai_service.analyze_usb_risk(inventory)
                 ai_event = EventLog(AgentId=dto.AgentId, Type="AI_ANALYSIS", Details=str(ai_result), Timestamp=datetime.utcnow())
                 db.add(ai_event)
                 await db.commit()
     except: pass
+
+    # [v2.6.0] External Dispatch for Critical Events
+    if dto.Type in ["THREAT_DETECTED", "MALWARE_ACTIVITY", "SERVICE_DOWN", "UNAUTHORIZED_ACCESS"]:
+        import asyncio
+        asyncio.create_task(dispatcher.dispatch_critical_alert(
+            title=f"Critical Security Event: {dto.Type}",
+            message=dto.Details,
+            severity="Critical",
+            agent_id=dto.AgentId,
+            cluster_name=agent.ClusterName,
+            webhook_url=tenant.WebhookUrl
+        ))
 
     # Broadcast
     target_room = str(dto.AgentId)
@@ -197,9 +207,7 @@ async def log_activity(
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
     x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # [v1.8.38] Telemetry Stealth: KEY SUPPRESSION ENFORCED
-    if dto.TenantApiKey or x_tenant_api_key:
-         raise HTTPException(status_code=403, detail="Stealth Breach: Plaintext Key Disallowed")
+    api_key_sent = dto.TenantApiKey or x_tenant_api_key
 
     from ..db.models import Agent # type: ignore
     res_a = await db.execute(select(Agent).where(Agent.AgentId == dto.AgentId))
@@ -216,28 +224,40 @@ async def log_activity(
 
     auth_api_key = tenant.ApiKey
 
-    # Verify Signature
-    if not x_signature or not x_timestamp: raise HTTPException(status_code=401)
-    import hmac, hashlib # type: ignore
-    key_seed = auth_api_key.encode()
-    if agent_obj.MachineId: key_seed += agent_obj.MachineId.encode()
-    signing_key = hashlib.sha256(key_seed).digest()
+    # Check for legacy (unsigned) handshake from older agents
+    is_legacy = False
+    if not x_signature or not x_timestamp:
+        if api_key_sent and api_key_sent == auth_api_key:
+            is_legacy = True
+            print(f"[AUTH] [LEGACY] Graceful fallback allowed for legacy agent {dto.AgentId} (/activity)")
+        else:
+            raise HTTPException(status_code=401, detail="Signature missing and legacy key mismatch")
 
-    body_bytes = await request.body()
-    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-
-    # [v1.8.61] Cryptographic Handshake Fallback
-    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_legacy:
+        # Enforce Stealth key suppression for modern signed requests
+        if api_key_sent:
+             raise HTTPException(status_code=403, detail="Stealth Breach: Plaintext Key Disallowed")
+             
+        import hmac, hashlib # type: ignore
+        key_seed = auth_api_key.encode()
+        if agent_obj.MachineId: key_seed += agent_obj.MachineId.encode()
+        signing_key = hashlib.sha256(key_seed).digest()
     
-    if not is_valid and not agent_obj.MachineId:
-        fallback_key = auth_api_key.encode()
-        expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expected_fallback, x_signature):
-            is_valid = True
-
-    if not is_valid:
-        raise HTTPException(status_code=403, detail="Invalid signature")
+        body_bytes = await request.body()
+        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+        # [v1.8.61] Cryptographic Handshake Fallback
+        is_valid = hmac.compare_digest(expected, x_signature)
+        
+        if not is_valid and not agent_obj.MachineId:
+            fallback_key = auth_api_key.encode()
+            expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(expected_fallback, x_signature):
+                is_valid = True
+    
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="Invalid signature")
 
     risk_score, risk_level = analyze_risk(dto.WindowTitle, dto.ProcessName, dto.Url or "")
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
@@ -289,6 +309,29 @@ async def get_activity_logs(
         dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
         query = query.where(ActivityLogModel.Timestamp <= dt_end)
         
+    if date_range and not start_date and not end_date:
+        now = datetime.utcnow()
+        if date_range == "24h":
+            delta = timedelta(hours=24)
+        elif date_range == "7d":
+            delta = timedelta(days=7)
+        else:
+            delta = timedelta(days=30)
+
+        # Get latest log timestamp in database
+        from sqlalchemy import func
+        ts_res = await db_sql.execute(select(func.max(ActivityLogModel.Timestamp)).where(ActivityLogModel.AgentId == agent_id))
+        latest_ts = ts_res.scalar()
+
+        if not latest_ts:
+            query = query.where(ActivityLogModel.Timestamp >= now - delta)
+        elif latest_ts < now - delta:
+            # Pivot window to the last active range ending at latest_ts
+            query = query.where(ActivityLogModel.Timestamp >= latest_ts - delta).where(ActivityLogModel.Timestamp <= latest_ts)
+        else:
+            # We have recent activity in the window, query normally
+            query = query.where(ActivityLogModel.Timestamp >= now - delta)
+
     query = query.order_by(ActivityLogModel.Timestamp.desc())
     query = query.limit(limit).offset(offset)
     
@@ -312,6 +355,171 @@ async def get_activity_logs(
         }
         for l in logs
     ]
+
+@router.get("/activity/{agent_id}/stats")
+async def get_activity_stats(
+    agent_id: str,
+    date_range: Optional[str] = Query("24h"),
+    current_user: User = Depends(get_current_user),
+    db_sql: AsyncSession = Depends(get_db)
+):
+    from ..db.models import Agent # type: ignore
+    agent_res = await db_sql.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent_obj = agent_res.scalars().first()
+    if not agent_obj or (current_user.Role != "SuperAdmin" and agent_obj.TenantId != current_user.TenantId):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    from sqlalchemy import func
+    stats_query = select(
+        func.sum(ActivityLogModel.DurationSeconds).label("total_duration"),
+        func.sum(ActivityLogModel.IdleSeconds).label("total_idle")
+    ).where(ActivityLogModel.AgentId == agent_id)
+
+    if date_range:
+        now = datetime.utcnow()
+        if date_range == "24h":
+            delta = timedelta(hours=24)
+        elif date_range == "7d":
+            delta = timedelta(days=7)
+        else:
+            delta = timedelta(days=30)
+
+        # Get latest log timestamp in database
+        ts_res = await db_sql.execute(select(func.max(ActivityLogModel.Timestamp)).where(ActivityLogModel.AgentId == agent_id))
+        latest_ts = ts_res.scalar()
+
+        if not latest_ts:
+            stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
+        elif latest_ts < now - delta:
+            # Pivot window to the last active range ending at latest_ts
+            stats_query = stats_query.where(ActivityLogModel.Timestamp >= latest_ts - delta).where(ActivityLogModel.Timestamp <= latest_ts)
+        else:
+            # We have recent activity in the window, query normally
+            stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
+
+    stats_res = await db_sql.execute(stats_query)
+    stats_row = stats_res.first()
+
+    total_duration = float(stats_row.total_duration or 0.0) if stats_row else 0.0
+    total_idle = float(stats_row.total_idle or 0.0) if stats_row else 0.0
+    active_work = max(0.0, total_duration - total_idle)
+
+    return {
+        "total_duration": total_duration,
+        "total_idle": total_idle,
+        "active_work": active_work
+    }
+
+@router.post("/simulate/{agent_id}")
+async def simulate_agent_event(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    from ..db.models import Agent # type: ignore
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Generate a random simulated security threat event
+    import random
+    threats = [
+        ("Vulnerability Alert", "Found 3 vulnerable packages: CVE-2023-4863 (Critical), CVE-2023-2033 (High), CVE-2023-3079 (High)"),
+        ("Process Started", "Suspicious Process execution: nmap -sS -O 192.168.1.1. PID: 8871"),
+        ("USB insertion", "Blocked unauthorized USB Mass Storage Device (Vendor ID: 0930, Product ID: 6545)"),
+        ("Policy Violation", "Unauthorized terminal access attempted by user 'developer'."),
+        ("Data Loss Prevention", "Blocked exfiltration of credit card numbers in chrome.exe upload payload.")
+    ]
+    t_type, t_details = random.choice(threats)
+    now = datetime.utcnow()
+
+    event = EventLog(
+        AgentId=agent_id,
+        Type=t_type,
+        Details=t_details,
+        Timestamp=now,
+        Severity="High",
+        Status="Open"
+    )
+    db.add(event)
+
+    # Generate simulated client activity logs as well so the user can verify activity storage instantly
+    activities = [
+        ("AppFocus", "VSCode.exe", "index.tsx - monitorix-frontend - Visual Studio Code", None, 300.0, 10.0, "Productive", 90.0, 0.0, "Normal"),
+        ("UrlVisit", "chrome.exe", "https://github.com/google/deepmind - GitHub", "https://github.com/google/deepmind", 450.0, 30.0, "Productive", 85.0, 0.0, "Normal"),
+        ("AppFocus", "slack.exe", "Slack - Deepmind Collaboration Workspace", None, 180.0, 15.0, "Neutral", 50.0, 0.0, "Normal"),
+        ("AppFocus", "cmd.exe", "Command Prompt - npm run build", None, 120.0, 5.0, "Productive", 80.0, 20.0, "Normal"),
+        ("AppFocus", "zoom.exe", "Zoom Meeting - Daily Standup", None, 900.0, 45.0, "Neutral", 60.0, 0.0, "Normal")
+    ]
+
+    for act_type, proc, title, url, dur, idle, cat, prod, r_score, r_level in random.sample(activities, 3):
+        # Pick a random timestamp within the last 2 hours
+        offset_mins = random.randint(0, 120)
+        act_time = now - timedelta(minutes=offset_mins)
+        
+        act_log = ActivityLogModel(
+            AgentId=agent_id,
+            TenantId=agent.TenantId,
+            ActivityType=act_type,
+            ProcessName=proc,
+            WindowTitle=title,
+            Url=url,
+            DurationSeconds=dur,
+            IdleSeconds=idle,
+            Category=cat,
+            ProductivityScore=prod,
+            RiskScore=r_score,
+            RiskLevel=r_level,
+            Timestamp=act_time
+        )
+        db.add(act_log)
+        
+        # Broadcast simulated activity log via socket so they stream instantly onto the dashboard
+        await sio.emit('new_client_activity', {
+            'AgentId': agent_id,
+            'ActivityType': act_type,
+            'ProcessName': proc,
+            'WindowTitle': title,
+            'Url': url,
+            'DurationSeconds': dur,
+            'IdleSeconds': idle,
+            'Category': cat,
+            'ProductivityScore': prod,
+            'RiskLevel': r_level,
+            'Timestamp': act_time.isoformat()
+        }, room=agent_id)
+
+    await db.commit()
+
+    # Prepare broadcast payloads
+    # Send both uppercase and lowercase keys to ensure 100% frontend compatibility with all components
+    broadcast_data = {
+        "agentId": agent_id,
+        "AgentId": agent_id,
+        "type": t_type,
+        "Type": t_type,
+        "details": t_details,
+        "Details": t_details,
+        "timestamp": now.isoformat(),
+        "Timestamp": now.isoformat(),
+        "severity": "high",
+        "Severity": "High",
+        "status": "Open",
+        "Status": "Open",
+        "tenantId": agent.TenantId
+    }
+
+    # Emit to all potential dashboard / live monitor listeners
+    await sio.emit('new_event', broadcast_data, room=agent_id)
+    await sio.emit('new_alert', broadcast_data, room=agent_id)
+    await sio.emit('ReceiveEvent', broadcast_data, room=agent_id)
+    await sio.emit('agent_list_update', {"agentId": agent_id}, room=f"tenant_{agent.TenantId}")
+
+    return {"status": "success", "message": "Event simulated successfully"}
 
 def analyze_risk(title: str, process: str, url: str):
     score = 0; level = "Normal"

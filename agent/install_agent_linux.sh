@@ -57,7 +57,7 @@ fi
 echo "[*] Creating Systemd Service..."
 cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
-Description=Monitorix Security Agent
+Description=Monitorix Enterprise Security Agent
 After=network.target
 
 [Service]

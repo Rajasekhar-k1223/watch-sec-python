@@ -19,6 +19,11 @@ class Tenant(Base):
     AdminEmail = Column(String(255), nullable=True) # [v1.7.1] Mandatory for new registrations
     MaintenanceWindowJson = Column(Text, default="{}") # [v1.8.0] Scheduled update configuration
     
+    # [v2.6.0] Sovereign Lockdown Management
+    IsLocked = Column(Boolean, default=False)
+    UnlockKeyHash = Column(String(255), nullable=True)
+    LockdownReason = Column(Text, nullable=True) # [v2.6.8] Audit justification for banner
+    
     # Bandwidth Configuration [NEW]
     bandwidth_config = Column(JSON, default={
         "max_rate_kbps": 0,  # 0 = unlimited
@@ -36,6 +41,16 @@ class Tenant(Base):
     StripeCustomerId = Column(String(255), nullable=True, index=True)
     SubscriptionStatus = Column(String(50), default="active") # active, past_due, canceled, incomplete
 
+    # [v2.2.0] Enterprise Integration Configurations
+    SsoConfigJson = Column(JSON, default={}) # SAML/OIDC Metadata & Mapping
+    SiemConfigJson = Column(JSON, default={"enabled": False, "type": "syslog", "endpoint": "", "api_key": ""})
+    
+    # [v2.6.0] Compliance & Privacy
+    DataRetentionDays = Column(Integer, default=90) # GDPR/SOC2/HIPAA Compliance
+    
+    # [v2.6.0] External Integrations
+    WebhookUrl = Column(String(500), nullable=True) # Slack/Teams/PagerDuty
+    
     # [NEW] Reporting Configuration
     ReportingConfigJson = Column(JSON, default={"frequency": "daily", "last_sent": None})
 
@@ -66,26 +81,44 @@ class Agent(Base):
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(255), unique=True, index=True)
     TenantId = Column(Integer, nullable=False)
-    ScreenshotsEnabled = Column(Boolean, default=False)
-    LocationTrackingEnabled = Column(Boolean, default=False) # [NEW] User Toggle
-    GeolocationEnabled = Column(Boolean, default=True) # [NEW] v1.8.27
-    UsbBlockingEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement User Toggle
-    NetworkMonitoringEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
-    FileDlpEnabled = Column(Boolean, default=False) # [NEW] DLP Requirement
-    
-    # Feature Toggles [NEW]
+    # Feature Toggles [Renamed for Enterprise Compliance]
     ActivityMonitorEnabled = Column(Boolean, default=True)
-    KeyloggerEnabled = Column(Boolean, default=False)
-    ClipboardMonitorEnabled = Column(Boolean, default=False)
-    AppBlockerEnabled = Column(Boolean, default=False)
-    BrowserEnforcerEnabled = Column(Boolean, default=False)
-    PrinterMonitorEnabled = Column(Boolean, default=False)
-    ShadowMonitorEnabled = Column(Boolean, default=False)
-    LiveStreamEnabled = Column(Boolean, default=False)
-    RemoteShellEnabled = Column(Boolean, default=False)
-    MailMonitorEnabled = Column(Boolean, default=False)
-    SpeechMonitorEnabled = Column(Boolean, default=False) # [NEW] Enterprise Feature
+    InputAuditEnabled = Column(Boolean, default=False) # Old: KeyloggerEnabled
+    ClipboardAuditEnabled = Column(Boolean, default=False) # Old: ClipboardMonitorEnabled
+    AppEnforcementEnabled = Column(Boolean, default=False) # Old: AppBlockerEnabled
+    BrowserComplianceEnabled = Column(Boolean, default=False) # Old: BrowserEnforcerEnabled
+    PrintAuditEnabled = Column(Boolean, default=False) # Old: PrinterMonitorEnabled
+    ShadowAuditEnabled = Column(Boolean, default=False) # Old: ShadowMonitorEnabled
+    SessionForensicEnabled = Column(Boolean, default=False) # Old: LiveStreamEnabled
+    RemoteRemediationEnabled = Column(Boolean, default=False) # Old: RemoteShellEnabled
+    MailIntelligenceEnabled = Column(Boolean, default=False) # Old: MailMonitorEnabled
+    VoiceIntelligenceEnabled = Column(Boolean, default=False) # Old: SpeechMonitorEnabled
+    VisualActivityEnabled = Column(Boolean, default=False) # Old: ScreenshotsEnabled
+    LocationAuditEnabled = Column(Boolean, default=True) # Old: GeolocationEnabled
+    UsbComplianceEnabled = Column(Boolean, default=False) # Old: UsbBlockingEnabled
+    NetworkAuditEnabled = Column(Boolean, default=False) # Old: NetworkMonitoringEnabled
+    DataLossPreventionEnabled = Column(Boolean, default=False) # Old: FileDlpEnabled
     VulnerabilityIntelligenceEnabled = Column(Boolean, default=False) # [NEW] Enterprise Feature
+    MonitoringConsentRequired = Column(Boolean, default=False) # [NEW] Compliance Notification
+
+    # SQLAlchemy Synonyms for Backward Compatibility
+    from sqlalchemy.orm import synonym # type: ignore
+    KeyloggerEnabled = synonym("InputAuditEnabled")
+    ClipboardMonitorEnabled = synonym("ClipboardAuditEnabled")
+    AppBlockerEnabled = synonym("AppEnforcementEnabled")
+    BrowserEnforcerEnabled = synonym("BrowserComplianceEnabled")
+    PrinterMonitorEnabled = synonym("PrintAuditEnabled")
+    ShadowMonitorEnabled = synonym("ShadowAuditEnabled")
+    LiveStreamEnabled = synonym("SessionForensicEnabled")
+    RemoteShellEnabled = synonym("RemoteRemediationEnabled")
+    MailMonitorEnabled = synonym("MailIntelligenceEnabled")
+    SpeechMonitorEnabled = synonym("VoiceIntelligenceEnabled")
+    ScreenshotsEnabled = synonym("VisualActivityEnabled")
+    GeolocationEnabled = synonym("LocationAuditEnabled")
+    LocationTrackingEnabled = synonym("LocationAuditEnabled")
+    UsbBlockingEnabled = synonym("UsbComplianceEnabled")
+    NetworkMonitoringEnabled = synonym("NetworkAuditEnabled")
+    FileDlpEnabled = synonym("DataLossPreventionEnabled")
     
     LastSeen = Column(DateTime, default=datetime.utcnow)
     Hostname = Column(String(255), default="Unknown")
@@ -103,7 +136,10 @@ class Agent(Base):
     BlockedAppsJson = Column(Text, default="[]") # [NEW] Feature 7: App Blocker
     ShadowPathsJson = Column(Text, default="[]") # [NEW] Enterprise Shadow Vault Paths
     
-    # [NEW] Policy Assignment
+    MachineId = Column(String(255), nullable=True) # [v1.8.44] Hardware-specific ID
+    ClusterName = Column(String(100), nullable=True) # [v2.6.0] Grouping for Replicas/ASG
+    AgentRole = Column(String(50), default="Standalone") # [v2.6.0] Standalone, Primary, Replica
+    IsSharedSystem = Column(Boolean, default=False) # [v2.6.0] True for RDS/Shared Servers
     PolicyId = Column(Integer, ForeignKey("Policies.Id"), nullable=True)
     
     # Versioning [NEW]
@@ -129,7 +165,24 @@ class Agent(Base):
     LastUpdateAttempt = Column(DateTime, nullable=True)
     UpdateFailureReason = Column(Text, nullable=True)
     MachineId = Column(String(255), nullable=True)
+    HardwareFingerprint = Column(String(255), nullable=True, index=True) # [v2.0.0] TPM/Hardware identity
     AutoPatchEnabled = Column(Boolean, default=False)
+    ThreatScore = Column(Integer, default=0) # [v2.1.0] AI Risk Assessment
+    RiskLevel = Column(String(50), default="Normal") # [v2.1.0] AI Risk Assessment
+    BehavioralMetadataJson = Column(LONGTEXT, nullable=True) # [v2.7.5] Human Intelligence Analytics
+
+class RefreshToken(Base):
+    """Store hashed refresh tokens for session rotation [v2.0.0]"""
+    __tablename__ = "RefreshTokens"
+    
+    Id = Column(Integer, primary_key=True, index=True)
+    UserId = Column(Integer, ForeignKey("Users.Id"), nullable=False, index=True)
+    TokenHash = Column(String(255), nullable=False, index=True)
+    ExpiresAt = Column(DateTime, nullable=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    RevokedAt = Column(DateTime, nullable=True)
+    UserAgent = Column(String(255), nullable=True)
+    IpAddress = Column(String(50), nullable=True)
 
 class AgentReportEntity(Base):
     __tablename__ = "AgentReports"
@@ -181,6 +234,12 @@ class Policy(Base):
     GeolocationEnabled = Column(Boolean, default=True) # [NEW] v1.8.27
     CreatedAt = Column(DateTime, default=datetime.utcnow)
 
+    # [v2.6.8] Autonomous Defense Controls
+    AutonomousRemediationEnabled = Column(Boolean, default=False)
+    ThreatScoreThreshold = Column(Integer, default=90) # 0-100
+    ExclusionsJson = Column(Text, default="[]") # [v2.6.9] AI Whitelisting
+    ProductivityJson = Column(Text, default="{}") # [v2.7.5] Human Intelligence Mapping
+
 class SystemSetting(Base):
     __tablename__ = "SystemSettings"
 
@@ -203,6 +262,17 @@ class OCRLog(Base):
     RiskLevel = Column(String(50), default="Normal") # [NEW] Normal, High, Critical
     Category = Column(String(50), default="General") # [NEW] PII, Financial, Health, etc.
     Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class AgentSoftware(Base):
+    __tablename__ = "AgentSoftware"
+
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    Name = Column(String(255))
+    Version = Column(String(100))
+    Type = Column(String(50)) # 'OS', 'Python', 'Node', etc.
+    VulnerabilityCount = Column(Integer, default=0)
+    LastSeen = Column(DateTime, default=datetime.utcnow)
 
 class Notification(Base):
     __tablename__ = "Notifications"
@@ -234,7 +304,8 @@ class EventLog(Base):
     Type = Column(String(50), default="Unknown")
     Details = Column(Text, default="")
     Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    # Storing raw JSON if needed, or specific fields
+    Status = Column(String(50), default="Open") # [v2.2.0] Open, In-Progress, Resolved, Risk-Accepted
+    Severity = Column(String(20), default="Medium") # [v2.2.0] Low, Medium, High, Critical
     RawData = Column(Text, nullable=True)
 
 class ActivityLog(Base):

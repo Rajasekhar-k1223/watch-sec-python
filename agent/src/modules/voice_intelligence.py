@@ -1,9 +1,7 @@
 import os # type: ignore
 import time # type: ignore
 import threading # type: ignore
-import sounddevice as sd # type: ignore
-import wave # type: ignore
-import numpy as np # type: ignore
+
 import requests # type: ignore
 import traceback # type: ignore
 from datetime import datetime # type: ignore
@@ -34,6 +32,10 @@ class SpeechMonitor:
     def _record_loop(self):
         while self.running:
             try:
+                import sounddevice as sd # type: ignore
+                import wave # type: ignore
+                import numpy as np # type: ignore
+                
                 # 1. Record Audio
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"speech_{timestamp}.wav"

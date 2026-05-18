@@ -14,17 +14,30 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND
 )
 
+from kombu import Queue # type: ignore
+
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    # task_always_eager=True, # Uncomment for testing without worker
+    # [v2.1.0] Distributed Task Routing
+    task_queues=(
+        Queue('default', routing_key='default.#'),
+        Queue('high_priority', routing_key='high.#'),
+        Queue('heavy_tasks', routing_key='heavy.#'),
+    ),
+    task_default_queue='default',
+    task_routes={
+        'app.tasks.security.*': {'queue': 'high_priority'},
+        'app.tasks.ocr_tasks.*': {'queue': 'heavy_tasks'},
+        'app.tasks.reports.*': {'queue': 'heavy_tasks'},
+    }
 )
 
 # Auto-discover tasks in packages
-celery_app.autodiscover_tasks(["app.tasks.general", "app.tasks.reports", "app.tasks.security"])
+celery_app.autodiscover_tasks(["app.tasks.general", "app.tasks.reports", "app.tasks.security", "app.tasks"])
 
 celery_app.conf.beat_schedule = {
     "send-tenant-reports-scheduled": {
@@ -34,5 +47,9 @@ celery_app.conf.beat_schedule = {
     "check-offline-agents-10min": {
         "task": "app.tasks.reports.check_offline_agents",
         "schedule": 600.0,  # Every 10 minutes
+    },
+    "behavioral-analytics-hourly": {
+        "task": "app.tasks.behavior_analysis.analyze_workforce_productivity",
+        "schedule": 3600.0,  # Every hour
     },
 }

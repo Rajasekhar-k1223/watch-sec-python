@@ -2,100 +2,91 @@ import asyncio # type: ignore
 import logging # type: ignore
 import time # type: ignore
 import math # type: ignore
-import av # type: ignore
-import mss # type: ignore
-import numpy as np # type: ignore
-from fractions import Fraction # type: ignore
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, RTCIceCandidate # type: ignore
-from aiortc.contrib.media import MediaPlayer # type: ignore
+from typing import Optional, Any
 
 logger = logging.getLogger("webrtc")
 
-class ScreenVideoStreamTrack(MediaStreamTrack):
-    """
-    A video stream track that captures the screen using mss.
-    """
-    kind = "video"
 
-    def __init__(self):
-        print("[StreamTrack] Initializing ScreenVideoStreamTrack...", flush=True)
-        super().__init__()
-        try:
-            self.sct = mss.mss()
-            # Linux X11 often puts all screens in monitors[0] combined, or individual in [1]+
-            # Safe default fallback
-            if len(self.sct.monitors) > 1:
-                self.monitor = self.sct.monitors[1] # Primary individual monitor
-            else:
-                self.monitor = self.sct.monitors[0] # Fallback to combined/only (or virtual)
-            
-            print(f"[StreamTrack] MSS Initialized. Monitor: {self.monitor}", flush=True)
-        except Exception as e:
-            print(f"[StreamTrack] MSS Init Error: {e}", flush=True)
-            self.monitor = None
-            
-        if not self.monitor:
-             print("[StreamTrack] No monitor detected!", flush=True)
-             
-        self._timestamp = 0
-        self.start_time = None
-
-    async def next_timestamp(self):
-        # Implement custom timestamp logic if base class fails
-        VIDEO_CLOCK_RATE = 90000
-        VIDEO_PTIME = 1 / 30  # 30fps
-        VIDEO_TIME_BASE = Fraction(1, VIDEO_CLOCK_RATE)
-        
-        if getattr(self, 'start_time', None) is None:
-            self.start_time = time.time()
-            self._timestamp = 0
-        else:
-            self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-            
-        return self._timestamp, VIDEO_TIME_BASE
-
-    async def recv(self):
-        try:
-            if self.readyState != "live":
-                raise Exception("Track is not live")
-
-            pts, time_base = await self.next_timestamp()
-            
-            # Robust Capture: Retry initialization if grab fails
-            try:
-                sct_img = self.sct.grab(self.monitor)
-            except Exception as e:
-                print(f"[StreamTrack] Grab failed, re-initializing mss: {e}", flush=True)
-                self.sct = mss.mss() # type: ignore
-                # Re-detect monitor if needed
-                if len(self.sct.monitors) > 1:
-                    self.monitor = self.sct.monitors[1]
-                else:
-                    self.monitor = self.sct.monitors[0]
-                sct_img = self.sct.grab(self.monitor)
-
-            img_np = np.array(sct_img) # type: ignore
-            frame_bgr = img_np[:, :, :3]
-
-            # Create AV Frame
-            frame = av.VideoFrame.from_ndarray(frame_bgr, format="bgr24") # type: ignore
-            frame.pts = pts
-            frame.time_base = time_base
-            
-            return frame
-        except Exception as e:
-            print(f"[StreamTrack] Final error in recv(): {e}", flush=True)
-            raise e
         
 class WebRTCManager:
     def __init__(self, sio, agent_id):
         self.sio = sio
         self.agent_id = agent_id
-        self.pc: Optional[RTCPeerConnection] = None # type: ignore
-        self.track: Optional[ScreenVideoStreamTrack] = None
+        self.pc: Any = None
+        self.track: Any = None
         
     async def start_stream(self):
         print("[WebRTC] Starting Stream...")
+        
+        # --- LAZY LOAD MEDIA LIBRARIES ---
+        import av # type: ignore
+        import mss # type: ignore
+        import numpy as np # type: ignore
+        from fractions import Fraction # type: ignore
+        from aiortc import MediaStreamTrack, RTCPeerConnection # type: ignore
+        
+        class ScreenVideoStreamTrack(MediaStreamTrack):
+            kind = "video"
+            def __init__(self):
+                print("[StreamTrack] Initializing ScreenVideoStreamTrack...", flush=True)
+                super().__init__()
+                try:
+                    self.sct = mss.mss()
+                    if len(self.sct.monitors) > 1:
+                        self.monitor = self.sct.monitors[1]
+                    else:
+                        self.monitor = self.sct.monitors[0]
+                    print(f"[StreamTrack] MSS Initialized. Monitor: {self.monitor}", flush=True)
+                except Exception as e:
+                    print(f"[StreamTrack] MSS Init Error: {e}", flush=True)
+                    self.monitor = None
+                if not self.monitor:
+                     print("[StreamTrack] No monitor detected!", flush=True)
+                self._timestamp = 0
+                self.start_time = None
+            async def next_timestamp(self):
+                VIDEO_CLOCK_RATE = 90000
+                VIDEO_PTIME = 1 / 30
+                VIDEO_TIME_BASE = Fraction(1, VIDEO_CLOCK_RATE)
+                if getattr(self, 'start_time', None) is None:
+                    self.start_time = time.time()
+                    self._timestamp = 0
+                else:
+                    self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
+                return self._timestamp, VIDEO_TIME_BASE
+            async def recv(self):
+                try:
+                    if self.readyState != "live":
+                        raise Exception("Track is not live")
+                    pts, time_base = await self.next_timestamp()
+                    try:
+                        sct_img = self.sct.grab(self.monitor)
+                    except Exception as e:
+                        print(f"[StreamTrack] Grab failed, re-initializing mss: {e}", flush=True)
+                        self.sct = mss.mss() # type: ignore
+                        if len(self.sct.monitors) > 1:
+                            self.monitor = self.sct.monitors[1]
+                        else:
+                            self.monitor = self.sct.monitors[0]
+                        sct_img = self.sct.grab(self.monitor)
+                    from PIL import Image # type: ignore
+                    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                    
+                    # Optimization: Limit resolution to 720p (1280px) to save RAM and Bandwidth
+                    if img.width > 1280:
+                        ratio = 1280 / img.width
+                        new_h = int(img.height * ratio)
+                        img = img.resize((1280, new_h), Image.Resampling.BILINEAR)
+                        
+                    img_np = np.array(img)
+                    frame = av.VideoFrame.from_ndarray(img_np, format="rgb24") # type: ignore
+                    frame.pts = pts
+                    frame.time_base = time_base
+                    return frame
+                except Exception as e:
+                    print(f"[StreamTrack] Final error in recv(): {e}", flush=True)
+                    raise e
+
         if self.pc:
             await self.stop_stream()
             
@@ -141,6 +132,7 @@ class WebRTCManager:
              print("[WebRTC] Ignored Answer: PeerConnection is closed", flush=True)
              return
 
+        from aiortc import RTCSessionDescription # type: ignore
         rem_desc = RTCSessionDescription(
             sdp=sdp_data['sdp'],
             type=sdp_data['type']
@@ -178,6 +170,7 @@ class WebRTCManager:
                     port = int(parts[5])
                     type = parts[7]
                     
+                    from aiortc import RTCIceCandidate # type: ignore
                     ice = RTCIceCandidate(
                         component=component,
                         foundation=foundation,

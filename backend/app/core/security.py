@@ -38,6 +38,40 @@ SECRET_KEY = _get_or_create_secret()
 ALGORITHM = "HS256"
 # [SECURITY v1.8.41] Reduced Longevity: 120 minutes (2 hours) instead of 24h
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
+REFRESH_TOKEN_EXPIRE_DAYS = 30 # [v2.0.0]
+
+def _get_or_create_signing_keys():
+    """Self-provisioning: Ensures an Ed25519 key pair exists for update signing."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    
+    priv_path = os.getenv("UPDATE_PRIVATE_KEY_PATH", "update_signing.key")
+    pub_path = os.getenv("UPDATE_PUBLIC_KEY_PATH", "update_signing.pub")
+    
+    if os.path.exists(priv_path):
+        with open(priv_path, "rb") as f:
+            return ed25519.Ed25519PrivateKey.from_private_bytes(f.read())
+            
+    # Generate new pair
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    
+    # Save
+    with open(priv_path, "wb") as f:
+        f.write(private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption()
+        ))
+    with open(pub_path, "wb") as f:
+        f.write(public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        ))
+    print(f"[SECURITY] Generated new Ed25519 Update Signing Key Pair: {priv_path}")
+    return private_key
+
+UPDATE_PRIVATE_KEY = _get_or_create_signing_keys()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -85,3 +119,8 @@ def generate_agent_command_signature(api_key: str, machine_id: str, action: str,
     
     # Calculate signature
     return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+def sign_payload_asymmetric(payload_bytes: bytes) -> str:
+    """Signs a payload using the Ed25519 private key. [v2.0.0]"""
+    signature = UPDATE_PRIVATE_KEY.sign(payload_bytes)
+    return signature.hex()

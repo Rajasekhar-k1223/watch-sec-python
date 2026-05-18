@@ -19,6 +19,7 @@ class HardwareMonitor:
         self._software_cache = None
         self._last_software_scan = 0
         self._software_inventory_hash = None # Store a hash of the names/versions
+        self._bios_cache = None
 
     def _get_cpu_model(self):
         system = platform.system()
@@ -46,6 +47,8 @@ class HardwareMonitor:
         except Exception:
             return platform.processor() or "Unknown CPU"
 
+        return "Unknown"
+
     def _get_serial_number(self):
         try:
             if platform.system() == "Windows":
@@ -64,6 +67,63 @@ class HardwareMonitor:
         except:
             pass
         return "Unknown"
+
+    def _get_bios_info(self):
+        """[v2.6.5] Collects detailed BIOS/UEFI telemetry."""
+        bios = {"Vendor": "Unknown", "Version": "Unknown", "ReleaseDate": "Unknown", "SecureBoot": "Unknown"}
+        try:
+            system = platform.system()
+            if system == "Windows":
+                # Get BIOS details via WMIC
+                cmd = "wmic bios get manufacturer,version,releasedate /format:list"
+                output = subprocess.check_output(cmd, shell=True).decode().split('\n')
+                for line in output:
+                    if "Manufacturer=" in line: bios["Vendor"] = line.split('=')[1].strip()
+                    if "Version=" in line: bios["Version"] = line.split('=')[1].strip()
+                    if "ReleaseDate=" in line: bios["ReleaseDate"] = line.split('=')[1].strip()[:8]
+                
+                # Check Secure Boot status via PowerShell
+                try:
+                    sb_cmd = "powershell -Command \"Confirm-SecureBootUEFI\""
+                    sb_res = subprocess.check_output(sb_cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                    bios["SecureBoot"] = "Enabled" if sb_res.lower() == "true" else "Disabled"
+                except:
+                    bios["SecureBoot"] = "Not Supported / Hidden"
+            
+            elif system == "Linux":
+                # Vendor/Version from /sys/class/dmi/id/
+                paths = {
+                    "Vendor": "/sys/class/dmi/id/bios_vendor",
+                    "Version": "/sys/class/dmi/id/bios_version",
+                    "ReleaseDate": "/sys/class/dmi/id/bios_date"
+                }
+                for key, path in paths.items():
+                    if os.path.exists(path):
+                        with open(path, "r") as f: bios[key] = f.read().strip()
+                
+                # Secure Boot check (Requires mokutil or efivarfs)
+                if os.path.exists("/sys/firmware/efi/efivars"):
+                    bios["SecureBoot"] = "UEFI Mode"
+                    # Try to detect if SecureBoot is actually ON
+                    try:
+                        import glob
+                        # Check for the SecureBoot variable in efivars
+                        if glob.glob("/sys/firmware/efi/efivars/SecureBoot-*"):
+                             bios["SecureBoot"] = "Enabled (EFI)"
+                    except: pass
+            
+            elif system == "Darwin":
+                # Apple doesn't have BIOS, but it has Boot ROM / Firmware Version
+                cmd = "system_profiler SPHardwareDataType | grep 'Boot ROM Version'"
+                output = subprocess.check_output(cmd, shell=True).decode().strip()
+                bios["Version"] = output.split(':')[-1].strip()
+                bios["Vendor"] = "Apple Inc."
+                bios["SecureBoot"] = "T2/M-Series Secured"
+
+        except Exception as e:
+            self.logger.error(f"BIOS collection error: {e}")
+            
+        return bios
 
     def _get_gpu_details(self):
         try:
@@ -259,5 +319,55 @@ class HardwareMonitor:
             "DiskTotalGB": disk_total,
             "DiskFreeGB": disk_free,
             "SerialNumber": f"HDP_{hdp_serial}",
-            "GpuModel": self._gpu_cache
+            "GpuModel": self._gpu_cache,
+            "Bios": self._get_bios_info()
         }
+
+    def _get_tpm_id(self):
+        """Attempts to retrieve a unique TPM-backed identifier."""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                # [SEC v2.1.0] Extract TPM Endorsement Key hash via PowerShell
+                cmd = "powershell -Command \"Get-Tpm | Select-Object -ExpandProperty EndorsementKey\""
+                output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                if output: return output
+            elif system == "Linux":
+                # Check for TPM 2.0 device ID
+                tpm_path = "/sys/class/tpm/tpm0/device/id"
+                if os.path.exists(tpm_path):
+                    with open(tpm_path, "r") as f:
+                        return f.read().strip()
+        except: pass
+        return None
+
+    def get_hardware_fingerprint(self):
+        """[v2.1.0] High-fidelity hardware fingerprint with TPM-root-of-trust support."""
+        import hashlib
+        identifiers = []
+        
+        # 1. TPM ID (Highest Priority / Strongest Root of Trust)
+        tpm_id = self._get_tpm_id()
+        if tpm_id:
+            identifiers.append(f"TPM_{tpm_id}")
+        
+        # 2. Motherboard Serial
+        if not self._serial_cache:
+            self._serial_cache = self._get_serial_number()
+        identifiers.append(self._serial_cache if self._serial_cache else "Unknown")
+        
+        # 3. CPU Model & Cores
+        identifiers.append(self.cpu_model)
+        identifiers.append(str(self.cpu_cores))
+        
+        # 4. MAC Addresses
+        try:
+            addrs = psutil.net_if_addrs()
+            for _, snics in sorted(addrs.items()):
+                for snic in snics:
+                    if snic.family == psutil.AF_LINK:
+                        identifiers.append(snic.address)
+        except: pass
+        
+        raw_id = "|".join(identifiers)
+        return hashlib.sha256(raw_id.encode()).hexdigest()

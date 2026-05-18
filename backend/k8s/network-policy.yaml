@@ -1,0 +1,51 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitorix-zero-trust
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: monitorix
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  ingress:
+  # Allow traffic to API from Nginx Gateway
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitorix-gateway
+    ports:
+    - protocol: TCP
+      port: 8000
+      
+  # Allow internal communication between API and Workers
+  - from:
+    - podSelector:
+        matchLabels:
+          app: monitorix
+    ports:
+    - protocol: TCP
+      port: 8000
+      
+  egress:
+  # Restrict egress to known services only (DB, Redis, External APIs)
+  - to:
+    - podSelector:
+        matchLabels:
+          component: redis
+    - podSelector:
+        matchLabels:
+          component: postgres
+    # Allow DNS
+    - ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+    # Allow HTTPS egress for telemetry/updates
+    - ports:
+      - protocol: TCP
+        port: 443

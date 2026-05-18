@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitorix-api
+  labels:
+    app: monitorix
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: monitorix
+      component: api
+  template:
+    metadata:
+      labels:
+        app: monitorix
+        component: api
+    spec:
+      containers:
+      - name: api
+        image: monitorix-backend:latest
+        command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                  - key: component
+                    operator: In
+                    values:
+                    - api
+                topologyKey: "kubernetes.io/hostname"
+        envFrom:
+        - configMapRef:
+            name: monitorix-config
+        - secretRef:
+            name: monitorix-secrets
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitorix-worker-high
+  labels:
+    app: monitorix
+    component: worker-high
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: monitorix
+      component: worker-high
+  template:
+    metadata:
+      labels:
+        app: monitorix
+        component: worker-high
+    spec:
+      containers:
+      - name: worker
+        image: monitorix-backend:latest
+        command: ["celery", "-A", "app.worker", "worker", "--loglevel=info", "-Q", "high_priority"]
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: monitorix-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: monitorix-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

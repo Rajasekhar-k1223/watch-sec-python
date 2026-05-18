@@ -151,3 +151,36 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
         logger.error(traceback.format_exc())
     finally:
         session.close()
+
+@celery_app.task
+def cleanup_agents():
+    """[v2.6.0] Auto-Decommission Zombies (Short-lived Replicas)."""
+    from datetime import datetime, timedelta # type: ignore
+    session = Session()
+    try:
+        # If an agent is offline for > 24h, mark as 'Decommissioned'
+        decommission_threshold = datetime.utcnow() - timedelta(hours=24)
+        
+        # Mark as Offline if no heartbeat for 2 mins
+        offline_threshold = datetime.utcnow() - timedelta(minutes=2)
+        
+        # 1. Update status to Offline
+        session.execute(
+            update(Agent)
+            .where(Agent.LastSeen < offline_threshold, Agent.Status == "Online")
+            .values(Status="Offline")
+        )
+        
+        # 2. Decommission Zombies (Hidden from main list)
+        session.execute(
+            update(Agent)
+            .where(Agent.LastSeen < decommission_threshold, Agent.Status == "Offline")
+            .values(Status="Decommissioned")
+        )
+        
+        session.commit()
+        logger.info("Agent status cleanup & decommissioning task completed.")
+    except Exception as e:
+        logger.error(f"Cleanup task failed: {e}")
+    finally:
+        session.close()

@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager # type: ignore
 import fastapi # type: ignore # pyre-ignore
 import httpx # type: ignore
+import os # type: ignore
 from fastapi import FastAPI, Response, Request # type: ignore # pyre-ignore
 from fastapi.exceptions import RequestValidationError # type: ignore
 from fastapi.middleware.cors import CORSMiddleware # type: ignore
@@ -9,15 +10,8 @@ from sqlalchemy import text # type: ignore
 from .socket_instance import sio # type: ignore
 from .db.session import settings, engine # type: ignore
 
-from .api import ( # type: ignore
-    auth, tenants, users, agents, install, # type: ignore
-    downloads, commands, events, mail, audit, # type: ignore
-    screenshots, policies, productivity, billing, # type: ignore
-    uploads, reports, dashboard, ai, system, # type: ignore
-    ocr, thesaurus, speech, hashbank, fingerprints, # type: ignore
-    searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
-    notifications, report_downloads # type: ignore
-) # type: ignore
+from .core.plugins import plugin_manager # type: ignore
+from prometheus_fastapi_instrumentator import Instrumentator # type: ignore
 import asyncio # type: ignore
 import re
 import sys
@@ -93,7 +87,16 @@ async def lifespan(app: FastAPI):
                 if "GeolocationEnabled" not in cols:
                     print("[SQL] Adding GeolocationEnabled to Agents...")
                     await conn.execute(text("ALTER TABLE Agents ADD COLUMN GeolocationEnabled BOOLEAN DEFAULT TRUE"))
-                    await conn.commit()
+                
+                if "ThreatScore" not in cols:
+                    print("[SQL] Adding ThreatScore to Agents...")
+                    await conn.execute(text("ALTER TABLE Agents ADD COLUMN ThreatScore INTEGER DEFAULT 0"))
+
+                if "RiskLevel" not in cols:
+                    print("[SQL] Adding RiskLevel to Agents...")
+                    await conn.execute(text("ALTER TABLE Agents ADD COLUMN RiskLevel VARCHAR(50) DEFAULT 'Normal'"))
+
+                await conn.commit()
             print("[SQL] Columns verified.")
         except Exception as e:
             print(f"[SQL Migration Error] {e}")
@@ -202,11 +205,22 @@ _request_counts = {} # {(id, path): [timestamps]}
 async def rate_limit_middleware(request: Request, call_next):
     # [v1.8.37] Resilience: Prevent agent flooding
     path = request.url.path
+    
+    # [SEC v2.1.0] Identity Extraction (mTLS & Trust Tokens)
+    client_cert_subject = request.headers.get("X-Client-Cert-Subject") # Injected by Nginx mTLS
+    trust_token = request.headers.get("X-Monitorix-Trust-Token")
+    agent_id = request.headers.get("X-Agent-Id")
+    
+    # Enforce Hardware/Transport Identity for high-risk endpoints in Strict Mode
+    if os.getenv("MONITORIX_STRICT_AGENT_AUTH") == "1":
+        if path.startswith("/api/agent/") and not trust_token and not client_cert_subject:
+             return Response(content="Identity Verification Required (mTLS or Trust Token missing)", status_code=403)
+
     if not path.startswith("/api/events/report") and not path.startswith("/api/agent/"):
         return await call_next(request)
     
     # Identify by Agent-Id header or IP
-    ident = request.headers.get("X-Agent-Id") or request.client.host # type: ignore
+    ident = agent_id or request.client.host # type: ignore
     now = datetime.utcnow()
     key = (ident, path)
     
@@ -277,41 +291,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# [v2.4.0] Real-time Observability: Prometheus Metrics
+Instrumentator().instrument(app).expose(app)
+
 # ======================================================
 # API ROUTERS (MUST be before Socket.IO)
 # ======================================================
-app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
-app.include_router(tenants.router, prefix="/api/tenants", tags=["Tenants"])
-app.include_router(users.router, prefix="/api/users", tags=["Users"])
-app.include_router(agents.router, prefix="/api/agents", tags=["Agents"])
-app.include_router(agents.agent_router, prefix="/api/agent", tags=["Agent Communication"])
-app.include_router(install.router, prefix="/api/install", tags=["Install"])
-app.include_router(downloads.router, prefix="/api/downloads", tags=["Downloads"])
-app.include_router(commands.router, prefix="/api/commands", tags=["Commands"])
-app.include_router(events.router, prefix="/api/events", tags=["Events"])
-app.include_router(mail.router, prefix="/api/mail", tags=["Mail"])
-app.include_router(audit.router, prefix="/api/audit", tags=["Audit"])
-app.include_router(screenshots.router, prefix="/api/screenshots", tags=["Screenshots"])
-app.include_router(policies.router, prefix="/api/policies", tags=["Policies"])
-app.include_router(productivity.router, prefix="/api/productivity", tags=["Productivity"])
-app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
-app.include_router(uploads.router, prefix="/api/uploads", tags=["Uploads"])
-app.include_router(reports.router, prefix="/api", tags=["Reports"])
-app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
-app.include_router(ai.router, prefix="/api/ai", tags=["AI"])
-app.include_router(system.router, prefix="/api", tags=["System"])
-app.include_router(ocr.router, prefix="/api", tags=["OCR"])
-app.include_router(thesaurus.router, prefix="/api", tags=["Thesaurus"])
-app.include_router(speech.router, prefix="/api/speech", tags=["Speech"])
-app.include_router(hashbank.router, prefix="/api", tags=["HashBanks"])
-app.include_router(fingerprints.router, prefix="/api", tags=["Fingerprints"])
-app.include_router(searches.router, prefix="/api", tags=["Searches"])
-app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
-app.include_router(vulnerabilities.router, prefix="/api/vulnerabilities", tags=["Vulnerabilities"])
-app.include_router(trials.router, prefix="/api/trials", tags=["Trials"])
-app.include_router(bandwidth.router, prefix="/api", tags=["Bandwidth"])
-app.include_router(notifications.router, prefix="/api", tags=["Notifications"])
-app.include_router(report_downloads.router, prefix="/api", tags=["Report Downloads"])
+# [v2.1.0] Modular Plugin Architecture: Dynamic Route Discovery
+plugin_manager.app = app
+plugin_manager.load_api_plugins("app.api")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

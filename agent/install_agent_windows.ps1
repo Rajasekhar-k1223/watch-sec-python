@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 $LogFile = "C:\monitorix_install.log"
 Start-Transcript -Path $LogFile -Append -Force
 
-Write-Host "--- Starting Monitorix Installation ---"
+Write-Host "--- Starting Monitorix Enterprise Installation ---"
 Write-Host "Target Dir: $InstallDir"
 Write-Host "Download URL: $DownloadUrl"
 
@@ -277,7 +277,7 @@ try {
 Write-Host "[*] Registering Persistence Mechanisms..."
 $TaskName = "MonitorixAgentLauncher"
 $ServiceName = "MonitorixAgentService"
-$Description = "Monitorix Security Agent - Enterprise Data Protection"
+$Description = "Monitorix Enterprise Security Agent - Advanced Auditing & Protection"
 
 try {
     # A. Scheduled Task (System Mode) 

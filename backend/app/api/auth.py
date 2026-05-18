@@ -6,9 +6,12 @@ from datetime import timedelta # type: ignore
 import os # type: ignore
 
 from ..db.session import get_db # type: ignore
-from ..db.models import User, Tenant # type: ignore
-from ..core.security import verify_password, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES # type: ignore
+from ..db.models import User, Tenant, RefreshToken # type: ignore
+from ..core.security import verify_password, create_access_token, get_password_hash, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS # type: ignore
 from ..core.rate_limit import RateLimiter # [v1.7.0] # type: ignore
+import secrets
+import hashlib
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
@@ -26,11 +29,13 @@ class UserDto(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+    refresh_token: str # [v2.0.0]
     user: UserDto
 
 @router.post("/login", response_model=LoginResponse)
 async def login_for_access_token(
     form_data: LoginRequest, 
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _ = Depends(RateLimiter(times=5, seconds=60)) # [SEC] 5 attempts per minute
 ):
@@ -66,14 +71,27 @@ async def login_for_access_token(
     db.add(audit)
     await db.commit()
 
-    # 3. Create Token
-    # 3. Create Token
+    # 3. Create Access Token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.Username, "role": user.Role, "tenantId": user.TenantId},
         expires_delta=access_token_expires
     )
     
+    # 4. Create Refresh Token [v2.0.0]
+    refresh_token_raw = secrets.token_urlsafe(64)
+    refresh_token_hash = hashlib.sha256(refresh_token_raw.encode()).hexdigest()
+    
+    new_rt = RefreshToken(
+        UserId=user.Id,
+        TokenHash=refresh_token_hash,
+        ExpiresAt=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        UserAgent=request.headers.get("User-Agent"),
+        IpAddress=request.client.host if request.client else None
+    )
+    db.add(new_rt)
+    await db.commit()
+
     # Fetch Plan if TenantId exists
     plan = "Starter"
     if user.TenantId:
@@ -84,11 +102,68 @@ async def login_for_access_token(
 
     return {
         "token": access_token, 
+        "refresh_token": refresh_token_raw,
         "user": {
             "username": user.Username,
             "role": user.Role,
             "tenantId": user.TenantId,
             "plan": plan
+        }
+    }
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh_access_token(
+    payload: RefreshRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Rotate tokens using a valid refresh token. [v2.0.0]"""
+    token_hash = hashlib.sha256(payload.refresh_token.encode()).hexdigest()
+    
+    result = await db.execute(
+        select(RefreshToken, User)
+        .join(User, RefreshToken.UserId == User.Id)
+        .where(RefreshToken.TokenHash == token_hash, RefreshToken.RevokedAt == None)
+    )
+    row = result.first()
+    
+    if not row or row.RefreshToken.ExpiresAt < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+    
+    rt, user = row
+    
+    # Rotate: Revoke old, issue new
+    rt.RevokedAt = datetime.utcnow()
+    
+    # Create Access Token
+    access_token = create_access_token(
+        data={"sub": user.Username, "role": user.Role, "tenantId": user.TenantId}
+    )
+    
+    # Create New Refresh Token
+    new_raw = secrets.token_urlsafe(64)
+    new_hash = hashlib.sha256(new_raw.encode()).hexdigest()
+    
+    new_rt = RefreshToken(
+        UserId=user.Id,
+        TokenHash=new_hash,
+        ExpiresAt=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        UserAgent=request.headers.get("User-Agent"),
+        IpAddress=request.client.host if request.client else None
+    )
+    db.add(new_rt)
+    await db.commit()
+    
+    return {
+        "token": access_token,
+        "refresh_token": new_raw,
+        "user": {
+            "username": user.Username,
+            "role": user.Role,
+            "tenantId": user.TenantId
         }
     }
 
@@ -193,6 +268,19 @@ async def register_tenant(
         expires_delta=access_token_expires
     )
     
+    # 4b. Create Refresh Token [v2.0.0]
+    refresh_token_raw = secrets.token_urlsafe(64)
+    refresh_token_hash = hashlib.sha256(refresh_token_raw.encode()).hexdigest()
+    
+    new_rt = RefreshToken(
+        UserId=new_user.Id,
+        TokenHash=refresh_token_hash,
+        ExpiresAt=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        UserAgent=request.headers.get("User-Agent"),
+        IpAddress=request.client.host if request.client else None
+    )
+    db.add(new_rt)
+    
     # [AUDIT] Log Registration
     from ..db.models import AuditLog # type: ignore
     from datetime import datetime # type: ignore
@@ -210,6 +298,7 @@ async def register_tenant(
 
     return {
         "token": access_token, 
+        "refresh_token": refresh_token_raw,
         "user": {
             "username": new_user.Username,
             "role": new_user.Role,

@@ -9,6 +9,7 @@ import base64
 import hmac
 import hashlib
 import json
+from datetime import datetime
 from agent_core.privacy_utils import PrivacyRedactor
 
 def log_remediation(msg):
@@ -61,8 +62,78 @@ class RemediationHandler:
             await self._self_destruct()
         elif action == "ExecuteCommand":
             await self._execute_command(params.get("command"))
+        elif action == "SOVEREIGN_LOCKDOWN":
+            # [v2.6.0] High-Sovereignty Lockdown
+            unlock_hash = params.get("unlock_hash")
+            if not unlock_hash:
+                log_remediation("SOVEREIGN_LOCKDOWN failed: Missing unlock hash")
+                return
+            
+            from agent_core.lockdown import lockdown_engine # [v2.6.0]
+            # Use a separate thread to avoid blocking the WebSocket while the system freezes
+            import threading
+            threading.Thread(target=lockdown_engine.apply_lockdown, args=(unlock_hash,), daemon=True).start()
+        elif action == "SOVEREIGN_UNLOCK":
+            # [v2.6.5] Remote Restoration
+            from agent_core.lockdown import lockdown_engine
+            lockdown_engine.release_lock()
+        elif action == "MemoryForensic":
+            await self._memory_forensic_scan()
         else:
             log_remediation(f"Unknown remediation action received: {action}")
+
+    async def _memory_forensic_scan(self):
+        """[v2.5.0] Memory Forensic: Scans active process memory for fileless malware patterns."""
+        try:
+            log_remediation("Initiating Autonomous Memory Forensic Scan...")
+            import psutil # type: ignore
+            
+            # 1. Pattern matching for known fileless IoCs
+            suspicious_patterns = [
+                r"meterpreter", r"cobaltstrike", r"mimikatz", r"powershell -enc",
+                r"base64", r"hidden", r"bypass", r"reflective", r"inject"
+            ]
+            
+            results = []
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    pinfo = proc.info
+                    cmdline = " ".join(pinfo['cmdline'] or [])
+                    
+                    # Check cmdline for suspicious flags
+                    import re
+                    for pattern in suspicious_patterns:
+                        if re.search(pattern, cmdline.lower()):
+                            results.append({
+                                "pid": pinfo['pid'],
+                                "name": pinfo['name'],
+                                "trigger": pattern,
+                                "type": "Suspicious Cmdline"
+                            })
+                            break
+                    
+                    # [Windows Only] Check for unbacked memory regions (simplified)
+                    if platform.system() == "Windows":
+                        # Placeholder for advanced memory region scanning
+                        pass
+                        
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            if results:
+                log_remediation(f"FORENSIC ALERT: Detected {len(results)} suspicious memory artifacts.")
+                # Report back to backend via socket (if available)
+                if hasattr(self, 'socket_client') and self.socket_client:
+                    await self.socket_client.emit('forensic_result', {
+                        "agentId": self.agent_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "findings": results
+                    })
+            else:
+                log_remediation("Memory forensic scan completed: Nominal. No anomalies detected.")
+                
+        except Exception as e:
+            log_remediation(f"Memory Forensic failed: {e}")
 
     async def _execute_command(self, command):
         """[v1.8.62] Remote Remediation: Executes a signed command to resolve vulnerabilities."""
@@ -248,3 +319,19 @@ class RemediationHandler:
                    subprocess.run(["ip", "link", "set", "dev", "eth0", "down"], check=False)
         except Exception as e:
             log_remediation(f"Error executing IsolateNetwork: {e}")
+
+    async def _execute_autonomous_action(self, data):
+        """[v2.6.0] Internal Trigger: Executes actions from local playbooks."""
+        action = data.get("action")
+        params = data.get("params", {})
+        
+        log_remediation(f"AUTONOMOUS ACTION EXECUTING: {action}")
+        
+        if action == "KillProcess":
+            await self._kill_process(params.get("process_name"))
+        elif action == "IsolateNetwork":
+            await self._isolate_network()
+        elif action == "WIPE_AGENT":
+            await self._self_destruct()
+        elif action == "MemoryForensic":
+            await self._memory_forensic_scan()

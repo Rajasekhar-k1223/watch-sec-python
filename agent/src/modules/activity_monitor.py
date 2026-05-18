@@ -98,6 +98,20 @@ class ActivityMonitor:
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
 
+    def set_categories(self, categories_json):
+        """Dynamically update productivity categories from the backend policy."""
+        try:
+            if isinstance(categories_json, str):
+                new_cats = json.loads(categories_json)
+            else:
+                new_cats = categories_json
+            
+            if "Productive" in new_cats and "Unproductive" in new_cats:
+                self.categories = new_cats
+                print("[ActivityMonitor] Categories updated from policy.")
+        except Exception as e:
+            print(f"[ActivityMonitor] Category update error: {e}")
+
     def _get_idle_duration_linux(self):
         try:
             # Use xprintidle if available (standard on many distros or easily installable)
@@ -306,7 +320,30 @@ class ActivityMonitor:
 
     # --- Linux ---
     def _get_active_window_linux(self):
-        # 1. Try xdotool (Desktop Environment)
+        # 1. Try python-xlib (Robust, no external tools needed)
+        if HAS_XLIB:
+            try:
+                d = display.Display()
+                root = d.screen().root
+                window_id = root.get_full_property(d.intern_atom('_NET_ACTIVE_WINDOW'), X.AnyPropertyType).value[0]
+                window = d.create_resource_object('window', window_id)
+                
+                # Title
+                title = window.get_full_property(d.intern_atom('_NET_WM_NAME'), 0).value
+                if isinstance(title, bytes): title = title.decode('utf-8', 'ignore')
+                
+                # Class (Process Name)
+                wm_class = window.get_full_property(d.intern_atom('WM_CLASS'), X.AnyPropertyType).value
+                # Usually "process_name\x00Class"
+                if isinstance(wm_class, bytes): 
+                    name = wm_class.decode('utf-8', 'ignore').split('\0')[0]
+                else:
+                    name = str(wm_class[0]) if wm_class else "Linux App"
+                
+                return name, title if title else name
+            except: pass
+
+        # 2. Try xdotool (Desktop Environment Fallback)
         try:
              result = subprocess.run(['xdotool', 'getwindowfocus', 'getwindowname'], capture_output=True, text=True, timeout=1)
              if result.returncode == 0:
@@ -327,7 +364,7 @@ class ActivityMonitor:
                  return "Linux Desktop", title
         except: pass
 
-        # 2. Fallback: Headless / Server Mode (Top CPU Process)
+        # 3. Fallback: Headless / Server Mode (Top CPU Process)
         try:
             # Use 'ps' to get top CPU process (reliable and stateless)
             cmd = ['/usr/bin/ps', '-eo', 'comm,pcpu,pmem', '--sort=-pcpu', '--no-headers']

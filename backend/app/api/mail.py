@@ -34,7 +34,95 @@ class MailLogDto(BaseModel):
     Timestamp: datetime = datetime.utcnow()
     Attachments: List[AttachmentDto] = []
 
+@router.get("/", response_model=List[dict])
+async def get_all_mail_logs(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_range: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns mail logs for the current tenant.
+    Optionally filter by agent_id, start_date, end_date, or date_range.
+    """
+    from datetime import timedelta # type: ignore
+    from sqlalchemy import and_ # type: ignore
+
+    # Resolve date_range shorthand first
+    if date_range:
+        now = datetime.utcnow()
+        if date_range == "24h":
+            start_date = (now - timedelta(hours=24)).isoformat()
+        elif date_range == "7d":
+            start_date = (now - timedelta(days=7)).isoformat()
+        elif date_range == "30d":
+            start_date = (now - timedelta(days=30)).isoformat()
+
+    # Build base query with tenant restriction
+    if current_user.Role == "SuperAdmin":
+        # SuperAdmin can see all
+        query = select(MailLog).options(selectinload(MailLog.Attachments))
+    else:
+        # TenantAdmin/User: join via Agent table to restrict to own tenant
+        query = (
+            select(MailLog)
+            .options(selectinload(MailLog.Attachments))
+            .join(Agent, Agent.AgentId == MailLog.AgentId)
+            .where(Agent.TenantId == current_user.TenantId)
+        )
+
+    # Also verify plan access for the tenant
+    if current_user.TenantId:
+        res_t = await db.execute(select(Tenant).where(Tenant.Id == current_user.TenantId))
+        tenant = res_t.scalars().first()
+        if tenant:
+            try:
+                verify_feature_access(tenant.Plan, "MailMonitorEnabled")
+            except HTTPException:
+                raise HTTPException(status_code=403, detail="Mail Monitor not available on your plan")
+
+    # Optional: further filter by a specific agent
+    if agent_id:
+        query = query.where(MailLog.AgentId == agent_id)
+
+    # Date filters
+    if start_date:
+        try:
+            dt_start = datetime.fromisoformat(start_date.replace("Z", ""))
+            query = query.where(MailLog.Timestamp >= dt_start)
+        except Exception:
+            pass
+
+    if end_date:
+        try:
+            dt_end = datetime.fromisoformat(end_date.replace("Z", ""))
+            query = query.where(MailLog.Timestamp <= dt_end)
+        except Exception:
+            pass
+
+    query = query.order_by(MailLog.Timestamp.desc()).limit(min(limit, 500))
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return [{
+        "Id": l.Id,
+        "AgentId": l.AgentId,
+        "Sender": l.Sender,
+        "Recipient": l.Recipient,
+        "Subject": l.Subject,
+        "BodyPreview": l.BodyPreview,
+        "HasAttachments": l.HasAttachments,
+        "RiskLevel": l.RiskLevel,
+        "Timestamp": l.Timestamp,
+        "Attachments": [{"Id": a.Id, "FileName": a.FileName, "Size": a.Size} for a in l.Attachments]
+    } for l in logs]
+
+
 @router.get("/{agent_id}", response_model=List[dict])
+
 async def get_agent_mail_logs(
     agent_id: str,
     start_date: Optional[str] = None,

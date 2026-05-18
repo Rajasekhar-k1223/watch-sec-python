@@ -11,6 +11,7 @@ from .deps import get_current_user # type: ignore
 
 router = APIRouter()
 
+@router.get("")
 @router.get("/")
 async def get_audit_logs(
     tenantId: Optional[int] = None,

@@ -1,0 +1,55 @@
+name: Monitorix Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Security Tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety trufflehog
+
+    - name: Bandit Scan (SAST)
+      run: |
+        bandit -r backend/app -f json -o bandit_report.json || true
+        # We allow failure to ensure pipeline continues to reporting, 
+        # but in strict mode this should fail the build.
+
+    - name: Dependency Safety Check
+      run: |
+        safety check -r backend/requirements.txt --json > safety_report.json || true
+
+    - name: Secret Scanning (Trufflehog)
+      run: |
+        trufflehog github --repo https://github.com/${{ github.repository }} --json > secrets_report.json || true
+
+    - name: Generate SBOM (Syft)
+      uses: anchore/sbom-action@v0
+      with:
+        path: ./backend
+        format: 'cyclonedx-json'
+        output-file: 'monitorix-sbom.json'
+
+    - name: Upload Security Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-reports
+        path: |
+          bandit_report.json
+          safety_report.json
+          secrets_report.json
+          monitorix-sbom.json

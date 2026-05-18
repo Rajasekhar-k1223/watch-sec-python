@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status # type: ignore
 from pydantic import BaseModel # type: ignore
 from typing import Optional # type: ignore
 
-from .deps import get_current_user # type: ignore
+from .deps import get_current_user, check_role # type: ignore
 from ..db.models import User, Tenant # type: ignore
 from ..core.security import generate_agent_command_signature # type: ignore
 from ..socket_instance import sio # type: ignore
@@ -17,12 +17,8 @@ class CommandRequest(BaseModel):
 async def execute_command(
     agent_id: str,
     req: CommandRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_role(["SuperAdmin", "TenantAdmin"]))
 ):
-    # 1. Security Check
-    if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
-        raise HTTPException(status_code=403, detail="Not authorized to execute commands")
-
     # [SECURITY] Validate Agent Ownership
     from ..db.session import get_db # type: ignore
     from sqlalchemy.future import select # type: ignore
@@ -48,7 +44,7 @@ async def execute_command(
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
-        Action="Execute Remote Command",
+        Action="Remote Remediation Action",
         Target=f"Agent: {agent_id}",
         Details=f"Command: {req.Command}, Target: {req.Target}",
         Timestamp=datetime.utcnow()
@@ -87,7 +83,7 @@ async def execute_command(
 @router.post("/screenshot/{agent_id}")
 async def trigger_screenshot(
     agent_id: str,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(check_role(["SuperAdmin", "TenantAdmin", "Analyst"]))
 ):
     # [SECURITY] Validate Agent Ownership
     from ..db.session import AsyncSessionLocal # type: ignore
@@ -107,9 +103,9 @@ async def trigger_screenshot(
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
-        Action="Trigger Manual Screenshot",
+        Action="Visual Activity Capture Request",
         Target=f"Agent: {agent_id}",
-        Details="Requesting immediate screenshot capture",
+        Details="Requesting immediate visual activity capture (manual trigger)",
         Timestamp=datetime.utcnow()
     )
     from ..db.session import AsyncSessionLocal # type: ignore

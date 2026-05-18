@@ -10,11 +10,12 @@ import ctypes # type: ignore
 import random # type: ignore
 
 class ScreenshotCapture:
-    def __init__(self, agent_id, api_key, backend_url, interval=60):
+    def __init__(self, agent_id, api_key, backend_url, interval=60, data_queue=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.interval = interval
+        self.data_queue = data_queue
         self.running = False
         self.enabled = False
         self.paused = False
@@ -96,16 +97,27 @@ class ScreenshotCapture:
             print(f"[Screens] {state_str}")
 
     def _report_audit(self, event_type, details):
-        payload = {
-            "AgentId": self.agent_id,
-            "TenantApiKey": self.api_key,
-            "Type": event_type,
-            "Details": details,
-            "Timestamp": datetime.utcnow().isoformat()
-        }
-        try:
-            self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
-        except: pass
+        if self.data_queue:
+            payload = {
+                "AgentId": self.agent_id,
+                "Type": event_type,
+                "Details": details,
+                "Timestamp": datetime.utcnow().isoformat()
+            }
+            try:
+                self.data_queue.enqueue("/api/events/report", payload)
+            except: pass
+        else:
+            payload = {
+                "AgentId": self.agent_id,
+                "TenantApiKey": self.api_key,
+                "Type": event_type,
+                "Details": details,
+                "Timestamp": datetime.utcnow().isoformat()
+            }
+            try:
+                self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
+            except: pass
 
     def _loop(self):
         while self.running:

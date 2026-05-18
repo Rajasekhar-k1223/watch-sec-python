@@ -29,6 +29,10 @@ class PolicyDto(BaseModel):
     screenshotsEnabled: Optional[bool] = False
     activityMonitorEnabled: Optional[bool] = True
     geolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
+    autonomousRemediationEnabled: Optional[bool] = False # [v2.6.8]
+    threatScoreThreshold: Optional[int] = 90 # [v2.6.8]
+    exclusionsJson: Optional[str] = "[]" # [v2.6.9]
+    productivityJson: Optional[str] = "{}" # [v2.7.5]
 
 @router.get("", response_model=List[PolicyDto])
 @router.get("/", response_model=List[PolicyDto], include_in_schema=False)
@@ -60,7 +64,11 @@ async def get_policies(
             screenshotQuality=p.ScreenshotQuality or 80,
             screenshotsEnabled=p.ScreenshotsEnabled,
             activityMonitorEnabled=p.ActivityMonitorEnabled,
-            geolocationEnabled=p.GeolocationEnabled # [NEW] v1.8.27
+            geolocationEnabled=p.GeolocationEnabled,
+            autonomousRemediationEnabled=p.AutonomousRemediationEnabled,
+            threatScoreThreshold=p.ThreatScoreThreshold,
+            exclusionsJson=p.ExclusionsJson,
+            productivityJson=p.ProductivityJson
         ) for p in policies
     ]
 
@@ -92,6 +100,10 @@ async def create_policy(
         ScreenshotsEnabled=dto.screenshotsEnabled or False,
         ActivityMonitorEnabled=dto.activityMonitorEnabled or True,
         GeolocationEnabled=dto.geolocationEnabled if dto.geolocationEnabled is not None else True,
+        AutonomousRemediationEnabled=dto.autonomousRemediationEnabled or False,
+        ThreatScoreThreshold=dto.threatScoreThreshold or 90,
+        ExclusionsJson=dto.exclusionsJson or "[]",
+        ProductivityJson=dto.productivityJson or "{}",
         CreatedAt=datetime.utcnow()
     )
     
@@ -146,6 +158,10 @@ async def update_policy(
     policy.ScreenshotsEnabled = dto.screenshotsEnabled if dto.screenshotsEnabled is not None else False
     policy.ActivityMonitorEnabled = dto.activityMonitorEnabled if dto.activityMonitorEnabled is not None else True
     policy.GeolocationEnabled = dto.geolocationEnabled if dto.geolocationEnabled is not None else True # [NEW]
+    policy.AutonomousRemediationEnabled = dto.autonomousRemediationEnabled if dto.autonomousRemediationEnabled is not None else False
+    policy.ThreatScoreThreshold = dto.threatScoreThreshold if dto.threatScoreThreshold is not None else 90
+    policy.ExclusionsJson = dto.exclusionsJson if dto.exclusionsJson is not None else "[]"
+    policy.ProductivityJson = dto.productivityJson if dto.productivityJson is not None else "{}"
     
     # [REAL-TIME SYNC] Notify Agents assigned to this policy
     agent_query = select(Agent).where(Agent.PolicyId == id)
@@ -160,10 +176,13 @@ async def update_policy(
                 "ScreenshotQuality": policy.ScreenshotQuality,
                 "ScreenshotsEnabled": policy.ScreenshotsEnabled,
                 "ActivityMonitorEnabled": policy.ActivityMonitorEnabled,
-                "GeolocationEnabled": policy.GeolocationEnabled, # [NEW]
-                "BandwidthConfig": json.loads(policy.BandwidthJson) if policy.BandwidthJson else {}
+                "GeolocationEnabled": policy.GeolocationEnabled,
+                "BandwidthConfig": json.loads(policy.BandwidthJson) if policy.BandwidthJson else {},
+                "BlockedApps": json.loads(policy.BlockedAppsJson) if policy.BlockedAppsJson else [],
+                "BlockedWebsites": json.loads(policy.BlockedWebsitesJson) if policy.BlockedWebsitesJson else [],
+                "AutonomousPlaybooks": json.loads(policy.RemediationJson) if policy.RemediationJson else []
             }, room=agent.AgentId)
-            print(f"[Policy Sync] Pushed v1.8.20 config to Agent: {agent.AgentId}")
+            print(f"[Policy Sync] Pushed Full Governance config to Agent: {agent.AgentId}")
         except Exception as e:
             print(f"[Policy Sync] Failed to push to {agent.AgentId}: {e}")
 

@@ -94,6 +94,17 @@ async def patch_agent_system(
         db.add(patch_event)
         await db.commit()
         
+        # [v2.2.0] Forward to SIEM
+        from ..services.siem_service import siem_service # type: ignore
+        await siem_service.forward_event(tenant.SiemConfigJson, {
+            "Id": patch_event.Id,
+            "AgentId": agent_id,
+            "TenantId": agent.TenantId,
+            "Type": "System Patch Triggered",
+            "Details": patch_event.Details,
+            "Severity": "Low"
+        })
+
         return {"status": "dispatched", "command": command}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to relay command: {e}")
@@ -102,6 +113,7 @@ async def patch_agent_system(
 async def get_vulnerability_alerts(
     agent_id: Optional[str] = None,
     severity: Optional[str] = None,
+    limit: int = 100,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -123,6 +135,7 @@ async def get_vulnerability_alerts(
         # [SECURITY] Filter by Tenant
         query = query.where(Agent.TenantId == current_user.TenantId)
 
+    query = query.limit(min(limit, 500))
     result = await db.execute(query)
     events = result.scalars().all()
     
@@ -304,3 +317,31 @@ async def get_fleet_software(
     flat_list.sort(key=lambda x: x["AgentCount"], reverse=True)
     
     return flat_list
+
+@router.post("/status/{event_id}")
+async def update_vulnerability_status(
+    event_id: int,
+    status: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [v2.2.0] SOC Workflow: Updates the remediation status of a vulnerability alert.
+    """
+    query = select(EventLog).join(Agent, EventLog.AgentId == Agent.AgentId).where(EventLog.Id == event_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+    
+    result = await db.execute(query)
+    event = result.scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Alert not found")
+        
+    valid_statuses = ["Open", "In-Progress", "Resolved", "Risk-Accepted"]
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid_statuses}")
+        
+    event.Status = status
+    await db.commit()
+    
+    return {"status": "updated", "eventId": event_id, "newStatus": status}
