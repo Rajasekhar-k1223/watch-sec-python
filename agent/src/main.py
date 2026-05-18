@@ -1785,6 +1785,7 @@ async def heartbeat_loop():
                 "Country": country,
                 "InstalledSoftwareJson": "[]", # Default to empty
                 "HealthIssues": json.dumps(health_issues),
+                "NetworkInMbps": max(0.0, in_mbps),
                 "NetworkOutMbps": max(0.0, out_mbps),
                 "JustStarted": first_heartbeat,
                 "MachineSecret": _get_machine_secret().decode(),

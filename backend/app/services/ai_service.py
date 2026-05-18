@@ -235,32 +235,108 @@ class SecurityAIService:
         }
 
     def generate_incident_summary(self, events: list):
-        """[v2.1.0] Generates a human-readable narrative of a security incident."""
+        """[v2.5.0] Generates a rich tactical security incident narrative from live event telemetry."""
         if not events:
             return "No significant events detected."
-            
-        summary = "SECURITY ANALYSIS SUMMARY:\n"
-        # Sort by time
-        sorted_events = sorted(events, key=lambda x: x.get('Timestamp', ''), reverse=True)[:10]
-        
-        summary += f"Detected {len(events)} security-relevant events in the last window.\n"
-        
-        # Identify Root Cause Pattern
-        has_auth = any("auth" in e.get("Type", "").lower() for e in events)
-        has_dlp = any("dlp" in e.get("Type", "").lower() or "usb" in e.get("Type", "").lower() for e in events)
-        
+
+        # Severity classification
+        severity_counts = {
+            "Critical": len([e for e in events if e.get("Severity", "").lower() == "critical"]),
+            "High":     len([e for e in events if e.get("Severity", "").lower() == "high"]),
+            "Medium":   len([e for e in events if e.get("Severity", "").lower() == "medium"]),
+            "Low":      len([e for e in events if e.get("Severity", "").lower() == "low"]),
+        }
+
+        types = [e.get("Type", "Unknown") for e in events]
+
+        has_auth    = any("auth" in t.lower() or "login" in t.lower() for t in types) or \
+                      any("login" in e.get("Details", "").lower() for e in events)
+        has_dlp     = any("dlp" in t.lower() or "usb" in t.lower() for t in types)
+        has_network = any("network" in t.lower() or "c2" in e.get("Details", "").lower() for t, e in zip(types, events))
+        has_vuln    = any("vuln" in t.lower() or "cve" in e.get("Details", "").lower() for t, e in zip(types, events))
+        has_process = any("process" in t.lower() or "exec" in t.lower() for t in types)
+        has_file    = any("file" in t.lower() or "shadow" in t.lower() for t in types)
+
+        parts = []
+
+        # === Lead Section ===
+        if severity_counts["Critical"] > 0:
+            parts.append(
+                f"CRITICAL ALERT [{severity_counts['Critical']} Critical / {severity_counts['High']} High Event(s)]: "
+                "This agent is actively exhibiting high-impact indicators of compromise. Immediate containment is required."
+            )
+        elif severity_counts["High"] > 0:
+            parts.append(
+                f"HIGH-PRIORITY ADVISORY [{severity_counts['High']} High Event(s) across {len(events)} total]: "
+                "Elevated security telemetry has been registered on this endpoint, suggesting an active or recent threat vector."
+            )
+        elif len(events) > 10:
+            parts.append(
+                f"ELEVATED ACTIVITY [{len(events)} events detected]: "
+                "This agent is generating an above-baseline volume of security events. Correlating patterns for threat classification."
+            )
+        else:
+            parts.append(
+                f"ROUTINE MONITORING REPORT [{len(events)} event(s)]: "
+                "Security telemetry has been collected and analyzed for this endpoint. "
+                "No severe anomalies detected, but minor deviations from baseline are noted below."
+            )
+
+        # === Threat Chain Analysis ===
         if has_auth and has_dlp:
-            summary += "CRITICAL PATTERN: Potential Credential Compromise followed by Data Exfiltration.\n"
+            parts.append(
+                "CRITICAL THREAT CHAIN IDENTIFIED: An authentication compromise event was sequenced with a data loss prevention "
+                "trigger. This pattern is consistent with credential-based exfiltration (MITRE ATT&CK T1078 / T1048)."
+            )
+        elif has_auth and has_network:
+            parts.append(
+                "LATERAL MOVEMENT RISK: Unauthorized or anomalous authentication activity was followed by suspicious outbound "
+                "network connections. This sequence is characteristic of credential-based lateral movement (MITRE T1021)."
+            )
+        elif has_vuln and has_network:
+            parts.append(
+                "EXPLOITATION RISK ACTIVE: Known vulnerability signatures are correlating with active network anomalies. "
+                "This may indicate active exploitation or beaconing activity (MITRE T1190 / T1571)."
+            )
         elif has_auth:
-            summary += "PATTERN: Authentication Attack or Brute-force attempt.\n"
+            parts.append(
+                "AUTHENTICATION PRESSURE DETECTED: This endpoint's authentication infrastructure is under stress. "
+                "Patterns are consistent with brute-force or credential stuffing campaigns (MITRE T1110)."
+            )
         elif has_dlp:
-            summary += "PATTERN: Sensitive Data Handling violation.\n"
-            
-        summary += "\nTOP EVENTS:\n"
-        for e in sorted_events:
-            summary += f"- [{e.get('Timestamp')}] {e.get('Type')}: {e.get('Details')[:100]}...\n"
-            
-        return summary
+            parts.append(
+                "DATA SECURITY INCIDENT: A sensitive data handling violation has been logged on this endpoint. "
+                "Removable media or file transfer operations triggered DLP policy controls (MITRE T1052 / T1567)."
+            )
+        elif has_network:
+            parts.append(
+                "NETWORK ANOMALY REGISTERED: Suspicious outbound or lateral network connections were observed. "
+                "Manual correlation with firewall logs and threat intelligence feeds is recommended (MITRE T1041)."
+            )
+
+        # === Process / File Forensics ===
+        if has_process:
+            parts.append(
+                "Process execution anomalies were identified, which may indicate unauthorized code execution, "
+                "script injection, or persistence mechanisms (MITRE T1059)."
+            )
+        if has_file:
+            parts.append(
+                "File system activity logged by the shadow monitor suggests potential data staging, "
+                "evidence tampering, or unauthorized file access (MITRE T1074 / T1070)."
+            )
+
+        # === Event timeline snapshot ===
+        sorted_events = sorted(events, key=lambda x: x.get("Timestamp", ""), reverse=True)[:5]
+        if sorted_events:
+            parts.append("\nLATEST EVENT SNAPSHOT:")
+            for e in sorted_events:
+                sev = e.get("Severity", "Medium")
+                ts = e.get("Timestamp", "")[:19].replace("T", " ")
+                details = (e.get("Details", "") or "")[:120]
+                parts.append(f"  [{sev.upper()}] {ts}  ›  {e.get('Type', 'Unknown')}: {details}")
+
+        return "\n".join(parts)
 
     def generate_tactical_narrative(self, events: list):
         """[v2.5.0] Advanced Narrative Engine: Synthesizes multiple events into a cohesive tactical story."""
