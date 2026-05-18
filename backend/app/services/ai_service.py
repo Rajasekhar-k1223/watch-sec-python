@@ -680,8 +680,24 @@ class SecurityAIService:
                 "SuggestedActions": suggested
             }
 
+        # ── PLATFORM COMPATIBILITY & SYSTEM SUPPORT INQUIRY ──
+        elif any(k in query_lower for k in ["mac", "macos", "apple", "windows", "linux", "ubuntu", "debian", "operating system", "platform", "support", "install", "compatibility"]):
+            response_text = (
+                "The Monitorix Security Platform offers **complete cross-platform endpoint support**! "
+                "Our EDR agent is built on a highly portable Python 3 core, allowing it to run seamlessly on:\n\n"
+                "* 🍎 **macOS (Apple Silicon & Intel)**: Deploys using a custom launchd plist daemon for background telemetry and EDR compliance checking.\n"
+                "* 🐧 **Linux (Ubuntu, Debian, CentOS, RedHat)**: Managed via systemd service controls with automated anomaly detection.\n"
+                "* 🪟 **Windows (10, 11, Server)**: Runs as an enterprise Windows Background Service with active process telemetry.\n\n"
+                "You can download the specific installation binaries and scripts straight from the **Agent Management** page!"
+            )
+            suggested = ["View Asset Management", "Run a threat summary"]
+            return {
+                "Response": response_text,
+                "SuggestedActions": suggested
+            }
+
         # ── PERFORMANCE & TELEMETRY INQUIRY ──
-        elif any(k in query_lower for k in ["cpu", "ram", "memory", "performance", "usage", "health", "system", "spec"]):
+        elif any(k in query_lower for k in ["cpu", "ram", "memory", "performance", "usage", "health", "compute", "spec"]):
             if agents:
                 perf_list = []
                 for a in agents[:3]:
