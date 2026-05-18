@@ -389,64 +389,68 @@ class SecurityAIService:
             events = res_events.scalars().all()
             active_incidents = len(events)
             
-        # 2. Check for OpenAI API keys to use true cloud LLM Text-to-SQL logic
+        # 2. Check for Generative AI (Cloud LLM or Local Offline LLM)
         api_key = os.environ.get("OPENAI_API_KEY")
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://watch-sec-ollama:11434")
+        
+        # Build Context Summaries
+        agents_summary = []
+        for a in agents[:5]:
+            agents_summary.append({
+                "AgentId": a.AgentId,
+                "Hostname": a.Hostname,
+                "Country": a.Country or "Unknown",
+                "Latitude": a.Latitude or 0.0,
+                "Longitude": a.Longitude or 0.0,
+                "PublicIp": a.PublicIp or "0.0.0.0",
+                "LocalIp": a.LocalIp or "0.0.0.0",
+                "CpuUsage": a.CpuUsage or 0.0,
+                "NetworkOutMbps": a.NetworkOutMbps or 0.0,
+                "Version": a.Version or "1.0.0",
+                "LastSeen": str(a.LastSeen) if a.LastSeen else "Never"
+            })
+        
+        vulns_summary = []
+        for v in vulns[:5]:
+            vulns_summary.append({
+                "CVE": v.CVE,
+                "AffectedProduct": v.AffectedProduct,
+                "Severity": v.Severity,
+                "Description": v.Description
+            })
+            
+        events_summary = []
+        for e in events[:5]:
+            events_summary.append({
+                "AgentId": e.AgentId,
+                "Severity": e.Severity,
+                "Type": e.Type,
+                "Details": e.Details,
+                "Timestamp": str(e.Timestamp)
+            })
+        
+        system_prompt = (
+            "You are the Monitorix Autonomous AI Copilot, a premium, advanced LLM fleet security assistant. "
+            "You analyze live fleet telemetry, security events, package vulnerabilities, and coordinates in real time.\n\n"
+            "Here is the LIVE database context for the current user's tenant:\n"
+            f"- Total Agents/Assets: {total_agents} ({online_count} online, {offline_count} offline)\n"
+            f"- Total Software Vulnerabilities: {total_vulns}\n"
+            f"- Total Logged Threat Events: {active_incidents}\n\n"
+            "Recent Monitored Agents:\n" + str(agents_summary) + "\n\n"
+            "Recent Active Vulnerabilities:\n" + str(vulns_summary) + "\n\n"
+            "Recent Critical Security Events:\n" + str(events_summary) + "\n\n"
+            "Instructions:\n"
+            "1. Respond directly, conversationally, and intelligently in Markdown to the user's specific prompt. "
+            "Use the live data above to answer accurately without stubs. Be deeply detailed and technical.\n"
+            "2. At the very end of your response, output a raw JSON block containing suggested actions for the UI in this format: "
+            "JSON_ACTIONS: {\"SuggestedActions\": [\"Action 1\", \"Action 2\", \"Action 3\"]}\n"
+            "Limit suggestions to exactly 3 highly relevant, contextual next steps (e.g. \"Isolate RAJ\" if RAJ has high alerts, "
+            "\"View Infrastructure Map\", \"Download Vulnerability Report\")."
+        )
+
+        # ── TIER A: CLOUD GENAI ENGINE (OPENAI) ──
         if api_key:
             try:
-                agents_summary = []
-                for a in agents[:5]:
-                    agents_summary.append({
-                        "AgentId": a.AgentId,
-                        "Hostname": a.Hostname,
-                        "Country": a.Country or "Unknown",
-                        "Latitude": a.Latitude or 0.0,
-                        "Longitude": a.Longitude or 0.0,
-                        "PublicIp": a.PublicIp or "0.0.0.0",
-                        "LocalIp": a.LocalIp or "0.0.0.0",
-                        "CpuUsage": a.CpuUsage or 0.0,
-                        "NetworkOutMbps": a.NetworkOutMbps or 0.0,
-                        "Version": a.Version or "1.0.0",
-                        "LastSeen": str(a.LastSeen) if a.LastSeen else "Never"
-                    })
-                
-                vulns_summary = []
-                for v in vulns[:5]:
-                    vulns_summary.append({
-                        "CVE": v.CVE,
-                        "AffectedProduct": v.AffectedProduct,
-                        "Severity": v.Severity,
-                        "Description": v.Description
-                    })
-                    
-                events_summary = []
-                for e in events[:5]:
-                    events_summary.append({
-                        "AgentId": e.AgentId,
-                        "Severity": e.Severity,
-                        "Type": e.Type,
-                        "Details": e.Details,
-                        "Timestamp": str(e.Timestamp)
-                    })
-                
-                system_prompt = (
-                    "You are the Monitorix Autonomous AI Copilot, a premium, advanced LLM fleet security assistant. "
-                    "You analyze live fleet telemetry, security events, package vulnerabilities, and coordinates in real time.\n\n"
-                    "Here is the LIVE database context for the current user's tenant:\n"
-                    f"- Total Agents/Assets: {total_agents} ({online_count} online, {offline_count} offline)\n"
-                    f"- Total Software Vulnerabilities: {total_vulns}\n"
-                    f"- Total Logged Threat Events: {active_incidents}\n\n"
-                    "Recent Monitored Agents:\n" + str(agents_summary) + "\n\n"
-                    "Recent Active Vulnerabilities:\n" + str(vulns_summary) + "\n\n"
-                    "Recent Critical Security Events:\n" + str(events_summary) + "\n\n"
-                    "Instructions:\n"
-                    "1. Respond directly, conversationally, and intelligently in Markdown to the user's specific prompt. "
-                    "Use the live data above to answer accurately without stubs. Be deeply detailed and technical.\n"
-                    "2. At the very end of your response, output a raw JSON block containing suggested actions for the UI in this format: "
-                    "JSON_ACTIONS: {\"SuggestedActions\": [\"Action 1\", \"Action 2\", \"Action 3\"]}\n"
-                    "Limit suggestions to exactly 3 highly relevant, contextual next steps (e.g. \"Isolate RAJ\" if RAJ has high alerts, "
-                    "\"View Infrastructure Map\", \"Download Vulnerability Report\")."
-                )
-                
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.post(
                         "https://api.openai.com/v1/chat/completions",
@@ -465,7 +469,6 @@ class SecurityAIService:
                     )
                     if resp.status_code == 200:
                         content = resp.json()["choices"][0]["message"]["content"]
-                        
                         suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
                         import re
                         json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
@@ -484,7 +487,55 @@ class SecurityAIService:
                             "SuggestedActions": suggested
                         }
             except Exception as e:
-                print(f"[AI Copilot] Cloud LLM failed, falling back to local engine: {e}")
+                print(f"[AI Copilot] Cloud LLM failed: {e}")
+
+        # ── TIER B: SOVEREIGN OFFLINE GENAI ENGINE (LOCAL OLLAMA) ──
+        for target_host in [ollama_host, "http://localhost:11434", "http://host.docker.internal:11434"]:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as check_client:
+                    resp_tags = await check_client.get(f"{target_host}/api/tags")
+                    if resp_tags.status_code == 200:
+                        models_data = resp_tags.json()
+                        models = [m["name"] for m in models_data.get("models", [])]
+                        
+                        active_model = models[0] if models else "phi3"
+                        
+                        async with httpx.AsyncClient(timeout=45.0) as chat_client:
+                            resp_chat = await chat_client.post(
+                                f"{target_host}/api/chat",
+                                json={
+                                    "model": active_model,
+                                    "messages": [
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": query}
+                                    ],
+                                    "options": {
+                                        "temperature": 0.3
+                                    },
+                                    "stream": False
+                                }
+                            )
+                            if resp_chat.status_code == 200:
+                                content = resp_chat.json()["message"]["content"]
+                                suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
+                                import re
+                                json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
+                                if json_match:
+                                    try:
+                                        import json
+                                        actions_data = json.loads(json_match.group(1))
+                                        if "SuggestedActions" in actions_data:
+                                            suggested = actions_data["SuggestedActions"]
+                                        content = re.sub(r'JSON_ACTIONS:\s*\{.*?\}', '', content, flags=re.DOTALL).strip()
+                                    except:
+                                        pass
+                                
+                                return {
+                                    "Response": content,
+                                    "SuggestedActions": suggested
+                                }
+            except Exception as e:
+                pass
 
         # 3. Local High-Fidelity NLP Semantic Reasoning Fallback
         # ── GEOLOCATION, POSITION & IP INQUIRY ──
