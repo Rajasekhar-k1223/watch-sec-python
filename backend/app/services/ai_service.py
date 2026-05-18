@@ -490,52 +490,65 @@ class SecurityAIService:
                 print(f"[AI Copilot] Cloud LLM failed: {e}")
 
         # ── TIER B: SOVEREIGN OFFLINE GENAI ENGINE (LOCAL OLLAMA) ──
-        for target_host in [ollama_host, "http://localhost:11434", "http://host.docker.internal:11434"]:
+        # Check targets in parallel to completely eliminate sequential timeout delays!
+        target_hosts = [ollama_host, "http://localhost:11434", "http://host.docker.internal:11434"]
+        
+        async def check_ollama(host: str):
             try:
-                async with httpx.AsyncClient(timeout=2.0) as check_client:
-                    resp_tags = await check_client.get(f"{target_host}/api/tags")
+                async with httpx.AsyncClient(timeout=0.3) as check_client:
+                    resp_tags = await check_client.get(f"{host}/api/tags")
                     if resp_tags.status_code == 200:
-                        models_data = resp_tags.json()
-                        models = [m["name"] for m in models_data.get("models", [])]
-                        
-                        active_model = models[0] if models else "phi3"
-                        
-                        async with httpx.AsyncClient(timeout=45.0) as chat_client:
-                            resp_chat = await chat_client.post(
-                                f"{target_host}/api/chat",
-                                json={
-                                    "model": active_model,
-                                    "messages": [
-                                        {"role": "system", "content": system_prompt},
-                                        {"role": "user", "content": query}
-                                    ],
-                                    "options": {
-                                        "temperature": 0.3
-                                    },
-                                    "stream": False
-                                }
-                            )
-                            if resp_chat.status_code == 200:
-                                content = resp_chat.json()["message"]["content"]
-                                suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
-                                import re
-                                json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
-                                if json_match:
-                                    try:
-                                        import json
-                                        actions_data = json.loads(json_match.group(1))
-                                        if "SuggestedActions" in actions_data:
-                                            suggested = actions_data["SuggestedActions"]
-                                        content = re.sub(r'JSON_ACTIONS:\s*\{.*?\}', '', content, flags=re.DOTALL).strip()
-                                    except:
-                                        pass
-                                
-                                return {
-                                    "Response": content,
-                                    "SuggestedActions": suggested
-                                }
-            except Exception as e:
+                        return host, resp_tags.json()
+            except Exception:
                 pass
+            return None
+        
+        import asyncio
+        results = await asyncio.gather(*(check_ollama(h) for h in target_hosts))
+        active_host_data = next((r for r in results if r is not None), None)
+        
+        if active_host_data:
+            target_host, models_data = active_host_data
+            try:
+                models = [m["name"] for m in models_data.get("models", [])]
+                active_model = models[0] if models else "phi3"
+                
+                async with httpx.AsyncClient(timeout=45.0) as chat_client:
+                    resp_chat = await chat_client.post(
+                        f"{target_host}/api/chat",
+                        json={
+                            "model": active_model,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": query}
+                            ],
+                            "options": {
+                                "temperature": 0.3
+                            },
+                            "stream": False
+                        }
+                    )
+                    if resp_chat.status_code == 200:
+                        content = resp_chat.json()["message"]["content"]
+                        suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
+                        import re
+                        json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
+                        if json_match:
+                            try:
+                                import json
+                                actions_data = json.loads(json_match.group(1))
+                                if "SuggestedActions" in actions_data:
+                                    suggested = actions_data["SuggestedActions"]
+                                content = re.sub(r'JSON_ACTIONS:\s*\{.*?\}', '', content, flags=re.DOTALL).strip()
+                            except:
+                                pass
+                        
+                        return {
+                            "Response": content,
+                            "SuggestedActions": suggested
+                        }
+            except Exception as e:
+                print(f"[AI Copilot] Ollama execution failed: {e}")
 
         # 3. Local High-Fidelity NLP Semantic Reasoning Fallback
         # ── GEOLOCATION, POSITION & IP INQUIRY ──
