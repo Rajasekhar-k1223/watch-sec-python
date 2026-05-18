@@ -718,6 +718,28 @@ class SecurityAIService:
                 "Response": response_text,
                 "SuggestedActions": suggested
             }
+            
+        # ── AGENT & SOFTWARE VERSION INQUIRY ──
+        elif any(k in query_lower for k in ["version", "release"]):
+            if agents:
+                version_list = []
+                for a in agents[:5]:
+                    version_list.append(f"* **{a.Hostname}**: Client Version `{a.Version or '1.0.0'}`")
+                
+                response_text = (
+                    f"A scan of your tenant's monitored endpoints indicates the following active client software versions:\n\n"
+                    + "\n".join(version_list) + "\n\n"
+                    f"A total of **{total_agents} assets** are reporting software and EDR agent versions to the infrastructure database."
+                )
+                suggested = ["View Asset Management", "Run a threat summary"]
+            else:
+                response_text = "No active agents are currently online to report client software versions."
+                suggested = ["View Asset Management"]
+                
+            return {
+                "Response": response_text,
+                "SuggestedActions": suggested
+            }
         
         # ── AGENTS & FLEET INQUIRY ──
         elif any(k in query_lower for k in ["agent", "fleet", "host", "online", "running", "asset", "device", "computer", "machine"]):
