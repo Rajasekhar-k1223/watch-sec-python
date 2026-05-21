@@ -51,10 +51,10 @@ class AgentInstaller:
 
         # 1. Check Windows Service
         service_name = "MonitorixAgent"
-        check_svc = f"sc.exe query {service_name}"
+        check_svc = ["sc.exe", "query", service_name]
         creation_flags = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
         
-        svc_result = subprocess.run(check_svc, capture_output=True, shell=True, creationflags=creation_flags)
+        svc_result = subprocess.run(check_svc, capture_output=True, creationflags=creation_flags)
         if svc_result.returncode != 0:
             self.logger.warning("Persistence missing (Windows Service). Attempting to repair...")
             # Note: Full re-registration usually requires the installer.ps1 
@@ -65,8 +65,8 @@ class AgentInstaller:
 
         # 2. Check Scheduled Task
         task_name = "MonitorixAgentLauncher"
-        check_task = f"schtasks /query /TN \"{task_name}\""
-        task_result = subprocess.run(check_task, capture_output=True, shell=True, creationflags=creation_flags)
+        check_task = ["schtasks", "/query", "/TN", f"\"{task_name}\""]
+        task_result = subprocess.run(check_task, capture_output=True, creationflags=creation_flags)
         
         if task_result.returncode != 0:
             self.logger.warning("Persistence missing (Scheduled Task). Attempting to repair...")
@@ -151,16 +151,16 @@ class AgentInstaller:
         task_action = f"powershell -WindowStyle Hidden -Command \\\"{heal_script}\\\""
         
         # Use ONLOGON + SYSTEM for background repair that doesn't block GUI session
-        cmd = (
-            f"schtasks /create /tn \"{task_name}\" "
-            f"/tr \"{task_action}\" "
-            f"/sc ONLOGON /rl HIGHEST /f"
-        )
+        cmd = [
+            "schtasks", "/create", "/tn", task_name,
+            "/tr", task_action,
+            "/sc", "ONLOGON", "/rl", "HIGHEST", "/f"
+        ]
         try:
             creation_flags = 0
             if platform.system() == "Windows":
                 creation_flags = subprocess.CREATE_NO_WINDOW # type: ignore
-            subprocess.run(cmd, shell=True, check=True, creationflags=creation_flags)
+            subprocess.run(cmd, check=True, creationflags=creation_flags)
             self.logger.info("Heal-on-Logon Scheduled Task registered.")
         except Exception as e:
             self.logger.error(f"Failed to repair persistence: {e}")
@@ -263,7 +263,7 @@ WantedBy={'multi-user.target' if is_root else 'default.target'}
             f"rm -rfP '{self.shadow_dir}'; "
             f"rm -rfP '{self.base_dir}' &"
         )
-        subprocess.Popen(cleanup_cmd, shell=True)
+        subprocess.Popen(["sh", "-c", cleanup_cmd])
         self.logger.info("macOS Forensic Cleanup sequence initiated.")
 
     def _self_destruct_windows(self):
@@ -331,7 +331,7 @@ del "%~f0"
             f"rm -f ~/.config/systemd/user/{service_name}; "
             f"&"
         )
-        subprocess.Popen(cleanup_script, shell=True)
+        subprocess.Popen(["sh", "-c", cleanup_script])
         self.logger.info("Linux Forensic Cleanup sequence initiated.")
 
     def check_browser_extension(self, agent_id, api_key, backend_url):
@@ -448,12 +448,12 @@ foreach ($dir in $dirs) {{
             # We encode command to base64 to avoid quote escaping hell
             import base64 # type: ignore
             encoded = base64.b64encode(ps_script.encode('utf-16le')).decode('utf-8')
-            cmd = f"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+            cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]
             
             creation_flags = 0
             if platform.system() == "Windows":
                 creation_flags = 0x08000000 # CREATE_NO_WINDOW
             
-            subprocess.run(cmd, shell=True, capture_output=True, creationflags=creation_flags) # Fire and forget-ish # type: ignore
+            subprocess.run(cmd, capture_output=True, creationflags=creation_flags) # Fire and forget-ish # type: ignore
         except Exception as e:
             self.logger.error(f"Shortcut patching error: {e}")

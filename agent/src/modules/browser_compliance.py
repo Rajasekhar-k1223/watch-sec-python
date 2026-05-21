@@ -6,7 +6,7 @@ import json # type: ignore
 import subprocess # type: ignore
 
 class BrowserEnforcer:
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         self.logger = logging.getLogger("BrowserEnforcer")
         self.os_type = platform.system()
         

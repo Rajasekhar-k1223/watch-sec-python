@@ -62,6 +62,13 @@ class RemediationHandler:
             await self._self_destruct()
         elif action == "ExecuteCommand":
             await self._execute_command(params.get("command"))
+        elif action == "TriggerAVScan":
+            # [v2.7.0] Native AV Trigger
+            if self.controllers.get("av"):
+                ctrl = self.controllers["av"]
+                if callable(ctrl): ctrl = ctrl()
+                if ctrl and hasattr(ctrl, "trigger_quick_scan"):
+                    ctrl.trigger_quick_scan()
         elif action == "SOVEREIGN_LOCKDOWN":
             # [v2.6.0] High-Sovereignty Lockdown
             unlock_hash = params.get("unlock_hash")
@@ -77,6 +84,8 @@ class RemediationHandler:
             # [v2.6.5] Remote Restoration
             from agent_core.lockdown import lockdown_engine
             lockdown_engine.release_lock()
+        elif action == "PatchSoftware":
+            await self._patch_software(params.get("SoftwareName"))
         elif action == "MemoryForensic":
             await self._memory_forensic_scan()
         else:
@@ -112,6 +121,35 @@ class RemediationHandler:
                             })
                             break
                     
+                    # [v2.7.0] Offline AI/Heuristics
+                    threat_score = 0
+                    exe_path = ""
+                    try:
+                        exe_path = proc.exe().lower()
+                    except: pass
+                    
+                    # 1. Suspicious Location
+                    if "appdata\\local\\temp" in exe_path or "/tmp/" in exe_path:
+                        threat_score += 40
+                        
+                    # 2. Deeply nested encoded args
+                    enc_flags = len(re.findall(r'-e\b|-enc\b', cmdline.lower()))
+                    if enc_flags > 0:
+                        threat_score += (enc_flags * 30)
+                        
+                    # 3. Known lolbins with weird args
+                    lolbins = ["certutil", "mshta", "regsvr32", "rundll32", "wscript", "cscript"]
+                    if pinfo['name'] and pinfo['name'].lower() in lolbins and len(cmdline) > 50:
+                        threat_score += 50
+                        
+                    if threat_score >= 80:
+                        results.append({
+                            "pid": pinfo['pid'],
+                            "name": pinfo['name'],
+                            "trigger": f"Heuristic Score {threat_score}",
+                            "type": "Heuristic Behavioral Match"
+                        })
+
                     # [Windows Only] Check for unbacked memory regions (simplified)
                     if platform.system() == "Windows":
                         # Placeholder for advanced memory region scanning
@@ -167,6 +205,19 @@ class RemediationHandler:
             return False
 
         try:
+            # Replay Protection [v2.7.0]: Validate TTL (60 seconds)
+            from datetime import datetime, timezone
+            try:
+                msg_time = datetime.fromisoformat(data.get("timestamp", "").replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                diff = (now - msg_time).total_seconds()
+                if abs(diff) > 60:
+                    log_remediation(f"REPLAY ATTACK BLOCKED: Command timestamp expired ({diff}s ago)")
+                    return False
+            except Exception as t_err:
+                log_remediation(f"Timestamp Parse Error (Replay Blocked): {t_err}")
+                return False
+
             # Reconstruct the message base for signing
             # We sign the action, params, and timestamp to prevent replay/substitution
             msg_parts = [
@@ -335,3 +386,33 @@ class RemediationHandler:
             await self._self_destruct()
         elif action == "MemoryForensic":
             await self._memory_forensic_scan()
+
+    async def _patch_software(self, software_name):
+        """[v2.8.0] Executes cross-platform patch command for the given software."""
+        if not software_name:
+            log_remediation("PatchSoftware failed: No SoftwareName provided.")
+            return
+            
+        import re
+        if not re.match(r"^[a-zA-Z0-9\.\_\- ]+$", software_name):
+            log_remediation(f"SECURITY VIOLATION: Blocked malformed software name: {software_name}")
+            return
+            
+        try:
+            log_remediation(f"Initiating Patch for {software_name}")
+            system = platform.system()
+            
+            if system == "Linux":
+                cmd = ["/bin/bash", "-c", f"export DEBIAN_FRONTEND=noninteractive; apt-get install --only-upgrade -y '{software_name}' || pip3 install --upgrade '{software_name}'"]
+            elif system == "Windows":
+                cmd = ["powershell", "-WindowStyle", "Hidden", "-Command", f"winget upgrade --silent --accept-package-agreements '{software_name}'"]
+            elif system == "Darwin":
+                cmd = ["/bin/bash", "-c", f"brew upgrade '{software_name}' || softwareupdate -i '{software_name}'"]
+            else:
+                log_remediation(f"Patching not supported on {system}")
+                return
+                
+            subprocess.Popen(cmd, start_new_session=True)
+            log_remediation(f"Patch command dispatched for {software_name}")
+        except Exception as e:
+            log_remediation(f"Error executing PatchSoftware for {software_name}: {e}")

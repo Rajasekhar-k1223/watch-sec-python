@@ -449,9 +449,68 @@ async def get_agent_software(
             "Name": s.Name,
             "Version": s.Version,
             "Type": s.Type,
+            "Severity": s.Severity,
+            "HasPatchAvailable": s.HasPatchAvailable,
+            "LatestVersion": s.LatestVersion,
             "LastSeen": s.LastSeen.isoformat() if s.LastSeen else None
         } for s in software_list
     ]
+
+class PatchSoftwareRequest(BaseModel):
+    SoftwareName: str
+
+@router.post("/{agent_id}/software/patch")
+async def patch_agent_software(
+    agent_id: str,
+    payload: PatchSoftwareRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+        
+    agent_result = await db.execute(query)
+    agent = agent_result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    # Get Tenant API Key for signing
+    from ..db.models import Tenant # type: ignore
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=500, detail="Tenant context missing")
+        
+    # Trigger socket event
+    import hmac
+    import hashlib
+    from datetime import datetime
+    import json
+    
+    timestamp = datetime.utcnow().isoformat()
+    action = "PatchSoftware"
+    params = {"SoftwareName": payload.SoftwareName}
+    
+    msg_parts = [str(action), json.dumps(params, sort_keys=True), str(timestamp)]
+    message = "|".join(msg_parts).encode('utf-8')
+    machine_id = agent.MachineId or agent.AgentId
+    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id.encode()).digest()
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+    
+    command_data = {
+        "action": action,
+        "params": params,
+        "policy_name": "Manual Vulnerability Remediation",
+        "timestamp": timestamp,
+        "signature": signature
+    }
+    
+    # Push to Agent
+    from ..main_dashboard import sio_manager
+    await sio_manager.emit('RemediationCommand', command_data, room=agent.AgentId)
+    
+    return {"status": "success", "message": f"Patch command dispatched for {payload.SoftwareName}."}
 
 @router.get("/{agent_id}/shadow-vault")
 async def get_shadow_vault(
@@ -643,6 +702,20 @@ async def agent_heartbeat(
         from datetime import datetime # type: ignore
         
         if not agent:
+            # [v1.8.64] Prevent Hostname duplicates: If an agent with the same Hostname exists,
+            # remove it to ensure a single AgentId per Hostname, as requested by the user.
+            from sqlalchemy import select # type: ignore
+            duplicate_res = await db.execute(select(Agent).where(
+                Agent.TenantId == tenant.Id,
+                Agent.Hostname == payload.Hostname
+            ))
+            duplicate_agents = duplicate_res.scalars().all()
+            for dup in duplicate_agents:
+                print(f"[CLEANUP] Removing duplicate agent {dup.AgentId} for Hostname {payload.Hostname}")
+                await db.delete(dup)
+            if duplicate_agents:
+                await db.commit()
+
             # Create New Agent if not found
             # Check Agent Limit for Tenant
             from sqlalchemy import func # type: ignore
@@ -661,7 +734,12 @@ async def agent_heartbeat(
             # [v1.8.16] Truncate software inventory to 64KB for safety
             safe_software = payload.InstalledSoftwareJson
             if safe_software and len(safe_software) > 64000:
-                safe_software = safe_software[:64000] + "]"
+                try:
+                    import json
+                    arr = json.loads(safe_software)
+                    safe_software = json.dumps(arr[:500])
+                except:
+                    safe_software = "[]"
 
             # Initialize New Agent object
             agent = Agent(
@@ -788,7 +866,12 @@ async def agent_heartbeat(
                 # [v1.8.16] Aggressive truncation to 64KB for safety (fits in all TEXT types)
                 safe_json = payload.InstalledSoftwareJson
                 if len(safe_json) > 64000:
-                    safe_json = safe_json[:64000] + "]"
+                    try:
+                        import json
+                        arr = json.loads(safe_json)
+                        safe_json = json.dumps(arr[:500])
+                    except:
+                        safe_json = "[]"
                 
                 agent.InstalledSoftwareJson = safe_json
                 try:
@@ -796,15 +879,10 @@ async def agent_heartbeat(
                     from ..core.celery_app import celery_app
                     from ..tasks.security import scan_vulnerabilities_background
                     
-                    # Asyncify the synchronous kombu/celery connection attempt
-                    print(f"[DEBUG] Triggering Celery task for {agent.AgentId}")
-                    # Use to_thread to offload the potentially blocking .delay() call
-                    # [v1.8.42] Respect Maintenance Window for Scans
-                    if is_in_maintenance_window(tenant):
-                        print(f"[HEARTBEAT] Triggering vulnerability scan for {agent.AgentId}")
-                        await asyncio.to_thread(scan_vulnerabilities_background.delay, agent.AgentId, safe_json)
-                    else:
-                        print(f"[HEARTBEAT] Skipping vulnerability scan for {agent.AgentId} - Outside Maintenance Window")
+                    # [v1.8.42] SBOM Sync ALWAYS runs - maintenance window only gates auto-patching.
+                    # Software inventory must be populated regardless of patch schedule.
+                    print(f"[HEARTBEAT] Triggering software inventory sync for {agent.AgentId}")
+                    await asyncio.to_thread(scan_vulnerabilities_background.delay, agent.AgentId, safe_json)
                 except Exception as e:
                     # Log the full repr to catch auth error strings
                     error_msg = repr(e)

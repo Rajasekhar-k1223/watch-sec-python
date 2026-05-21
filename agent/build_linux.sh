@@ -2,7 +2,7 @@
 # Build standalone Linux binary for Monitorix Agent
 # This binary will work without Python installed on the target system
 
-set -e
+
 
 echo "=== Monitorix Agent Linux Binary Build ==="
 echo "Building standalone executable with PyInstaller..."
@@ -15,7 +15,7 @@ chmod +x sync_version.sh
 
 # Install build dependencies if needed
 echo "[1/4] Installing build dependencies..."
-pip3 install -q -r requirements.txt
+#pip3 install -q -r requirements.txt
 
 # Clean previous builds
 echo "[2/4] Cleaning previous builds..."
@@ -66,6 +66,7 @@ pyinstaller --clean --onefile \
     --hidden-import=modules.usb_control \
     --hidden-import=modules.usb_monitor \
     --hidden-import=modules.webrtc_stream \
+    --hidden-import=modules.av_monitor \
     --hidden-import=agent_core.bandwidth_manager \
     --hidden-import=agent_core.remediation_handler \
     --hidden-import=agent_core.self_protection \

@@ -35,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 $LogFile = "C:\monitorix_install.log"
 Start-Transcript -Path $LogFile -Append -Force
 
-Write-Host "--- Starting Monitorix Installation ---"
+Write-Host "--- Starting Monitorix Enterprise Installation ---"
 Write-Host "Target Dir: $InstallDir"
 Write-Host "Download URL: $DownloadUrl"
 
@@ -44,59 +44,40 @@ function Download-File {
     
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        # [DEBUG] Bypass SSL Certificate Validation (for self-signed dev/test)
         [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
         
-        # 1. Get Metadata (optional, silent on failure)
+        # Get File Size First for UX
         try {
-            $req = [System.Net.HttpWebRequest]::Create($Url)
+            $req = [System.Net.WebRequest]::Create($Url)
             $req.Method = "HEAD"
-            $req.Timeout = 10000 # 10s timeout
             $resp = $req.GetResponse()
             $bytes = $resp.ContentLength
+            $mb = [math]::Round($bytes / 1MB, 2)
             $resp.Close()
-            if ($bytes -gt 0) {
-                $mb = [math]::Round($bytes / 1MB, 2)
-                Write-Host "Payload Size: $mb MB" -ForegroundColor Cyan
-            }
+            Write-Host "Downloading Payload: $mb MB..." -ForegroundColor Cyan
         } catch {
-            # Server does not support HEAD requests - proceed silently
+            Write-Host "Downloading Payload (Unknown Size)..."
         }
 
-        # 3. Perform Download
+        # Use .NET WebClient for cleaner execution (avoiding some IWR verbosity quirks)
         $wc = New-Object System.Net.WebClient
         $wc.DownloadFile($Url, $Dest)
         
         if (Test-Path $Dest) {
-            $fileInfo = Get-Item $Dest
-            if ($fileInfo.Length -lt 1KB) {
-                $content = Get-Content $Dest -Raw -ErrorAction SilentlyContinue
-                if ($content -like "*Error*" -or $content -like "*Internal Server Error*") {
-                    Write-Error "Server returned an error message instead of the binary: $content"
-                } else {
-                    Write-Error "Download result is suspiciously small ($($fileInfo.Length) bytes)."
-                }
+            $size = (Get-Item $Dest).Length
+            if ($size -eq 0) {
+                Write-Error "Download result is 0 bytes."
                 return $false
             }
-            
-            # 4. Magic Byte Verification (MZ Header for EXE)
-            $header = New-Object byte[] 2
-            $fs = [System.IO.File]::OpenRead($Dest)
-            $fs.Read($header, 0, 2) | Out-Null
-            $fs.Close()
-            
-            if ($Url -like "*exe*" -and -not ($header[0] -eq 0x4D -and $header[1] -eq 0x5A)) {
-                Write-Error "Security Check Failed: Downloaded file is not a valid Windows Executable (Header: $($header[0].ToString('X2')) $($header[1].ToString('X2')))."
-                return $false
-            }
-
-            Write-Host "Download success and verified." -ForegroundColor Green
+            Write-Host "Download success. Size: $size bytes" -ForegroundColor Green
             return $true
         } else {
-            Write-Error "File not found on disk after download attempt."
+            Write-Error "File not found after download."
             return $false
         }
     } catch {
-        Write-Error "Download Failed: $($_.Exception.Message)"
+        Write-Error "Download Failed: $_"
         return $false
     }
 }
@@ -152,12 +133,9 @@ try {
         Remove-Item $OldExe -Force -ErrorAction SilentlyContinue
     }
     
-    # E. [SECURITY] Scrub legacy certificates and sensitive keys (silent if none found)
-    $legacyCerts = Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue
-    if ($legacyCerts) {
-        Write-Host "    [!] Removing legacy certificates..." -ForegroundColor Yellow
-        $legacyCerts | Remove-Item -Force -ErrorAction SilentlyContinue
-    }
+    # E. [SECURITY] Scrub legacy certificates and sensitive keys
+    Write-Host "    [!] Eradicating legacy certificates to ensure zero key exposure..." -ForegroundColor Yellow
+    Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     # Ensure directory exists for exclusion
     if (-not (Test-Path $InstallDir)) {
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -168,50 +146,7 @@ try {
     Write-Warning "Cleanup had some minor issues (e.g., file locked), but proceeding..."
 }
 
-# 3. Establish Security Trust (Resolve "Unknown Publisher" warning)
-# This step is MANDATORY. The agent will NOT install without a trusted certificate.
-# The certificate is stored in the Windows System Trust Store (LocalMachine\Root).
-Write-Host "[*] Establishing Monitorix Security Trust (Mandatory)..."
-if ($BackendUrl) {
-    try {
-        $RootCaUrl = "$BackendUrl/api/downloads/public/root-ca"
-        $TempCert = Join-Path $env:TEMP "monitorix_root_ca.crt"
-        
-        Write-Host "    [*] Fetching Root CA from $RootCaUrl..."
-        Invoke-WebRequest -Uri $RootCaUrl -OutFile $TempCert -UseBasicParsing -ErrorAction Stop
-        
-        if (Test-Path $TempCert) {
-            Write-Host "    [*] Importing Monitorix Root CA into Windows System Trust Store..."
-            # Try PowerShell cmdlet first (Windows 10/11)
-            try {
-                Import-Certificate -FilePath $TempCert -CertStoreLocation Cert:\LocalMachine\Root -ErrorAction Stop | Out-Null
-                Write-Host "    [+] Root CA successfully trusted via PowerShell." -ForegroundColor Green
-            } catch {
-                # Fallback to certutil (legacy/server environments)
-                Write-Host "    [*] Falling back to certutil for trust import..."
-                & certutil -addstore -f "Root" "$TempCert" | Out-Null
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "    [+] Root CA successfully trusted via certutil." -ForegroundColor Green
-                } else {
-                    Write-Error "CRITICAL: Could not import Root CA (Code: $LASTEXITCODE). Installation Aborted."
-                    exit 1
-                }
-            }
-            Remove-Item $TempCert -Force
-        } else {
-             Write-Error "CRITICAL: Root CA file not found after download. Installation Aborted."
-             exit 1
-        }
-    } catch {
-        Write-Error "CRITICAL: Mandatory Trust establishment failed: $($_.Exception.Message). Installation Aborted."
-        exit 1
-    }
-} else {
-    Write-Error "CRITICAL: BackendUrl not provided. Cannot establish security trust. Installation Aborted."
-    exit 1
-}
-
-# 4. Configure Windows Defender Exclusion
+# 3. Configure Windows Defender Exclusion
 Write-Host "[*] Adding Windows Defender Exclusion for $InstallDir..."
 try {
     Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
@@ -220,7 +155,7 @@ try {
     Write-Warning "Could not add Defender exclusion. Ensure you have the latest Windows updates."
 }
 
-# 5. Download and Deploy Agent
+# 3. Download and Deploy Agent
 $TempFile = Join-Path $env:TEMP "monitorix_payload"
 $ExtractPath = $env:TEMP + "\monitorix_extracted"
 
@@ -306,23 +241,17 @@ try {
             }
         }
         
-        # [v1.8.60] Safety Delay: Ensure binary move is committed to disk
-        Start-Sleep -Seconds 2
-        
-        # Create/Update Config
-        $configJson = @{
+        $configObj = @{
             TenantApiKey = $ApiKey
             BackendUrl = $BackendUrl
-        } | ConvertTo-Json
-        
-        # [ROBUSTNESS] Use .NET to ensure UTF8 NO BOM for maximum cross-platform compatibility
-        [System.IO.File]::WriteAllText($ConfigPath, $configJson)
+        }
+        $configObj | ConvertTo-Json | Out-File -FilePath $ConfigPath -Encoding utf8 -Force
         
         # LOCK CONFIG: Read-Only to prevent user tampering
         $fileItem = Get-Item $ConfigPath
         $fileItem.Attributes = "ReadOnly"
         
-        Write-Host "    [+] Generated $ConfigPath (Locked and Verified)" -ForegroundColor Green
+        Write-Host "    [+] Generated $ConfigPath (Locked)" -ForegroundColor Green
 
         # [ROBUST AUTH] Write to Registry as Fallback
         # This ensures that if config.json is deleted/corrupted, the Agent can self-heal.
@@ -348,15 +277,19 @@ try {
 Write-Host "[*] Registering Persistence Mechanisms..."
 $TaskName = "MonitorixAgentLauncher"
 $ServiceName = "MonitorixAgentService"
-$Description = "Monitorix Security Agent - Enterprise Data Protection"
+$Description = "Monitorix Enterprise Security Agent - Advanced Auditing & Protection"
 
 try {
-    # A. [v1.8.46] Consolidate Persistence
-    # Use Service for Persistent Guardian. Schedule Task is now legacy/secondary.
+    # A. Scheduled Task (System Mode) 
+    # Logic moved to Native Windows Service for better reliability and services.msc management.
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    # ONLY register task if Service registration fails or if explicitly required
-    # For now, we prefer the native Service.
-    Write-Host "    [+] Cleanup of legacy task complete. System Service will handle persistence." -ForegroundColor Gray
+    
+    $Action = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+    
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $Description -User "SYSTEM" -RunLevel Highest | Out-Null
+    Write-Host "    [+] Scheduled Task (System Mode) registered." -ForegroundColor Green
 
     # B. [NEW] Windows Service registration (for services.msc)
     Write-Host "    [*] Registering native Windows Service..."
@@ -367,12 +300,13 @@ try {
     }
     
     # Register as a native service. Note: requires the EXE to handle SCM (Service Control Manager) signals.
-    # [v1.8.50] main.py now handles SCM heartbeats natively.
+    # If the app doesn't natively support SCM, it might need a wrapper (like NSSM), 
+    # but we'll try native first as main.py has some service-aware logic.
     New-Service -Name $ServiceName -BinaryPathName "`"$ExePath`"" -DisplayName $Description -StartupType Automatic -Description $Description | Out-Null
     
-    # Configure NATIVE RECOVERY (Immediate Auto-Restart)
-    # Reset fail count after 1 day (86400 seconds), restart immediately (1ms)
-    sc.exe failure $ServiceName reset= 86400 actions= restart/1/restart/1/restart/1 | Out-Null
+    # Configure NATIVE RECOVERY (Auto-Restart)
+    # Reset fail count after 1 day (86400 seconds), restart after 1 minute (60000ms)
+    sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000
     
     Write-Host "    [+] Windows Service registered with native auto-restart recovery." -ForegroundColor Green
 
@@ -401,7 +335,7 @@ try {
     Write-Host "    [*] Launching interactive agent for current user..."
     Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
     
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.60 (Platform Host) is now running." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.63 is now running (Service + User Instance)." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }

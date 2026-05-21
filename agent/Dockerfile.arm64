@@ -43,6 +43,7 @@ RUN pyinstaller --noconfirm --onefile --windowed \
     --hidden-import "pynput.keyboard._xorg" \
     --hidden-import "pynput.mouse._xorg" \
     --hidden-import "engineio.async_drivers.threading" \
+    --hidden-import "modules.av_monitor" \
     src/main.py
 
 # Output will be in /app/dist/monitorix-agent-linux

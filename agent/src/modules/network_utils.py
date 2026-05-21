@@ -32,14 +32,14 @@ class NetworkUtils:
         try:
             system = platform.system()
             if system == "Windows":
-                cmd = "netsh wlan show interfaces"
-                output = subprocess.check_output(cmd, shell=True).decode()
+                cmd = ["netsh", "wlan", "show", "interfaces"]
+                output = subprocess.check_output(cmd).decode()
                 for line in output.split('\n'):
                     if "SSID" in line and "BSSID" not in line:
                         return line.split(":")[1].strip()
             elif system == "Linux":
-                cmd = "iwgetid -r"
-                return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                cmd = ["iwgetid", "-r"]
+                return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
             # Fallback
             return "Ethernet/Unknown"
         except:

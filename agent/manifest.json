@@ -1,0 +1,11 @@
+{
+    "version": "v2.0.0",
+    "files": {
+        "src/main.py": "a6553d6b5929767148a264127a50f35d2d3960224b54ef0f9e1de015b25d23ca",
+        "src/agent_core/remediation_handler.py": "76c91935ff137969dcc9899f1aef73f6591e05ccdd545de9f29b7db42efd82c7",
+        "src/agent_core/privacy_utils.py": "f4ad1963c3bb9093274dd03b7aaa722525693fb9a4c4613b28a6bffd8e211551",
+        "config.json": "e7bda4586298339f45b3a5af7362b02f5ee3700ab79dcedf7b0ffb170d893cc2"
+    },
+    "signature": "555b73ede92f49a12721dcf84e029b9b69f4abf4fdb5062b9f6301f4342eef96",
+    "timestamp": "vmi3011362"
+}

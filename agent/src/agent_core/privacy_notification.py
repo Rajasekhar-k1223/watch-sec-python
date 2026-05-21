@@ -13,13 +13,16 @@ class PrivacyNotification:
         
         try:
             if system == "Windows":
-                # Using PowerShell to show a system toast notification
+                # Use base64 encoding to safely pass the message to PowerShell
+                import base64
+                msg_b64 = base64.b64encode(msg.encode('utf-16le')).decode('utf-8')
                 ps_script = f"""
                 [reflection.assembly]::loadwithpartialname('System.Windows.Forms');
                 $notify = New-Object System.Windows.Forms.NotifyIcon;
                 $notify.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Get-Process -id $pid).Path);
                 $notify.BalloonTipIcon = 'Info';
-                $notify.BalloonTipText = '{msg}';
+                $msg = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('{msg_b64}'));
+                $notify.BalloonTipText = $msg;
                 $notify.BalloonTipTitle = 'Security Compliance';
                 $notify.Visible = $true;
                 $notify.ShowBalloonTip(10000);
@@ -28,11 +31,13 @@ class PrivacyNotification:
             
             elif system == "Linux":
                 # Using notify-send (common in GNOME/KDE)
-                subprocess.run(["notify-send", "Security Compliance", msg], capture_output=True)
+                subprocess.run(["notify-send", "Security Compliance", msg], capture_output=True, timeout=5)
                 
             elif system == "Darwin":
-                # macOS AppleScript notification
-                script = f'display notification "{msg}" with title "Security Compliance"'
+                # macOS AppleScript notification using safe variable passing
+                # We can't pass args directly to AppleScript string easily, so we escape quotes
+                safe_msg = msg.replace('"', '\\"')
+                script = f'display notification "{safe_msg}" with title "Security Compliance"'
                 subprocess.run(["osascript", "-e", script], capture_output=True)
                 
         except Exception as e:

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys # type: ignore
 import os # type: ignore
 import hmac # type: ignore
@@ -53,6 +54,34 @@ import tempfile # type: ignore
 import traceback # type: ignore
 import platform # type: ignore
 import subprocess # type: ignore
+
+# [v1.8.40] UI Fix: Globally prevent cmd.exe from flashing on Windows when executing subprocesses without shell=True
+if platform.system() == "Windows":
+    _orig_run = subprocess.run
+    _orig_Popen = subprocess.Popen
+    _orig_check_output = subprocess.check_output
+
+    CREATE_NO_WINDOW = 0x08000000
+
+    def _patched_run(*args, **kwargs):
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = CREATE_NO_WINDOW
+        return _orig_run(*args, **kwargs)
+
+    def _patched_Popen(*args, **kwargs):
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = CREATE_NO_WINDOW
+        return _orig_Popen(*args, **kwargs)
+
+    def _patched_check_output(*args, **kwargs):
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = CREATE_NO_WINDOW
+        return _orig_check_output(*args, **kwargs)
+
+    subprocess.run = _patched_run
+    subprocess.Popen = _patched_Popen
+    subprocess.check_output = _patched_check_output
+
 import time # type: ignore
 import getpass # type: ignore
 
@@ -93,7 +122,7 @@ def apply_anti_debugging():
                 sys.exit(1)
     except: pass
 
-apply_anti_debugging()
+# apply_anti_debugging()
 
 # [v1.8.33] Local Immunity: Secure Subdirectory Setup
 # Create private data/tmp/logs vaults if they don't exist
@@ -173,7 +202,7 @@ import urllib3 # type: ignore
 # Internal Modules (Core & Features)
 from agent_core import AntiTamperMonitor, RemediationHandler, BandwidthManager, SessionMonitor # type: ignore
 from agent_core.privacy_utils import PrivacyRedactor
-from agent_core.audit_logger import AuditLogger # type: ignore
+from modules.audit_logger import AuditLogger # type: ignore
 from agent_core.integrity import IntegrityChecker # [v2.0.0]
 
 # [v2.0.0] Monitorix Enterprise Update Public Key (Ed25519)
@@ -435,8 +464,8 @@ def get_hardware_id():
 
             # 1b. Fallback to Motherboard Serial Number
             try:
-                cmd = "wmic bios get serialnumber"
-                output = subprocess.check_output(cmd, shell=True, timeout=5).decode().split('\n')
+                cmd = ["wmic", "bios", "get", "serialnumber"]
+                output = subprocess.check_output(cmd, timeout=5).decode().split('\n')
                 serial = output[1].strip()
                 if serial and serial.lower() not in ["unknown", "to be filled by o.e.m.", "0"]:
                     return hashlib.md5(serial.encode()).hexdigest()[:8].upper()
@@ -680,6 +709,9 @@ def load_config():
                 dec_bytes = f.decrypt(raw_data[4:])
                 cfg = json.loads(dec_bytes.decode('utf-8'))
                 log_to_file("Configuration loaded from 100% Secure AES Vault.")
+            else:
+                cfg = json.loads(raw_data.decode('utf-8'))
+                log_to_file("Configuration loaded from raw JSON config.")
 
         except Exception as e:
             log_to_file(f"[VAULT] Failed to decrypt config.json: {e}")
@@ -921,7 +953,19 @@ def acquire_lock():
                                             # [STABILITY] Allow child to proceed as it is legit offspring of the lock holder
                                             # [v1.8.48] DO NOT return from here, we must prevent the child from writing to the file later.
                                             return "CHILD_STABILITY"
-                                        log_to_file(f"Terminating old instance (PID {old_pid}).")
+                                        # [v1.8.64] Watchdog Stability: A new non-child (watchdog) must NOT blindly
+                                        # kill an existing watchdog that still has live children.
+                                        # This prevents the systemd-restart crash loop where a restarted watchdog
+                                        # kills the still-healthy running watchdog.
+                                        try:
+                                            old_children = proc.children(recursive=False)
+                                            if old_children:
+                                                # Old watchdog is alive and has children → it's healthy, we should exit
+                                                log_to_file(f"[v1.8.64] Healthy watchdog already running (PID {old_pid}, {len(old_children)} children). Exiting duplicate.")
+                                                sys.exit(0)
+                                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                            pass
+                                        log_to_file(f"Terminating stale instance (PID {old_pid}, no children).")
                                         proc.terminate()
                                         # Wait a bit for termination
                                         for _ in range(10):
@@ -1132,6 +1176,7 @@ def diagnose_platform_environment():
 # --- Import Security Modules ---
 try:
     log_to_file("Importing Security Modules...")
+    from modules.av_monitor import AVMonitor # [v2.7.0] Antivirus integration
     from modules.fim import FileIntegrityMonitor # type: ignore # type: ignore
     from modules.network import NetworkScanner # type: ignore # type: ignore
     from modules.security import ProcessSecurity # type: ignore # type: ignore
@@ -1653,7 +1698,7 @@ async def perform_update(update_url, target_ver, target_hash=None, update_signat
                 f.write(f")\n")
                 f.write(f"start \"\" \"{current_binary}\"\n")
                 f.write(f"del \"%~f0\"\n")
-            subprocess.Popen([batch_path], shell=True)
+            subprocess.Popen(["cmd.exe", "/c", batch_path])
             sys.exit(0)
         else:
             try:
@@ -2203,10 +2248,10 @@ async def perform_startup_health_check():
     universal_mods = [
         "modules.app_enforcement", "modules.audit_logger",
         "modules.browser_compliance", "modules.data_queue",
-        "modules.data_loss_preventionitor", "modules.fim", "modules.hardware", "modules.installer",
-        "modules.location_monitor", "modules.mail_intelligenceitor", "modules.network", 
+        "modules.data_loss_prevention", "modules.fim", "modules.hardware", "modules.installer",
+        "modules.location_monitor", "modules.mail_intelligence", "modules.network", 
         "modules.network_monitor", "modules.power_monitor", "modules.printer_monitor",
-        "modules.remote_remediation", "modules.security", "modules.shadow_audititor", 
+        "modules.remote_remediation", "modules.security", "modules.shadow_audit", 
         "modules.usb_control", "modules.usb_monitor", "modules.webrtc_stream",
         "modules.file_manager"
     ]
@@ -2451,9 +2496,14 @@ async def main():
 
     import socket # type: ignore
     current_hostname = socket.gethostname().upper()
-    hw_hash = get_hardware_id()
-    stable_id = f"{current_hostname}-{hw_hash}"
+    
+    # [v1.8.58] Pure Deterministic Identity: AgentId is strictly bound to the Hostname
+    # This prevents duplicate agents in the dashboard if the agent is run multiple times or via different methods.
+    # We append a slice of the API Key to ensure uniqueness across different Tenants.
+    stable_id = f"{current_hostname}-{API_KEY[:6]}"
+    
     current_id = config.get("AgentId", "").strip()
+    
     # [v1.8.37] Cryptographic Anchors: Ensure MachineSecret exists
     if "MachineSecret" not in config or not config.get("MachineSecret"):
         import uuid
@@ -2461,10 +2511,7 @@ async def main():
         save_config(config)
         log_to_file("  ✓ Generated New MachineSecret")
 
-    if not current_id or not current_id.startswith(stable_id):
-        # [v1.8.56] Deterministic Identity: Remove Random Suffix
-        # Use stable_id directly to ensure machine:identitiy 1:1 mapping.
-        # This prevents duplicate agents in the dashboard on re-installs.
+    if current_id != stable_id:
         new_id = stable_id
         AGENT_ID = new_id
         config["AgentId"] = new_id
@@ -2523,8 +2570,11 @@ async def main():
     if bandwidth_manager and data_queue:
         bandwidth_manager.set_data_queue(data_queue)
 
+    # [v2.7.0] Antivirus Monitor
+    av_monitor = AVMonitor(AGENT_ID)
+
     # Initialize remediation handler with access to system controllers and cryptography
-    remediation = RemediationHandler(AGENT_ID, api_key=API_KEY, machine_secret=m_secret, controllers={'net': lambda: network_audit})
+    remediation = RemediationHandler(AGENT_ID, api_key=API_KEY, machine_secret=m_secret, controllers={'net': lambda: network_audit, 'av': lambda: av_monitor})
     
     # GUI/Security workers
     # Lazy loaded via apply_policy

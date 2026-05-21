@@ -272,6 +272,9 @@ class AgentSoftware(Base):
     Version = Column(String(100))
     Type = Column(String(50)) # 'OS', 'Python', 'Node', etc.
     VulnerabilityCount = Column(Integer, default=0)
+    LatestVersion = Column(String(100), nullable=True) # [NEW]
+    Severity = Column(String(50), default="None") # [NEW] Critical, High, Medium, Low, None
+    HasPatchAvailable = Column(Boolean, default=False) # [NEW]
     LastSeen = Column(DateTime, default=datetime.utcnow)
 
 class Notification(Base):

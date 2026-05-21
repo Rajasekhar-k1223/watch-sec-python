@@ -335,7 +335,7 @@ try {
     Write-Host "    [*] Launching interactive agent for current user..."
     Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
     
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.38 is now running (Service + User Instance)." -ForegroundColor Cyan
+    Write-Host "[SUCCESS] Monitorix Agent v1.8.63 is now running (Service + User Instance)." -ForegroundColor Cyan
 } catch {
     Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
 }

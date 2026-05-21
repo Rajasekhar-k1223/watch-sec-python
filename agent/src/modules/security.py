@@ -66,8 +66,8 @@ class ProcessSecurity:
             import subprocess # type: ignore
             try:
                 # system_profiler SPApplicationsDataType -json
-                cmd = "system_profiler SPApplicationsDataType -json"
-                output = subprocess.check_output(cmd, shell=True).decode()
+                cmd = ["system_profiler", "SPApplicationsDataType", "-json"]
+                output = subprocess.check_output(cmd).decode()
                 import json # type: ignore
                 data = json.loads(output)
                 apps = data.get('SPApplicationsDataType', [])
@@ -83,8 +83,8 @@ class ProcessSecurity:
             import subprocess # type: ignore
             try:
                 # Try dpkg
-                cmd = "dpkg-query -W -f='${Package} ${Version}\n'"
-                output = subprocess.check_output(cmd, shell=True).decode()
+                cmd = ["dpkg-query", "-W", "-f=${Package} ${Version}\n"]
+                output = subprocess.check_output(cmd).decode()
                 for line in output.split('\n'):
                     if line:
                         parts = line.split()

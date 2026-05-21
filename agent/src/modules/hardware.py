@@ -53,16 +53,17 @@ class HardwareMonitor:
         try:
             if platform.system() == "Windows":
                 import subprocess # type: ignore
-                cmd = "wmic bios get serialnumber"
-                output = subprocess.check_output(cmd, shell=True).decode().split('\n')
+                cmd = ["wmic", "bios", "get", "serialnumber"]
+                output = subprocess.check_output(cmd).decode().split('\n')
                 return output[1].strip()
             elif platform.system() == "Linux":
                 with open("/sys/class/dmi/id/product_serial", "r") as f:
                     return f.read().strip()
             elif platform.system() == "Darwin":
                 import subprocess # type: ignore
-                cmd = "ioreg -l | grep IOPlatformSerialNumber"
-                output = subprocess.check_output(cmd, shell=True).decode().strip()
+                cmd = ["ioreg", "-l"]
+                output_all = subprocess.check_output(cmd).decode()
+                output = [line for line in output_all.splitlines() if "IOPlatformSerialNumber" in line][0].strip()
                 return output.split('=')[-1].strip().strip('"')
         except:
             pass
@@ -75,8 +76,8 @@ class HardwareMonitor:
             system = platform.system()
             if system == "Windows":
                 # Get BIOS details via WMIC
-                cmd = "wmic bios get manufacturer,version,releasedate /format:list"
-                output = subprocess.check_output(cmd, shell=True).decode().split('\n')
+                cmd = ["wmic", "bios", "get", "manufacturer,version,releasedate", "/format:list"]
+                output = subprocess.check_output(cmd).decode().split('\n')
                 for line in output:
                     if "Manufacturer=" in line: bios["Vendor"] = line.split('=')[1].strip()
                     if "Version=" in line: bios["Version"] = line.split('=')[1].strip()
@@ -84,8 +85,8 @@ class HardwareMonitor:
                 
                 # Check Secure Boot status via PowerShell
                 try:
-                    sb_cmd = "powershell -Command \"Confirm-SecureBootUEFI\""
-                    sb_res = subprocess.check_output(sb_cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                    sb_cmd = ["powershell", "-Command", "Confirm-SecureBootUEFI"]
+                    sb_res = subprocess.check_output(sb_cmd, stderr=subprocess.DEVNULL).decode().strip()
                     bios["SecureBoot"] = "Enabled" if sb_res.lower() == "true" else "Disabled"
                 except:
                     bios["SecureBoot"] = "Not Supported / Hidden"
@@ -114,8 +115,9 @@ class HardwareMonitor:
             
             elif system == "Darwin":
                 # Apple doesn't have BIOS, but it has Boot ROM / Firmware Version
-                cmd = "system_profiler SPHardwareDataType | grep 'Boot ROM Version'"
-                output = subprocess.check_output(cmd, shell=True).decode().strip()
+                cmd = ["system_profiler", "SPHardwareDataType"]
+                output_all = subprocess.check_output(cmd).decode()
+                output = [line for line in output_all.splitlines() if "Boot ROM Version" in line][0].strip()
                 bios["Version"] = output.split(':')[-1].strip()
                 bios["Vendor"] = "Apple Inc."
                 bios["SecureBoot"] = "T2/M-Series Secured"
@@ -129,13 +131,15 @@ class HardwareMonitor:
         try:
             if platform.system() == "Windows":
                 import subprocess # type: ignore
-                cmd = "wmic path win32_VideoController get name"
-                output = subprocess.check_output(cmd, shell=True).decode().split('\n')
+                cmd = ["wmic", "path", "win32_VideoController", "get", "name"]
+                output = subprocess.check_output(cmd).decode().split('\n')
                 return output[1].strip()
             elif platform.system() == "Darwin":
                 import subprocess # type: ignore
-                cmd = "system_profiler SPDisplaysDataType | grep -i 'Chipset Model'"
-                output = subprocess.check_output(cmd, shell=True).decode().split('\n')[0].strip()
+                cmd = ["system_profiler", "SPDisplaysDataType"]
+                output_all = subprocess.check_output(cmd).decode()
+                output_lines = [line for line in output_all.splitlines() if "Chipset Model" in line]
+                output = output_lines[0].strip() if output_lines else "Unknown"
                 return output.split(':')[-1].strip()
             # GPU detection on Linux is complex (lspci), skipping for now to prioritize Windows stability
             return "Unknown GPU"
@@ -214,7 +218,8 @@ class HardwareMonitor:
                 import winreg # type: ignore
                 roots = [
                     (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall")
                 ]
                 
                 for hive, subkey in roots:
@@ -245,6 +250,7 @@ class HardwareMonitor:
                         except: pass
                     
             elif system == "Linux":
+                # 1. DPKG (Debian/Ubuntu)
                 try:
                     res = subprocess.run(['dpkg-query', '-W', '-f=${Package},${Version},${Maintainer}\\n'], capture_output=True, text=True, timeout=10)
                     if res.returncode == 0:
@@ -255,27 +261,105 @@ class HardwareMonitor:
                                 unique_key = f"{name}-{version}"
                                 if unique_key not in seen_apps:
                                     seen_apps.add(unique_key)
-                                    software_list.append({
-                                        "Name": name,
-                                        "Version": version,
-                                        "Vendor": parts[2] if len(parts) > 2 else "Unknown"
-                                    })
+                                    software_list.append({"Name": name, "Version": version, "Vendor": parts[2] if len(parts) > 2 else "Unknown"})
+                except: pass
+                
+                # 2. RPM (CentOS/RHEL)
+                try:
+                    res = subprocess.run(['rpm', '-qa', '--queryformat', '%{NAME},%{VERSION},%{VENDOR}\\n'], capture_output=True, text=True, timeout=10)
+                    if res.returncode == 0:
+                        for line in res.stdout.splitlines():
+                            parts = line.split(',')
+                            if len(parts) >= 2:
+                                name, version = parts[0], parts[1]
+                                unique_key = f"{name}-{version}"
+                                if unique_key not in seen_apps:
+                                    seen_apps.add(unique_key)
+                                    software_list.append({"Name": name, "Version": version, "Vendor": parts[2] if len(parts) > 2 else "Unknown"})
+                except: pass
+
+                # 3. Snap (Ubuntu Ecosystem)
+                try:
+                    res = subprocess.run(['snap', 'list'], capture_output=True, text=True, timeout=10)
+                    if res.returncode == 0:
+                        lines = res.stdout.splitlines()
+                        for line in lines[1:]: # Skip header
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                name, version = parts[0], parts[1]
+                                unique_key = f"{name}-{version}"
+                                if unique_key not in seen_apps:
+                                    seen_apps.add(unique_key)
+                                    software_list.append({"Name": name, "Version": version, "Vendor": parts[4] if len(parts) > 4 else "SnapCraft"})
+                except: pass
+
+                # 4. Flatpak (Modern Linux Desktops)
+                try:
+                    res = subprocess.run(['flatpak', 'list', '--columns=name,version,origin'], capture_output=True, text=True, timeout=10)
+                    if res.returncode == 0:
+                        for line in res.stdout.splitlines():
+                            parts = line.split('\t')
+                            if len(parts) >= 2:
+                                name, version = parts[0].strip(), parts[1].strip()
+                                unique_key = f"{name}-{version}"
+                                if name and unique_key not in seen_apps:
+                                    seen_apps.add(unique_key)
+                                    software_list.append({"Name": name, "Version": version or "Unknown", "Vendor": parts[2].strip() if len(parts) > 2 else "Flatpak"})
                 except: pass
                 
             elif system == "Darwin":
                  try:
-                     apps = os.listdir("/Applications")
-                     for app in apps:
-                         if app.endswith(".app"):
-                             name = app.replace(".app", "")
-                             if name not in seen_apps:
-                                 seen_apps.add(name)
-                                 software_list.append({"Name": name, "Version": "Unknown", "Vendor": "Apple/ThirdParty"})
+                     import json
+                     res = subprocess.run(['system_profiler', 'SPApplicationsDataType', '-json'], capture_output=True, text=True, timeout=30)
+                     if res.returncode == 0:
+                         data = json.loads(res.stdout)
+                         apps = data.get('SPApplicationsDataType', [])
+                         for app in apps:
+                             name = app.get('_name', 'Unknown')
+                             version = app.get('version', 'Unknown')
+                             vendor = app.get('obtained_from', 'Unknown')
+                             unique_key = f"{name}-{version}"
+                             if unique_key not in seen_apps:
+                                 seen_apps.add(unique_key)
+                                 software_list.append({"Name": name, "Version": version, "Vendor": vendor})
                  except: pass
 
         except Exception as e:
             self.logger.error(f"Software scan error: {e}")
             
+        # Explicit checks for CLI tools that might not appear in system package managers
+        cli_tools = [
+            ("Python", ["python3", "--version"]),
+            ("Python", ["python", "--version"]),
+            ("Node.js", ["node", "--version"]),
+            ("Docker", ["docker", "--version"]),
+            ("Go", ["go", "version"]),
+            ("Java", ["java", "-version"])
+        ]
+        
+        for tool_name, cmd in cli_tools:
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                if res.returncode == 0:
+                    out = res.stdout.strip() or res.stderr.strip()
+                    # e.g., "Python 3.10.12", "Docker version 24.0.5, build ced0996"
+                    if tool_name == "Docker" and "version" in out.lower():
+                        version = out.split()[2] if len(out.split()) > 2 else out
+                    else:
+                        version = parts[1] if len(parts) > 1 else out
+                        
+                    version = version.replace(',', '')
+                    
+                    if not any(s['Name'].lower() == tool_name.lower() for s in software_list):
+                        seen_apps.add(f"{tool_name}-{version}")
+                        software_list.append({
+                            "Name": tool_name,
+                            "Version": version,
+                            "Vendor": "Open Source",
+                            "Type": "CLI"
+                        })
+            except: pass
+
         # Update Cache
         self._software_cache = software_list
         self._last_software_scan = current_time
@@ -329,8 +413,8 @@ class HardwareMonitor:
             system = platform.system()
             if system == "Windows":
                 # [SEC v2.1.0] Extract TPM Endorsement Key hash via PowerShell
-                cmd = "powershell -Command \"Get-Tpm | Select-Object -ExpandProperty EndorsementKey\""
-                output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+                cmd = ["powershell", "-Command", "Get-Tpm | Select-Object -ExpandProperty EndorsementKey"]
+                output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
                 if output: return output
             elif system == "Linux":
                 # Check for TPM 2.0 device ID

@@ -229,8 +229,8 @@ class RemoteDesktopAgent:
                                 self.logger.info("Executed Lock Workstation (Linux/XDG).")
                             elif platform.system() == "Darwin":
                                 # MacOS Lock
-                                cmd = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession -suspend"
-                                subprocess.run(cmd, shell=True, check=False)
+                                cmd = ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"]
+                                subprocess.run(cmd, check=False)
                                 self.logger.info("Executed Lock Workstation (macOS).")
                             else:
                                 self.logger.info(f"Lock command not implemented for {platform.system()}")

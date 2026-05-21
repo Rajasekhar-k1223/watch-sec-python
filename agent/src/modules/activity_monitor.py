@@ -126,11 +126,13 @@ class ActivityMonitor:
     def _get_idle_duration_mac(self):
         try:
             # Use ioreg to get HIDIdleTime (nanoseconds)
-            cmd = "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF; exit}'"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1)
+            cmd = ["ioreg", "-c", "IOHIDSystem"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=1)
             if result.returncode == 0:
-                nanos = int(result.stdout.strip())
-                return nanos / 1000000000.0
+                for line in result.stdout.splitlines():
+                    if 'HIDIdleTime' in line:
+                        nanos = int(line.split()[-1])
+                        return nanos / 1000000000.0
         except:
             pass
         return 0.0
@@ -378,6 +380,16 @@ class ActivityMonitor:
                         name = parts[0]
                         cpu = parts[1]
                         mem = parts[2]
+                        # Fix the CPU percentage based on cores (ps pcpu can exceed 100% for multithreaded)
+                        try:
+                            cpu_val = float(cpu)
+                            cores = psutil.cpu_count(logical=True) or 1
+                            cpu_val = cpu_val / cores
+                            if cpu_val > 100.0:
+                                cpu_val = 100.0
+                            cpu = f"{cpu_val:.1f}"
+                        except Exception:
+                            pass
                         return name, f"Headless Activity (CPU: {cpu}%, MEM: {mem}%)"
         except:
             pass

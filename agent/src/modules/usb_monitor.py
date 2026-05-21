@@ -214,11 +214,11 @@ class WindowsUsbStrategy(UsbMonitorStrategy):
          try:
              self.logger.info(f"Attempting to eject blocked device at {mount_point}...")
              # Use PowerShell COM to Eject safely
-             cmd = f'powershell -Command "(New-Object -com Shell.Application).NameSpace(17).ParseName(\'{mount_point}\').InvokeVerb(\'Eject\')"'
-             subprocess.run(cmd, shell=True, capture_output=True)
+             cmd = ["powershell", "-Command", f"(New-Object -com Shell.Application).NameSpace(17).ParseName('{mount_point}').InvokeVerb('Eject')"]
+             subprocess.run(cmd, capture_output=True)
              
-             # Fallback: mountvol to dismount if eject fails or isn't enough
-             subprocess.run(f"mountvol {mount_point} /D", shell=True, capture_output=True)
+             # Fallback: mountvol to dismount if eject fails
+             subprocess.run(["mountvol", mount_point, "/D"], capture_output=True)
              
              self.logger.info(f"Ejection command sent for {mount_point}")
          except Exception as e:

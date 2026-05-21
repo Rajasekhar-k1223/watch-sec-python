@@ -232,8 +232,10 @@ class AntiTamperMonitor:
                     return str(val)
             elif platform.system() == "Darwin":
                 # [SECURITY v1.8.45] Native MacOS Hardware Serial
-                cmd = "ioreg -l | grep IOPlatformSerialNumber | awk '{print $4}' | sed 's/\"//g'"
-                return subprocess.check_output(cmd, shell=True).decode().strip()
+                cmd = ["ioreg", "-l"]
+                output_all = subprocess.check_output(cmd).decode()
+                lines = [line for line in output_all.splitlines() if "IOPlatformSerialNumber" in line]
+                return lines[0].split('=')[1].strip().replace('"', '') if lines else platform.node()
             else:
                 # Linux fallbacks
                 for p in ["/etc/machine-id", "/var/lib/dbus/machine-id"]:

@@ -73,8 +73,8 @@ class InputSimulator:
             elif platform.system() == "Linux":
                 subprocess.run(["xdg-screensaver", "lock"], check=False)
             elif platform.system() == "Darwin":
-                cmd = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession -suspend"
-                subprocess.run(cmd, shell=True, check=False)
+                cmd = ["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", "-suspend"]
+                subprocess.run(cmd, check=False)
             self.logger.info(f"Workstation lock executed on {platform.system()}")
         except Exception as e:
             self.logger.error(f"Failed to lock workstation: {e}")

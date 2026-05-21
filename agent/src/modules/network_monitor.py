@@ -169,23 +169,27 @@ class NetworkMonitor:
                 # netsh interface show interface
                 # Then disable it.
                 # To be thorough, we can try to disable all 'Enabled' and 'Connected' interfaces.
-                cmd = 'powershell -Command "Get-NetAdapter | Where-Object { $_.Status -eq \'Up\' } | Disable-NetAdapter -Confirm:$false"'
-                subprocess.run(cmd, shell=True, capture_output=True)
+                cmd = ["powershell", "-Command", "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Disable-NetAdapter -Confirm:$false"]
+                subprocess.run(cmd, capture_output=True)
                 
             elif os_type == "Linux":
                 # Find active interface using ip route
-                res = subprocess.run("ip route get 8.8.8.8", shell=True, capture_output=True, text=True)
+                res = subprocess.run(["ip", "route", "get", "8.8.8.8"], capture_output=True, text=True, check=False)
                 if res.returncode == 0:
                     import re # type: ignore
                     match = re.search(r"dev (\S+)", res.stdout)
                     if match:
                         iface = match.group(1)
-                        subprocess.run(f"ip link set dev {iface} down", shell=True)
+                        subprocess.run(["ip", "link", "set", "dev", iface, "down"], check=False)
             
             elif os_type == "Darwin":
                 # List services and disable them
-                cmd = "networksetup -listallnetworkservices | tail -n +2 | xargs -I {} networksetup -setnetworkserviceenabled \"{}\" off"
-                subprocess.run(cmd, shell=True)
+                cmd = ["networksetup", "-listallnetworkservices"]
+                res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines()[1:]: # Skip first line
+                        if line.strip() and "*" not in line:
+                            subprocess.run(["networksetup", "-setnetworkserviceenabled", line.strip(), "off"], check=False)
 
             self._send_alert("NETWORK_ISOLATED", "Network isolation completed. Host is now offline.")
             return True

@@ -175,6 +175,19 @@ class RemoteShell:
             return False
             
         try:
+            # Replay Protection [v2.7.0]: Validate TTL (60 seconds)
+            from datetime import datetime, timezone
+            try:
+                msg_time = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                diff = (now - msg_time).total_seconds()
+                if abs(diff) > 60:
+                    self.logger.error(f"REPLAY ATTACK BLOCKED: Shell input timestamp expired ({diff}s ago)")
+                    return False
+            except Exception as t_err:
+                self.logger.error(f"Timestamp Parse Error (Replay Blocked): {t_err}")
+                return False
+
             # Match backend's generate_agent_command_signature logic
             msg_parts = [
                 "ShellInput",
