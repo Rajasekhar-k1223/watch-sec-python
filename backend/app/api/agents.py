@@ -702,20 +702,21 @@ async def agent_heartbeat(
         from datetime import datetime # type: ignore
         
         if not agent:
-            # [v1.8.64] Prevent Hostname duplicates: If an agent with the same Hostname exists,
-            # remove it to ensure a single AgentId per Hostname, as requested by the user.
+            # [v1.8.65] Preserve Hostname history: If an agent with the same Hostname exists,
+            # update its AgentId instead of deleting it, to preserve its history.
             from sqlalchemy import select # type: ignore
             duplicate_res = await db.execute(select(Agent).where(
                 Agent.TenantId == tenant.Id,
                 Agent.Hostname == payload.Hostname
             ))
-            duplicate_agents = duplicate_res.scalars().all()
-            for dup in duplicate_agents:
-                print(f"[CLEANUP] Removing duplicate agent {dup.AgentId} for Hostname {payload.Hostname}")
-                await db.delete(dup)
-            if duplicate_agents:
-                await db.commit()
+            duplicate_agent = duplicate_res.scalars().first()
+            if duplicate_agent:
+                print(f"[RECOVERY] Preserving agent history! Updating AgentId for Hostname {payload.Hostname}")
+                duplicate_agent.AgentId = payload.AgentId
+                duplicate_agent.IsPendingUninstall = False
+                agent = duplicate_agent
 
+        if not agent:
             # Create New Agent if not found
             # Check Agent Limit for Tenant
             from sqlalchemy import func # type: ignore

