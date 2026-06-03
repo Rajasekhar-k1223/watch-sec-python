@@ -97,7 +97,7 @@ async def get_system_versions():
         "latest": LATEST_AGENT_VERSION
     }
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, Request # type: ignore
 @router.get("")
 @router.get("/", include_in_schema=False)
 async def get_agents(
@@ -133,7 +133,6 @@ async def get_agents(
         agents = result.scalars().all()
         
         # [FIX] Compute dynamic status for each agent
-        from datetime import datetime, timedelta # type: ignore
         now = datetime.utcnow()
         
         response = []
@@ -368,10 +367,9 @@ async def trigger_sovereign_lockdown(
     # [v2.6.8] Sovereign Governance Audit
     new_event = EventLog(
         AgentId=agent_id,
-        TenantId=agent.TenantId,
-        EventType="SOVEREIGN_GOVERNANCE",
-        Severity="CRITICAL",
-        Description=f"INDIVIDUAL LOCKDOWN: Node {agent.Hostname or agent_id} neutralized by {current_user.Username}. Reason: {reason}",
+        Type="SOVEREIGN_GOVERNANCE",
+        Severity="Critical",
+        Details=f"INDIVIDUAL LOCKDOWN: Node {agent.Hostname or agent_id} neutralized by {current_user.Username}. Reason: {reason}",
         Timestamp=datetime.utcnow()
     )
     db.add(new_event)
@@ -395,7 +393,8 @@ async def trigger_sovereign_lockdown(
     if not tenant or not agent.MachineId:
         raise HTTPException(status_code=500, detail="Keys not synchronized for this agent")
         
-    key = hashlib.sha256(tenant.ApiKey.encode() + agent.MachineId).digest()
+    machine_id = agent.MachineId if isinstance(agent.MachineId, bytes) else agent.MachineId.encode()
+    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id).digest()
     signature = hmac.new(key, message, hashlib.sha256).hexdigest()
     
     command_data = {
@@ -407,7 +406,8 @@ async def trigger_sovereign_lockdown(
     }
     
     # [REAL-TIME] Push to Agent
-    await sio.emit('RemediationCommand', command_data, room=agent.AgentId)
+    # NOTE: Agent listens on 'Remediation' (not 'RemediationCommand') — must match @sio.on('Remediation') in agent/src/main.py
+    await sio.emit('Remediation', command_data, room=agent.AgentId)
     
     # [AUDIT]
     audit = AuditLog(
@@ -423,38 +423,150 @@ async def trigger_sovereign_lockdown(
     
     return {"status": "success", "message": "Sovereign Lockdown command dispatched."}
 
+@router.post("/{agent_id}/unlock")
+async def trigger_sovereign_unlock(
+    agent_id: str,
+    payload: dict, # { "reason": "..." }
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Find agent
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query)
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    reason = payload.get("reason", "No reason provided")
+    
+    # [v2.6.8] Sovereign Governance Audit
+    new_event = EventLog(
+        AgentId=agent_id,
+        Type="SOVEREIGN_GOVERNANCE",
+        Severity="High",
+        Details=f"INDIVIDUAL UNLOCK: Node {agent.Hostname or agent_id} released by {current_user.Username}. Reason: {reason}",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(new_event)
+    
+    # [v1.8.37] Command Sovereignty: Signature Generation
+    timestamp = datetime.utcnow().isoformat()
+    action = "SOVEREIGN_UNLOCK"
+    params = {}
+    
+    # Derive HMAC Key (Same logic as agent)
+    msg_parts = [action, json.dumps(params, sort_keys=True), timestamp]
+    message = "|".join(msg_parts).encode('utf-8')
+    
+    # We need the tenant to get the api_key for signing
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    
+    if not tenant or not agent.MachineId:
+        raise HTTPException(status_code=500, detail="Keys not synchronized for this agent")
+        
+    machine_id = agent.MachineId if isinstance(agent.MachineId, bytes) else agent.MachineId.encode()
+    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id).digest()
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+    
+    command_data = {
+        "action": action,
+        "params": params,
+        "policy_name": "Administrative Unlock",
+        "timestamp": timestamp,
+        "signature": signature
+    }
+    
+    # [REAL-TIME] Push to Agent
+    # Agent listens on 'Remediation'
+    await sio.emit('Remediation', command_data, room=agent.AgentId)
+    
+    # [AUDIT]
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="Sovereign Unlock",
+        Target=agent.Hostname,
+        Details="System lockdown released remotely.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return {"status": "success", "message": "Sovereign Unlock command dispatched."}
+
 @router.get("/{agent_id}/software")
 async def get_agent_software(
     agent_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    """
+    [v2.8.0] Returns full software audit table for an agent with:
+    - Installed version vs latest known version
+    - Update / patch availability status
+    - CVE vulnerability count and highest severity
+    - Sortable by severity risk level
+    """
     query = select(Agent).where(Agent.AgentId == agent_id)
     if current_user.Role != "SuperAdmin":
         query = query.where(Agent.TenantId == current_user.TenantId)
-    
+
     agent_result = await db.execute(query)
     agent = agent_result.scalars().first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-        
-    # [v2.6.0] Use relational AgentSoftware table
-    from ..db.models import AgentSoftware # type: ignore
+
+    # Fetch SBOM from relational AgentSoftware table
+    from ..db.models import AgentSoftware  # type: ignore
     sw_query = select(AgentSoftware).where(AgentSoftware.AgentId == agent_id)
     sw_result = await db.execute(sw_query)
     software_list = sw_result.scalars().all()
-    
-    return [
-        {
+
+    # Severity sort order
+    SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4, None: 5}
+
+    def build_update_status(installed: str, latest: str) -> str:
+        """Compare installed vs latest, return human-readable update status."""
+        if not installed or not latest:
+            return "Unknown"
+        if installed == latest:
+            return "Up to Date"
+        try:
+            from packaging.version import Version  # type: ignore
+            if Version(installed) < Version(latest):
+                return "Update Available"
+        except Exception:
+            if installed != latest:
+                return "Update Available"
+        return "Up to Date"
+
+    result_list = []
+    for s in software_list:
+        installed_ver = s.Version or "Unknown"
+        latest_ver = s.LatestVersion or installed_ver
+        update_status = build_update_status(installed_ver, latest_ver)
+
+        result_list.append({
             "Name": s.Name,
-            "Version": s.Version,
+            "InstalledVersion": installed_ver,
+            "LatestVersion": latest_ver,
             "Type": s.Type,
-            "Severity": s.Severity,
+            "UpdateStatus": update_status,           # "Up to Date" | "Update Available" | "Unknown"
+            "IsVulnerable": s.VulnerabilityCount > 0,
+            "VulnerabilityCount": s.VulnerabilityCount,
+            "Severity": s.Severity or "None",       # Critical | High | Medium | Low | None
             "HasPatchAvailable": s.HasPatchAvailable,
-            "LatestVersion": s.LatestVersion,
-            "LastSeen": s.LastSeen.isoformat() if s.LastSeen else None
-        } for s in software_list
-    ]
+            "LastSeen": s.LastSeen.isoformat() if s.LastSeen else None,
+        })
+
+    # Sort: most critical first, then alphabetically
+    result_list.sort(key=lambda x: (SEVERITY_ORDER.get(x["Severity"], 5), x["Name"].lower()))
+    return result_list
 
 class PatchSoftwareRequest(BaseModel):
     SoftwareName: str
@@ -485,7 +597,6 @@ async def patch_agent_software(
     # Trigger socket event
     import hmac
     import hashlib
-    from datetime import datetime
     import json
     
     timestamp = datetime.utcnow().isoformat()
@@ -567,6 +678,35 @@ async def download_shadow_file(
         media_type='application/octet-stream'
     )
 
+from ..db.models import AgentRegistrationToken
+import secrets
+import hashlib
+from datetime import datetime, timedelta
+from ..core.rate_limit import RateLimiter # type: ignore
+
+@router.post("/generate-pin", dependencies=[Depends(RateLimiter(times=5, seconds=60))])
+async def generate_installation_pin(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generates a secure 6-digit OTP for agent installation, valid for 15 minutes."""
+    if not current_user.TenantId:
+        raise HTTPException(status_code=400, detail="User has no TenantId")
+        
+    raw_pin = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    pin_hash = hashlib.sha256(raw_pin.encode()).hexdigest()
+    
+    token = AgentRegistrationToken(
+        TenantId=current_user.TenantId,
+        TokenHash=pin_hash,
+        ExpiresAt=datetime.utcnow() + timedelta(minutes=15)
+    )
+    db.add(token)
+    await db.commit()
+    
+    return {"pin": raw_pin, "expires_in_minutes": 15}
+
+
 # --- Agent Side Router (Mounted at /api/agent) ---
 agent_router = APIRouter()
 
@@ -605,7 +745,6 @@ async def internal_relay_stream(
 def is_in_maintenance_window(tenant_obj) -> bool:
     """Checks if the current UTC time is within the allowed update window."""
     import json # type: ignore
-    from datetime import datetime # type: ignore
     try:
         if not tenant_obj.MaintenanceWindowJson:
             return True # Default: Always allow if not configured
@@ -658,11 +797,76 @@ def is_in_maintenance_window(tenant_obj) -> bool:
         print(f"[Maintenance] ERROR: {e}")
         return True # Fail-open to avoid blocking critical updates if logic bugs out
 
+@agent_router.post("/register", dependencies=[Depends(RateLimiter(times=500, seconds=60))])
+async def register_agent(
+    payload: AgentHeartbeat,
+    db: AsyncSession = Depends(get_db)
+):
+    """Dynamic Agent Registration: Exchanges TenantApiKey for a unique MachineSecret."""
+    # 1. Validate PIN or TenantApiKey
+    tenant = None
+    if payload.TenantApiKey and payload.TenantApiKey.isdigit() and len(payload.TenantApiKey) == 6:
+        # It's an OTP PIN
+        import hashlib
+        pin_hash = hashlib.sha256(payload.TenantApiKey.encode()).hexdigest()
+        result_token = await db.execute(select(AgentRegistrationToken).where(AgentRegistrationToken.TokenHash == pin_hash))
+        token = result_token.scalars().first()
+        
+        if not token:
+            raise HTTPException(status_code=401, detail="Invalid or expired Installation PIN")
+        if token.ExpiresAt < datetime.utcnow():
+            await db.delete(token)
+            await db.commit()
+            raise HTTPException(status_code=401, detail="Installation PIN has expired")
+            
+        result_tenant = await db.execute(select(Tenant).where(Tenant.Id == token.TenantId))
+        tenant = result_tenant.scalars().first()
+        
+        # Invalidate the OTP immediately after successful use
+        await db.delete(token)
+        await db.commit()
+    else:
+        # Backward compatibility / Direct API Key
+        result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey))
+        tenant = result_tenant.scalars().first()
+        
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key or PIN")
+        
+    # 2. Find or Create Agent
+    result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
+    agent = result_agent.scalars().first()
+    
+    import secrets
+    new_machine_secret = secrets.token_hex(32)
+    
+    if agent:
+        if agent.TenantId != tenant.Id:
+            raise HTTPException(status_code=403, detail="Unauthorized Agent access")
+        agent.MachineId = new_machine_secret
+    else:
+        # Create minimal agent entry to hold the MachineId
+        agent = Agent(
+            AgentId=payload.AgentId,
+            TenantId=tenant.Id,
+            Hostname=payload.Hostname,
+            MachineId=new_machine_secret
+        )
+        db.add(agent)
+        
+    await db.commit()
+    return {"status": "success", "machine_secret": new_machine_secret}
+
+from fastapi import Header
+
 @agent_router.post("/heartbeat")
 async def agent_heartbeat(
+    request: Request,
     payload: AgentHeartbeat,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_tenant_by_key)
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
     print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted})")
     """
@@ -671,20 +875,51 @@ async def agent_heartbeat(
     Compatible with Windows, Linux, and macOS agents.
     """
     try:
-        # 1. Backward Compatibility for API Key
-        if not tenant:
-            # Fallback to payload's TenantApiKey if header is missing
-            result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey))
-            tenant = result_tenant.scalars().first()
-            if not tenant:
-                raise HTTPException(status_code=401, detail="Invalid API Key")
-
-        # 2. Find Agent
+        # 1. Find Agent
         result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
         agent = result_agent.scalars().first()
         print(f"[DEBUG] Heartbeat lookup for {payload.AgentId}: {'FOUND' if agent else 'NOT FOUND'}")
-        if agent:
-             print(f"[DEBUG] Agent {agent.AgentId} current LastSeen: {agent.LastSeen}")
+
+        api_key_sent = payload.TenantApiKey or x_tenant_api_key
+        # 2. Identify Tenant implicitly through Agent mapping, or fallback to header for backwards compat
+        if not agent:
+            # First heartbeat after registration
+            result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == api_key_sent))
+            tenant = result_tenant.scalars().first()
+        else:
+            result_tenant = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = result_tenant.scalars().first()
+            
+        if not tenant:
+            raise HTTPException(status_code=401, detail="Invalid Tenant")
+
+        # [SEC] Enforce True Dynamic Registration: Refuse plaintext TenantApiKey on Heartbeat
+        if not x_signature or not x_timestamp:
+            raise HTTPException(status_code=403, detail="Signature missing. Please update agent.")
+            
+        # [SEC] Enforce HMAC Signature
+        import hmac, hashlib
+        if agent and agent.MachineId:
+            key_seed = agent.MachineId.encode()
+        else:
+            key_seed = tenant.ApiKey.encode()
+        signing_key = hashlib.sha256(key_seed).digest()
+        
+        body_bytes = await request.body()
+        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+        
+        if not hmac.compare_digest(expected, x_signature):
+            raise HTTPException(status_code=403, detail="Invalid signature")
+
+        # [SEC] E2EE Payload Decryption
+        from ..core.security import decrypt_e2e_payload
+        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if (agent and agent.MachineSecret) else key_seed.decode())
+        if decrypted_bytes != body_bytes:
+            import json
+            decrypted_dict = json.loads(decrypted_bytes)
+            # Reconstruct the payload object with the decrypted telemetry
+            payload = AgentHeartbeat(**decrypted_dict)
 
         # [SECURITY FIX] v1.8.28 - Verify Agent belongs to this Tenant
         if agent and agent.TenantId != tenant.Id:
@@ -699,12 +934,10 @@ async def agent_heartbeat(
                 agent.IsPendingUninstall = False
         
         import json # type: ignore
-        from datetime import datetime # type: ignore
         
         if not agent:
             # [v1.8.65] Preserve Hostname history: If an agent with the same Hostname exists,
             # update its AgentId instead of deleting it, to preserve its history.
-            from sqlalchemy import select # type: ignore
             duplicate_res = await db.execute(select(Agent).where(
                 Agent.TenantId == tenant.Id,
                 Agent.Hostname == payload.Hostname
@@ -893,6 +1126,7 @@ async def agent_heartbeat(
                 agent.PowerStatusJson = json.dumps(payload.PowerStatus)
             if payload.Hardware:
                 agent.HardwareJson = json.dumps(payload.Hardware)
+                agent.DiskEncrypted = payload.Hardware.get("DiskEncrypted", False)
                 
             agent.CpuUsage = payload.CpuUsage
             agent.MemoryUsage = payload.MemoryUsage
@@ -970,21 +1204,6 @@ async def agent_heartbeat(
                     
                     if "arm" in hostname_lower or "aarch64" in hostname_lower:
                         arch = "arm64"
-                
-                update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
-                update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}"
-                
-                # Simple arch detection from hostname or hardware JSON if available
-                if "arm" in hostname_lower or "aarch64" in hostname_lower:
-                    arch = "arm64"
-                
-                if agent.HardwareJson:
-                    try:
-                        hw = json.loads(agent.HardwareJson)
-                        model = hw.get("CpuModel", "").lower()
-                        if "arm" in model or "apple" in model or "m1" in model or "m2" in model:
-                            arch = "arm64"
-                    except: pass
                 
                 update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
                 update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}"
@@ -1245,7 +1464,6 @@ async def report_agent_event(
         
     # 2. Log to Audit
     from ..db.models import AuditLog # type: ignore
-    from datetime import datetime # type: ignore
     
     print(f"[EVENT] Agent {agent_id}: {payload.EventType} - {payload.Message}")
     
@@ -1317,7 +1535,6 @@ async def delete_agent(
     
     # [AUDIT] Log Deletion
     from ..db.models import AuditLog # type: ignore
-    from datetime import datetime # type: ignore
     
     audit = AuditLog(
         TenantId=current_user.TenantId if current_user.TenantId else (agent.TenantId or 1),
@@ -1365,7 +1582,6 @@ async def toggle_screenshots(
              verify_feature_access(tenant.Plan, "ScreenshotsEnabled")
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1413,7 +1629,6 @@ async def update_screenshot_settings(
         agent.MaxScreenshotSize = payload.MaxScreenshotSize
         
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1469,7 +1684,6 @@ async def toggle_location(
              verify_feature_access(tenant.Plan, "LocationTrackingEnabled")
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1516,7 +1730,6 @@ async def toggle_usb(
              verify_feature_access(tenant.Plan, "UsbBlockingEnabled")
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1616,7 +1829,6 @@ async def toggle_network(
              verify_feature_access(tenant.Plan, "NetworkMonitoringEnabled")
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1663,7 +1875,6 @@ async def toggle_file_dlp(
              verify_feature_access(tenant.Plan, "FileDlpEnabled")
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -1741,7 +1952,6 @@ async def toggle_agent_feature(
     setattr(agent, col_name, enabled)
     
     # [AUDIT]
-    from datetime import datetime # type: ignore
     from ..db.models import AuditLog # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
@@ -1788,7 +1998,6 @@ async def take_screenshot(
         await sio.emit('TakeScreenshot', {'AgentId': agent.AgentId}, room=agent.AgentId)
 
         # [AUDIT]
-        from datetime import datetime # type: ignore
         audit = AuditLog(
             TenantId=current_user.TenantId or 0,
             Actor=current_user.Username,
@@ -1944,7 +2153,6 @@ async def update_settings(
          agent.ShadowPathsJson = json.dumps(settings.ShadowPaths)
 
     # [AUDIT]
-    from datetime import datetime # type: ignore
     details = f"Quality: {settings.ScreenshotQuality}, Interval: {settings.ScreenshotInterval}s"
     if changed_features:
         details += f" | Toggles: {', '.join(changed_features)}"
@@ -2005,7 +2213,6 @@ async def update_blocked_apps(
     agent.BlockedAppsJson = json.dumps(apps)
     
     # Audit
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
