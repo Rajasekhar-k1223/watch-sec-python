@@ -6,6 +6,9 @@ from .session import Base # type: ignore
 
 class Tenant(Base):
     __tablename__ = "Tenants"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     Id = Column(Integer, primary_key=True, index=True)
     Name = Column(String(255), default="")
@@ -57,6 +60,9 @@ class Tenant(Base):
 class FeatureTrial(Base):
     """Track 1-hour trial usage for premium features per tenant"""
     __tablename__ = "FeatureTrials"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=False, index=True)
@@ -68,15 +74,22 @@ class FeatureTrial(Base):
 
 class User(Base):
     __tablename__ = "Users"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     Username = Column(String(255), unique=True)
+    Email = Column(String(255), unique=True, nullable=True)
     PasswordHash = Column(String(255))
     Role = Column(String(50), default="Analyst")
     TenantId = Column(Integer, nullable=True)
 
 class Agent(Base):
     __tablename__ = "Agents"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(255), unique=True, index=True)
@@ -131,6 +144,7 @@ class Agent(Base):
     Gateway = Column(String(50), default="Unknown")
     PowerStatusJson = Column(Text, nullable=True) # [NEW] Battery info
     HardwareJson = Column(LONGTEXT, nullable=True) # [NEW] CPU/RAM/Disk details
+    DiskEncrypted = Column(Boolean, default=False) # [NEW] MDM Disk Encryption
     NetworkInMbps = Column(Float, default=0.0) # [NEW]
     NetworkOutMbps = Column(Float, default=0.0) # [NEW]
     BlockedAppsJson = Column(Text, default="[]") # [NEW] Feature 7: App Blocker
@@ -174,6 +188,9 @@ class Agent(Base):
 class RefreshToken(Base):
     """Store hashed refresh tokens for session rotation [v2.0.0]"""
     __tablename__ = "RefreshTokens"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     Id = Column(Integer, primary_key=True, index=True)
     UserId = Column(Integer, ForeignKey("Users.Id"), nullable=False, index=True)
@@ -186,6 +203,8 @@ class RefreshToken(Base):
 
 class AgentReportEntity(Base):
     __tablename__ = "AgentReports"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(255), index=True)
@@ -208,6 +227,8 @@ class AgentReportEntity(Base):
 
 class AuditLog(Base):
     __tablename__ = "AuditLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer)
@@ -219,6 +240,9 @@ class AuditLog(Base):
 
 class Policy(Base):
     __tablename__ = "Policies"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer)
@@ -242,6 +266,9 @@ class Policy(Base):
 
 class SystemSetting(Base):
     __tablename__ = "SystemSettings"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Key = Column(String(255), primary_key=True, index=True)
     Value = Column(Text, default="")
@@ -251,6 +278,8 @@ class SystemSetting(Base):
 
 class OCRLog(Base):
     __tablename__ = "OCRLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -265,6 +294,8 @@ class OCRLog(Base):
 
 class AgentSoftware(Base):
     __tablename__ = "AgentSoftware"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
@@ -277,8 +308,28 @@ class AgentSoftware(Base):
     HasPatchAvailable = Column(Boolean, default=False) # [NEW]
     LastSeen = Column(DateTime, default=datetime.utcnow)
 
+class SoftwareRequest(Base):
+    __tablename__ = "software_requests"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("agents.AgentId"))
+    TenantId = Column(Integer, ForeignKey("tenants.TenantId"))
+    SoftwareName = Column(String(100))
+    Status = Column(String(50), default="Pending") # Pending, Approved, Rejected
+    RequestedAt = Column(DateTime, default=datetime.utcnow)
+    ResolvedAt = Column(DateTime, nullable=True)
+
+class YaraRule(Base):
+    __tablename__ = "yara_rules"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("tenants.TenantId"))
+    Name = Column(String(100))
+    RuleContent = Column(Text)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
 class Notification(Base):
     __tablename__ = "Notifications"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, nullable=True, index=True)
@@ -291,6 +342,9 @@ class Notification(Base):
 
 class ThesaurusEntry(Base):
     __tablename__ = "ThesaurusEntries"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     Keyword = Column(String(100), index=True, nullable=False)
@@ -301,6 +355,8 @@ class ThesaurusEntry(Base):
 
 class EventLog(Base):
     __tablename__ = "EventLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -313,6 +369,8 @@ class EventLog(Base):
 
 class ActivityLog(Base):
     __tablename__ = "ActivityLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -337,6 +395,8 @@ class ActivityLog(Base):
 
 class SpeechLog(Base):
     __tablename__ = "SpeechLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -350,6 +410,9 @@ class SpeechLog(Base):
 
 class HashBank(Base):
     __tablename__ = "HashBanks"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     Hash = Column(String(255), unique=True, index=True) # MD5, SHA1, or SHA256
@@ -362,6 +425,8 @@ class HashBank(Base):
 
 class DigitalFingerprint(Base):
     __tablename__ = "DigitalFingerprints"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -376,6 +441,9 @@ class DigitalFingerprint(Base):
 
 class SavedSearch(Base):
     __tablename__ = "SavedSearches"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=True, index=True)
@@ -386,6 +454,8 @@ class SavedSearch(Base):
 
 class MailLog(Base):
     __tablename__ = "MailLogs"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -403,6 +473,9 @@ class MailLog(Base):
 
 class MailAttachment(Base):
     __tablename__ = "MailAttachments"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     MailLogId = Column(Integer, ForeignKey("MailLogs.Id"))
@@ -416,6 +489,9 @@ class MailAttachment(Base):
 
 class Vulnerability(Base):
     __tablename__ = "Vulnerabilities"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     CVE = Column(String(50), index=True, nullable=False) # e.g. CVE-2023-1234
@@ -428,6 +504,8 @@ class Vulnerability(Base):
 
 class SessionRecording(Base):
     __tablename__ = "SessionRecordings"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True, nullable=False)
@@ -440,6 +518,8 @@ class SessionRecording(Base):
 
 class ShadowedFile(Base):
     __tablename__ = "ShadowedFiles"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
@@ -451,6 +531,8 @@ class ShadowedFile(Base):
 
 class Screenshot(Base):
     __tablename__ = "Screenshots"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True, nullable=False)
@@ -465,6 +547,9 @@ class Screenshot(Base):
 
 class ReportFile(Base):
     __tablename__ = "ReportFiles"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, index=True, nullable=False)
@@ -473,3 +558,45 @@ class ReportFile(Base):
     Size = Column(Integer, default=0)
     GeneratedAt = Column(DateTime, default=datetime.utcnow, index=True)
     DownloadUrl = Column(String(500))
+
+class ApiKey(Base):
+    """Long-lived API keys for SDK and Service integrations"""
+    __tablename__ = "ApiKeys"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    Name = Column(String(100), nullable=False) # e.g. "Python SDK Key"
+    KeyHash = Column(String(255), index=True, nullable=False) # SHA256 of the token
+    Prefix = Column(String(10), nullable=False) # e.g. "mk_abc1" for UI identification
+    RawKey = Column(String(255), nullable=True) # [SECURITY WARNING] User explicitly requested to store raw key for total copy functionality
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    ExpiresAt = Column(DateTime, nullable=True) # None = Never expires
+    LastUsedAt = Column(DateTime, nullable=True)
+
+class SoftwareRequest(Base):
+    __tablename__ = "SoftwareRequests"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True, nullable=False)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    SoftwareName = Column(String(255), nullable=False)
+    Reason = Column(Text, nullable=True)
+    Status = Column(String(50), default="PENDING") # PENDING, APPROVED, DENIED, COMPLETED, FAILED
+    RequestedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+class AgentRegistrationToken(Base):
+    __tablename__ = "AgentRegistrationTokens"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    TokenHash = Column(String(255), index=True, nullable=False) # SHA256 of the 6-digit PIN
+    ExpiresAt = Column(DateTime, nullable=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)

@@ -206,12 +206,16 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
              payload_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type={os_type.lower()}&payload=true"
 
         install_script = f"""#!/bin/bash
-# Monitorix Agent Installer (Self-Detecting Mode)
-API_KEY="{tenant.ApiKey}"
+# Monitorix Agent Installer (Secure Interactive Mode)
 BACKEND_URL="{backend_url}"
 BINARY_NAME="{binary_name}"
 
 echo "--- Monitorix Agent Installer (Cross-Platform) ---"
+echo -n "Please enter your 6-digit Installation PIN: "
+read -rs API_KEY < /dev/tty
+echo ""
+echo "[*] PIN received."
+
 
 # Architecture Detection
 ARCH=$(uname -m)
@@ -234,7 +238,7 @@ TARGET_PLATFORM="${{OS_NAME}}-${{AGENT_ARCH}}"
 echo "Detected Platform: ${{TARGET_PLATFORM}}"
 
 # 1. Attempt Binary Download
-PAYLOAD_URL="{backend_url}/api/downloads/public/payload?key={tenant.ApiKey}&os_type=${{TARGET_PLATFORM}}"
+PAYLOAD_URL="{backend_url}/api/downloads/public/payload?key=$API_KEY&os_type=${{TARGET_PLATFORM}}"
 echo "[1/5] Downloading Agent Binary package..."
 
 IS_BINARY="false"
@@ -252,7 +256,7 @@ if [ "$HTTP_CODE" -eq 200 ]; then
 else
     echo "Note: No pre-built binary for ${{TARGET_PLATFORM}} (Status: $HTTP_CODE). Falling back to Source mode..."
     rm -f agent.bin 2>/dev/null
-    PAYLOAD_URL="{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type=${{TARGET_PLATFORM}}&payload=true"
+    PAYLOAD_URL="{backend_url}/api/downloads/public/agent?key=$API_KEY&os_type=${{TARGET_PLATFORM}}&payload=true"
     
     if command -v curl &> /dev/null; then
         curl -L -s -o agent.zip "$PAYLOAD_URL"
@@ -343,7 +347,12 @@ if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
 fi
 
 echo "[5/5] Configuring..."
-echo '{json.dumps(config_data)}' > "$dir_name/config.json"
+cat > "$dir_name/config.json" <<EOF
+{
+  "TenantApiKey": "$API_KEY",
+  "BackendUrl": "{backend_url}"
+}
+EOF
 
 # Create Systemd Service (Linux)
 if [ "$(uname)" = "Linux" ] && [ -d "/etc/systemd/system" ]; then
@@ -841,17 +850,14 @@ exit 1
     # Strip param(...) block — variables are injected below
     full_script = re.sub(r'(?si)param\s*\(.*?\)', '', full_script, count=1)
 
-    # Build the download URL
-    if mode == "source":
-        download_url = f"{backend_url}/api/downloads/public/agent?key={tenant.ApiKey}&os_type=windows&payload=true"
-    else:
-        download_url = f"{backend_url}/api/downloads/exe/windows?key={tenant.ApiKey}"
+    # Build the download URL (we don't need this anymore since we build it dynamically in PS1)
+    pass
 
-    # Prepend all required variables so the script is fully self-contained
+    # Prepend all required variables so the script is fully self-contained.
+    # [SECURE INSTALL]: Do NOT inject $ApiKey here. Rely on the interactive prompt!
     variables = f"""
-$DownloadUrl = "{download_url}"
-$ApiKey = "{tenant.ApiKey}"
 $BackendUrl = "{backend_url}"
+$DownloadUrl = "$BackendUrl/api/downloads/exe/windows?key=$ApiKey"
 $InstallDir = "C:\\Program Files\\Monitorix"
 $ExeName = "monitorix-agent.exe"
 $VersionCheckUrl = ""

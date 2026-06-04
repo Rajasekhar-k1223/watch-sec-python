@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Body # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, Body, Header # type: ignore
 from fastapi.responses import Response, StreamingResponse # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from sqlalchemy.orm import selectinload # type: ignore
 from typing import List, Optional # type: ignore
 from pydantic import BaseModel # type: ignore
-from datetime import datetime # type: ignore
+from datetime import datetime, timedelta # type: ignore
 import base64 # type: ignore
 import io # type: ignore
 
@@ -24,7 +24,7 @@ class AttachmentDto(BaseModel):
 
 class MailLogDto(BaseModel):
     AgentId: str
-    TenantApiKey: str
+    TenantApiKey: Optional[str] = None
     Sender: str
     Recipient: str
     Subject: str
@@ -48,7 +48,6 @@ async def get_all_mail_logs(
     Returns mail logs for the current tenant.
     Optionally filter by agent_id, start_date, end_date, or date_range.
     """
-    from datetime import timedelta # type: ignore
     from sqlalchemy import and_ # type: ignore
 
     # Resolve date_range shorthand first
@@ -150,7 +149,6 @@ async def get_agent_mail_logs(
         verify_feature_access(tenant.Plan, "MailMonitorEnabled")
     
     # [NEW] Handle Date Range
-    from datetime import timedelta # type: ignore
     if date_range:
         now = datetime.utcnow()
         if date_range == "24h":
@@ -230,10 +228,15 @@ async def download_attachment(
 @router.post("/")
 async def log_mail(
     dto: MailLogDto,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key")
 ):
     # Tenant Validation
-    result = await db.execute(select(Tenant).where(Tenant.ApiKey == dto.TenantApiKey))
+    api_key_sent = dto.TenantApiKey or x_tenant_api_key
+    if not api_key_sent:
+        raise HTTPException(status_code=401, detail="Authentication required")
+        
+    result = await db.execute(select(Tenant).where(Tenant.ApiKey == api_key_sent))
     tenant = result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -252,6 +255,53 @@ async def log_mail(
     suspicious_domains = ["gmail.com", "yahoo.com", "hotmail.com"]
     if any(d in dto.Recipient.lower() for d in suspicious_domains) and dto.HasAttachments:
         risk = "High"
+
+    # [NEW] Attachment Malware Scanning
+    malware_detected = False
+    if dto.Attachments:
+        malicious_signatures = [
+            b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*", # EICAR
+            b"powershell -nop -w hidden -encodedcommand", # Common payload
+            b"WScript.Shell", # VBScript dropper
+            b"CreateObject(\"WScript.Shell\")"
+        ]
+        
+        for att_dto in dto.Attachments:
+            try:
+                import base64
+                raw_bytes = base64.b64decode(att_dto.Content)
+                
+                # Check for executable headers if supposedly harmless
+                if att_dto.FileName.lower().endswith(('.exe', '.dll', '.bat', '.cmd', '.vbs', '.js')):
+                    malware_detected = True
+                    break
+                
+                # Scan bytes
+                for sig in malicious_signatures:
+                    if sig in raw_bytes:
+                        malware_detected = True
+                        break
+            except Exception as e:
+                print(f"[MAIL-SCANNER] Error decoding attachment for scanning: {e}")
+                
+            if malware_detected:
+                break
+                
+    if malware_detected:
+        risk = "Critical"
+        print(f"[SECURITY ALERT] Malware detected in email attachment sent to {dto.Recipient}")
+        # Automatically generate an incident
+        from ..db.models import Incident # type: ignore
+        new_incident = Incident(
+            TenantId=tenant.Id,
+            AgentId=dto.AgentId,
+            Title=f"Malicious Email Attachment Sent to {dto.Recipient}",
+            Description=f"An email with subject '{dto.Subject}' contained a known malicious file signature.",
+            Severity="Critical",
+            Status="Open",
+            Timestamp=datetime.utcnow()
+        )
+        db.add(new_incident)
 
     new_log = MailLog(
         AgentId=dto.AgentId,

@@ -15,8 +15,10 @@ import time # type: ignore
 
 router = APIRouter()
 
-# Use a secret key for signing - ideally from settings
-REPORT_SECRET = os.getenv("SECRET_KEY", "monitorix-report-secret-2026")
+# [SECURITY] Never use a hardcoded fallback secret. If SECRET_KEY is missing, crash at startup.
+REPORT_SECRET = os.getenv("SECRET_KEY")
+if not REPORT_SECRET:
+    raise RuntimeError("[FATAL] SECRET_KEY environment variable is not set. Report signing key unavailable. Server cannot start.")
 
 
 def generate_download_token(filename: str, expires_in_seconds: int = 7 * 24 * 3600) -> str:

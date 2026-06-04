@@ -34,7 +34,6 @@ async def get_ocr_logs(
         query = query.where(OCRLog.AgentId == agent_id)
     
     # [NEW] Handle Date Range
-    from datetime import timedelta      # type: ignore
     if date_range:
         now = datetime.utcnow()
         if date_range == "24h":

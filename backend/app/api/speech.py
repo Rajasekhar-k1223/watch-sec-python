@@ -41,7 +41,8 @@ async def upload_speech_log(
 
     # 2. Save Audio File
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+    safe_filename = os.path.basename(file.filename)
+    filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_filename}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     
     with open(file_path, "wb") as buffer:

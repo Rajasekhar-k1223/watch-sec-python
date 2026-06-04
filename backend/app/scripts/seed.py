@@ -52,11 +52,12 @@ async def seed():
         
         if not user:
             print("[Seed] Creating Admin User...")
+            import secrets
+            admin_pass = os.getenv("ADMIN_PASSWORD", secrets.token_urlsafe(12))
+            print(f"[Seed] Admin password set to: {admin_pass} (SAVE THIS!)")
             user = User(
                 Username="admin",
-                # Use simple hash or plain for demo. Using hash to prove Auth works.
-                # Password = "admin"
-                PasswordHash=get_password_hash("admin"), 
+                PasswordHash=get_password_hash(admin_pass), 
                 Role="SuperAdmin",
                 TenantId=tenant.Id
             )

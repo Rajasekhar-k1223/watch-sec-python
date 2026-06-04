@@ -9,7 +9,7 @@ from datetime import datetime # type: ignore
 
 # DB Config (Sync for Celery Worker)
 # Standardized to use .env passwords
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://admin:monitorix2025@watch-sec-mongo:27017/appdb?authSource=admin")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://admin:monitorix2025@watch-sec-mongo:27017/monitorix_db?authSource=admin")
 MYSQL_URL = os.getenv("DATABASE_URL", "").replace("aiomysql", "pymysql")
 
 def get_sync_mongo():
@@ -147,7 +147,6 @@ def staggered_bulk_patch(agent_ids: list, batch_size=10, delay=60):
     from app.db.models import Agent, AuditLog # type: ignore
     from app.core.constants import LATEST_AGENT_VERSION # type: ignore
     from time import sleep
-    from datetime import datetime
 
     total = len(agent_ids)
     print(f"[Celery] Starting Staggered Bulk Patch for {total} agents (Batch: {batch_size}, Delay: {delay}s)")

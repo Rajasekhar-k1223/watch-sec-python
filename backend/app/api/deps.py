@@ -6,8 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 
 from ..db.session import get_db # type: ignore
-from ..db.models import User, Tenant # type: ignore
+from ..db.models import User, Tenant, ApiKey # type: ignore
 from ..core.security import SECRET_KEY, ALGORITHM # type: ignore
+import hashlib
+from datetime import datetime
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
@@ -17,6 +19,29 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    # [NEW] Check for SDK API Key (prefix 'mk_')
+    if token.startswith("mk_"):
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        result = await db.execute(select(ApiKey).where(ApiKey.KeyHash == token_hash))
+        api_key = result.scalars().first()
+        if not api_key:
+            raise credentials_exception
+        if api_key.ExpiresAt and api_key.ExpiresAt < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="API Key expired")
+        
+        # Update LastUsedAt (background task normally, but we can just do it here for simplicity)
+        api_key.LastUsedAt = datetime.utcnow()
+        await db.commit()
+        
+        # Return Virtual User
+        return User(
+            Id=-1, 
+            Username=f"sdk_{api_key.Name}", 
+            Role="TenantAdmin", 
+            TenantId=api_key.TenantId
+        )
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
@@ -65,6 +90,20 @@ async def get_current_user_flexible(
 
     if not actual_token:
         raise HTTPException(status_code=401, detail="Authentication required (Token or Header missing)")
+
+    # [NEW] Check for SDK API Key (prefix 'mk_')
+    if actual_token.startswith("mk_"):
+        token_hash = hashlib.sha256(actual_token.encode()).hexdigest()
+        result = await db.execute(select(ApiKey).where(ApiKey.KeyHash == token_hash))
+        api_key = result.scalars().first()
+        if not api_key:
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+        if api_key.ExpiresAt and api_key.ExpiresAt < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="API Key expired")
+            
+        api_key.LastUsedAt = datetime.utcnow()
+        await db.commit()
+        return User(Id=-1, Username=f"sdk_{api_key.Name}", Role="TenantAdmin", TenantId=api_key.TenantId)
 
     try:
         payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])

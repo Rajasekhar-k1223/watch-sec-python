@@ -12,8 +12,8 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
       - REDIS_URL=redis://172.18.0.8:6379/0
       - CELERY_BROKER_URL=redis://172.18.0.8:6379/0
       - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
@@ -36,8 +36,8 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
       - REDIS_URL=redis://172.18.0.8:6379/0
       - CELERY_BROKER_URL=redis://172.18.0.8:6379/0
       - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
@@ -69,8 +69,8 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/appdb
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/appdb?authSource=admin
+      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
+      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
       - REDIS_URL=redis://watch-sec-redis:6379/0
       - CELERY_BROKER_URL=redis://watch-sec-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://watch-sec-redis:6379/0

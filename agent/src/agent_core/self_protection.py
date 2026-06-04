@@ -118,6 +118,8 @@ class AntiTamperMonitor:
         self._is_auditing = False
         self._audit_thread: Optional[threading.Thread] = None
         self._master_hash: Optional[str] = None # [v1.8.50] Runtime Integrity Master Hash
+        self._ignored_access: set = set()  # [FIX] Files to skip on next atime check (self-reads)
+        self._own_pid = os.getpid()  # [FIX] Track own PID to exclude self from access detection
 
     def secure_panic_wipe(self, file_list):
         """Forensic Eraser: Overwrites and deletes critical files upon compromise."""
@@ -171,10 +173,15 @@ class AntiTamperMonitor:
             self.log_func(f"Failed to start Anti-Tamper Monitoring: {e}")
 
     def _access_audit_loop(self):
-        """Monitors for 'Read' (Access) events by tracking atime changes."""
+        """Monitors for 'Read' (Access) events by tracking atime changes.
+        
+        [FIX v2.7.0] Excludes the agent's own legitimate reads from triggering DISCOVERY_ATTEMPT.
+        The agent reads config.json on every heartbeat (API key refresh and key-hardening),
+        so we must whitelist those self-generated atime updates.
+        """
         critical_files = ["config.json", "monitorixagent.exe"]
         
-        # Initialize
+        # Initialize baseline atimes
         for f in critical_files:
             p = os.path.join(self.base_dir, f)
             if os.path.exists(p):
@@ -184,17 +191,67 @@ class AntiTamperMonitor:
             try:
                 for f in critical_files:
                     path = os.path.join(self.base_dir, f)
-                    if os.path.exists(path):
-                        current_atime = os.path.getatime(path)
-                        # Detection Threshold: Check if changed significantly (+1s)
-                        if f in self._last_atime and current_atime > self._last_atime[f] + 1.0:
-                            # [v1.8.40] Discovery Alarm Triggered
-                            self.report_tamper("DISCOVERY_ATTEMPT", f"Unauthorized file access (OPEN) detected: {f}")
+                    if not os.path.exists(path):
+                        continue
+                    
+                    current_atime = os.path.getatime(path)
+                    last_atime = self._last_atime.get(f, current_atime)
+                    
+                    # [FIX] Skip if we flagged this file for self-access
+                    if f in self._ignored_access:
+                        self._ignored_access.discard(f)
+                        self._last_atime[f] = current_atime
+                        continue
+                    
+                    # Detection threshold: atime changed by more than 1 second
+                    if current_atime > last_atime + 1.0:
+                        # [FIX] Try to identify who accessed the file using /proc
+                        # If we can't determine it was an external process, skip
+                        accessor_pid = self._find_accessor_pid(path)
+                        if accessor_pid is None or accessor_pid == self._own_pid:
+                            # Either we ourselves did it, or we can't tell — don't alarm
                             self._last_atime[f] = current_atime
-                        else:
-                            self._last_atime[f] = current_atime
-            except: pass
-            time.sleep(10) # 10s resolution is enough for discovery detection
+                            continue
+                        
+                        # External process confirmed — raise alarm
+                        self.report_tamper("DISCOVERY_ATTEMPT", f"Unauthorized file access (OPEN) detected: {f}")
+                    
+                    self._last_atime[f] = current_atime
+            except Exception:
+                pass
+            time.sleep(10)  # 10s resolution is sufficient for discovery detection
+
+    def _find_accessor_pid(self, filepath: str) -> Optional[int]:
+        """[FIX v2.7.0] Attempt to find which PID has the file open via /proc/*/fd.
+        Returns our own PID if we opened it, an external PID if found, or None if unknown.
+        """
+        try:
+            if platform.system() != "Linux":
+                return None  # Only supported on Linux via /proc
+            
+            real_path = os.path.realpath(filepath)
+            for pid_str in os.listdir("/proc"):
+                if not pid_str.isdigit():
+                    continue
+                pid = int(pid_str)
+                fd_dir = f"/proc/{pid}/fd"
+                try:
+                    for fd in os.listdir(fd_dir):
+                        try:
+                            link = os.readlink(f"{fd_dir}/{fd}")
+                            if link == real_path:
+                                return pid
+                        except OSError:
+                            continue
+                except (PermissionError, ProcessLookupError, FileNotFoundError):
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def ignore_next_access(self, filename: str):
+        """[FIX v2.7.0] Signal that the next atime change on this file is expected (self-generated)."""
+        self._ignored_access.add(filename)
 
     def stop(self):
         self._is_auditing = False
@@ -329,6 +386,9 @@ class AntiTamperMonitor:
             config_path = os.path.join(self.base_dir, "config.json")
             if os.path.exists(config_path):
                 import json # type: ignore
+                # [FIX] Whitelist both the read and write to config.json to avoid self-alarm
+                self.ignore_next_access("config.json")
+                self.ignore_next_modification("config.json")
                 with open(config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                 config["TenantApiKey"] = encrypted_key
@@ -339,6 +399,7 @@ class AntiTamperMonitor:
                 self.log_func("[Security] Locked Identity in config.json")
         except Exception as e:
             self.log_func(f"Failed to harden config.json: {e}")
+
 
         # 2. Update Registry
         if platform.system() == "Windows":

@@ -54,6 +54,20 @@ async def get_settings(
         
     return grouped
 
+@router.get("/system/settings/public")
+async def get_public_settings(db: AsyncSession = Depends(get_db)):
+    """Returns safe, public UI configuration settings."""
+    result = await db.execute(select(SystemSetting).where(SystemSetting.Key.in_(['EnableGlobalAntiTamper'])))
+    settings = result.scalars().all()
+    
+    config = {
+        "EnableGlobalAntiTamper": "true" # Default to true
+    }
+    for s in settings:
+        config[s.Key] = s.Value
+        
+    return config
+
 @router.post("/system/settings")
 async def update_settings(
     settings: List[SettingDto],
@@ -76,7 +90,6 @@ async def update_settings(
             
     # [AUDIT]
     from app.db.models import AuditLog # type: ignore
-    from datetime import datetime # type: ignore
     audit = AuditLog(
         TenantId=current_user.TenantId or 0,
         Actor=current_user.Username,
@@ -86,6 +99,7 @@ async def update_settings(
         Timestamp=datetime.utcnow()
     )
     db.add(audit)
+    await db.commit()
     
 @router.get("/system/health")
 async def get_system_health(
@@ -179,7 +193,7 @@ async def get_system_health(
 
         # Collection stats
         try:
-            mongo_db = mongo_client["appdb"]
+            mongo_db = mongo_client["monitorix_db"]
             col_names = await mongo_db.list_collection_names()
             col_stats = {}
             for col in col_names:

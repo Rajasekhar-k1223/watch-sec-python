@@ -124,3 +124,25 @@ def sign_payload_asymmetric(payload_bytes: bytes) -> str:
     """Signs a payload using the Ed25519 private key. [v2.0.0]"""
     signature = UPDATE_PRIVATE_KEY.sign(payload_bytes)
     return signature.hex()
+
+def decrypt_e2e_payload(payload_bytes: bytes, machine_secret: str) -> bytes:
+    """Decrypts E2EE payload from the agent using AES-256-GCM."""
+    try:
+        import base64
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        
+        data = json.loads(payload_bytes)
+        if "e2e_payload" not in data or "nonce" not in data:
+            return payload_bytes # Not encrypted
+            
+        key = hashlib.sha256(machine_secret.encode()).digest()
+        aesgcm = AESGCM(key)
+        
+        ct = base64.b64decode(data["e2e_payload"])
+        nonce = base64.b64decode(data["nonce"])
+        
+        pt = aesgcm.decrypt(nonce, ct, None)
+        return pt
+    except Exception as e:
+        print(f"[SECURITY] E2EE Decryption Failed: {e}")
+        return payload_bytes

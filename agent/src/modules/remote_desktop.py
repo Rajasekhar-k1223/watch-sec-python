@@ -23,10 +23,10 @@ import ctypes # type: ignore
 from typing import Any, Optional, Dict # type: ignore
 
 class RemoteDesktopAgent:
-    def __init__(self, api_url, agent_id, api_key):
+    def __init__(self, api_url, agent_id, machine_secret):
         self.api_url = api_url.replace("http", "ws").replace("https", "wss")
         self.agent_id = agent_id
-        self.api_key = api_key
+        self.machine_secret = machine_secret
         self.running = False
         self.logger = logging.getLogger("RemoteDesktop")
         self.thread = None
@@ -72,7 +72,7 @@ class RemoteDesktopAgent:
         loop.run_until_complete(self._connect())
 
     async def _connect(self):
-        uri = f"{self.api_url}/api/ws/agent/{self.agent_id}?api_key={self.api_key}"
+        uri = f"{self.api_url}/api/ws/agent/{self.agent_id}?machineSecret={self.machine_secret}"
         self.logger.info(f"Connecting to Remote Hub: {uri}")
         
         while self.running:
@@ -171,14 +171,20 @@ class RemoteDesktopAgent:
                     'duration': int(duration),
                     'start_time': start_time.isoformat()
                 }
-                headers = {'X-Tenant-Api-Key': self.api_key}
+                headers = {'X-Signature': self.machine_secret} # Backend must be updated if this endpoint is still used.
                 requests.post(url, files=files, data=data, headers=headers, verify=True)
             
-            self.logger.info("Upload Complete. Deleting local file.")
-            os.remove(file_path)
+            self.logger.info("Upload Complete.")
             
         except Exception as e:
             self.logger.error(f"Upload Failed: {e}")
+        finally:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    self.logger.info("Deleted local recording file.")
+                except Exception as ex:
+                    self.logger.error(f"Failed to delete local recording file: {ex}")
 
     async def _handle_input(self, websocket):
         width, height = (1920, 1080)

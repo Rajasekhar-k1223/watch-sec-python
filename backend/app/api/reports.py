@@ -192,7 +192,7 @@ async def get_agent_history(
         
     if current_user.Role != "SuperAdmin":
         if not current_user.TenantId or agent.TenantId != current_user.TenantId:
-             print(f"[Auth-Debug] 403 DENIED. User: {current_user.Email} (Role: {current_user.Role}, Tenant: {current_user.TenantId}) vs Agent Tenant: {agent.TenantId}")
+             print(f"[Auth-Debug] 403 DENIED. Access blocked for cross-tenant access attempt on Agent: {agent.AgentId}")
              raise HTTPException(status_code=403, detail="Access Denied")
 
     query = select(AgentReportEntity).where(AgentReportEntity.AgentId == agent_id)

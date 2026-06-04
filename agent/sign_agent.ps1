@@ -28,7 +28,9 @@ $CertBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509Con
 [System.IO.File]::WriteAllBytes($PublicCertPath, $CertBytes)
 
 # Export to PFX (Optional, if you want to sign on other machines)
-# $Password = ConvertTo-SecureString -String "Password123" -Force -AsPlainText
+# $CertPassword = $env:SIGNING_PASSWORD
+# if ([string]::IsNullOrEmpty($CertPassword)) { throw "SIGNING_PASSWORD env var is required." }
+# $Password = ConvertTo-SecureString -String $CertPassword -Force -AsPlainText
 # Export-PfxCertificate -Cert $cert -FilePath "WatchSec.pfx" -Password $Password
 
 Write-Host "2. Signing Executable..." -ForegroundColor Cyan

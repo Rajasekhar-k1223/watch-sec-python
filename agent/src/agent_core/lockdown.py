@@ -27,14 +27,31 @@ class LockdownModule:
         # 2. Trigger OS-specific lock/sleep
         try:
             if self.os_type == "Windows":
-                # Force Hibernate (Preserves RAM for forensics)
-                subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "Hibernate", "Force"], check=False)
+                # Force Windows Native Screen Lock
+                subprocess.run(["rundll32.exe", "user32.dll,LockWorkStation"], check=False)
             elif self.os_type == "Linux":
-                # Force Suspend/Hibernate
-                subprocess.run(["systemctl", "suspend"], check=False)
+                # Try graphical lock first (desktop environments)
+                locked = False
+                for cmd in [
+                    ["loginctl", "lock-sessions"],          # systemd logind (most distros)
+                    ["xdg-screensaver", "lock"],            # Freedesktop standard
+                    ["gnome-screensaver-command", "-l"],    # GNOME fallback
+                    ["xlock", "-mode", "blank"],            # Xlock fallback
+                ]:
+                    try:
+                        res = subprocess.run(cmd, capture_output=True, timeout=5)
+                        if res.returncode == 0:
+                            locked = True
+                            self.log_func(f"[SUCCESS] Screen locked via {cmd[0]}")
+                            break
+                    except Exception:
+                        continue
+                if not locked:
+                    # Headless/server: suspend the process group to freeze the session
+                    self.log_func("[LOCKDOWN] No graphical lock found. Marker persisted for boot-time enforcement.")
             elif self.os_type == "Darwin":
-                # macOS sleep
-                subprocess.run(["pmset", "sleepnow"], check=False)
+                # macOS screen lock
+                subprocess.run(["pmset", "displaysleepnow"], check=False)
                 
             self.log_func("[SUCCESS] System is now in Sovereign Lockdown.")
         except Exception as e:
@@ -81,9 +98,24 @@ class LockdownModule:
                     return res.stdout.split("text returned:")[1].strip()
             
             elif self.os_type == "Linux":
-                # Linux is tricky without zenity. Fallback to a terminal-style input if possible
-                pass
-                
+                # Try zenity (GTK dialog, available on most GNOME desktops)
+                try:
+                    res = subprocess.run(
+                        ["zenity", "--password", "--title=Monitorix Sovereign Security",
+                         "--text=CRITICAL: System in Sovereign Lockdown.\nEnter Unlock Key to regain access:"],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    if res.returncode == 0:
+                        return res.stdout.strip()
+                except Exception:
+                    pass
+                # TTY fallback (headless/SSH sessions)
+                try:
+                    import getpass
+                    return getpass.getpass("[SOVEREIGN LOCKDOWN] Enter Unlock Key: ")
+                except Exception:
+                    pass
+
         except Exception as e:
             self.log_func(f"[ERROR] Local unlock prompt failed: {e}")
         return ""

@@ -9,20 +9,20 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
-      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/appdb?authSource=admin
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/monitorix_db
+      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/monitorix_db?authSource=admin
       - HOST=0.0.0.0
       - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
       - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
       - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
-      - SECRET_KEY=your-secret-key-here
+      - SECRET_KEY=${SECRET_KEY}
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
       - PORT=8000
       # DMARC-aligned SMTP: must use from/sender within monitorix.co.in domain
       - SMTP_HOST=smtp.monitorix.co.in
       - SMTP_PORT=465
       - SMTP_USER=info@monitorix.co.in
-      - SMTP_PASS=ChangeThisPassword123!
+      - SMTP_PASS=${SMTP_PASSWORD}
       - SMTP_FROM=info@monitorix.co.in
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -35,8 +35,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/appdb
-      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/appdb?authSource=admin
+      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/monitorix_db
+      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/monitorix_db?authSource=admin
       - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
       - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
       - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
@@ -44,7 +44,7 @@ services:
       - SMTP_HOST=smtp.monitorix.co.in
       - SMTP_PORT=465
       - SMTP_USER=info@monitorix.co.in
-      - SMTP_PASS=ChangeThisPassword123!
+      - SMTP_PASS=${SMTP_PASSWORD}
       - SMTP_FROM=info@monitorix.co.in
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:

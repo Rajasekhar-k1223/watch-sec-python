@@ -156,7 +156,8 @@ async def upload_screenshot(
     t_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
     tenant_obj = t_res.scalars().first()
     if not tenant_obj or tenant_obj.ApiKey != x_tenant_api_key:
-        print(f"[SECURITY ALERT] Unauthorized upload attempt for Agent {agent_id} with Key {x_tenant_api_key}")
+        redacted_key = f"****{x_tenant_api_key[-4:]}" if x_tenant_api_key and len(x_tenant_api_key) >= 4 else "****"
+        print(f"[SECURITY ALERT] Unauthorized upload attempt for Agent {agent_id} with Key {redacted_key}")
         raise HTTPException(status_code=403, detail="Invalid API Key for this Agent")
 
     # Structure: storage/Screenshots/{agent_id}/{date_Ymd}/

@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: str | list[str] = [
         "https://monitorix.co.in",
         "https://www.monitorix.co.in",
-        "*", 
     ]
 
     # =========================

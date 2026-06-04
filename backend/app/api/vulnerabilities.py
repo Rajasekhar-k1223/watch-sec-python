@@ -279,44 +279,141 @@ async def get_fleet_software(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Aggregates software inventory across all agents for the tenant.
+    [v2.8.0] Fleet-wide software audit table.
+    Returns all installed software across agents with vulnerability & update status.
     """
+    from ..db.models import AgentSoftware  # type: ignore
     query = select(Agent)
     if current_user.Role != "SuperAdmin":
         query = query.where(Agent.TenantId == current_user.TenantId)
-    
+
     result = await db.execute(query)
     agents = result.scalars().all()
-    
-    software_map = {} # { (Name, Version): { "count": X, "agents": [id1, id2] } }
-    
+
+    SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}
+
+    def build_update_status(installed: str, latest: str) -> str:
+        if not installed or not latest or installed == latest:
+            return "Up to Date"
+        try:
+            from packaging.version import Version  # type: ignore
+            return "Update Available" if Version(installed) < Version(latest) else "Up to Date"
+        except Exception:
+            return "Update Available" if installed != latest else "Up to Date"
+
+    software_map: dict = {}  # key = (Name, InstalledVersion)
+
     for agent in agents:
-        if agent.InstalledSoftwareJson:
-            try:
-                inventory = json.loads(agent.InstalledSoftwareJson)
-                for sw in inventory:
-                    name = sw.get("Name", "Unknown")
-                    version = sw.get("Version", "Unknown")
-                    key = (name, version)
-                    
-                    if key not in software_map:
-                        software_map[key] = {
-                            "Name": name,
-                            "Version": version,
-                            "AgentCount": 0,
-                            "Agents": []
-                        }
-                    
-                    software_map[key]["AgentCount"] += 1
-                    software_map[key]["Agents"].append(agent.AgentId)
-            except:
-                continue
-                
-    # Convert to list and sort by AgentCount
-    flat_list = list(software_map.values())
-    flat_list.sort(key=lambda x: x["AgentCount"], reverse=True)
-    
-    return flat_list
+        # Use relational table first
+        sw_query = select(AgentSoftware).where(AgentSoftware.AgentId == agent.AgentId)
+        sw_res = await db.execute(sw_query)
+        sw_items = sw_res.scalars().all()
+
+        for s in sw_items:
+            key = (s.Name, s.Version or "Unknown")
+            installed_ver = s.Version or "Unknown"
+            latest_ver = s.LatestVersion or installed_ver
+
+            if key not in software_map:
+                software_map[key] = {
+                    "Name": s.Name,
+                    "InstalledVersion": installed_ver,
+                    "LatestVersion": latest_ver,
+                    "Type": s.Type,
+                    "UpdateStatus": build_update_status(installed_ver, latest_ver),
+                    "IsVulnerable": s.VulnerabilityCount > 0,
+                    "VulnerabilityCount": s.VulnerabilityCount,
+                    "Severity": s.Severity or "None",
+                    "HasPatchAvailable": s.HasPatchAvailable,
+                    "AgentCount": 0,
+                    "Agents": []
+                }
+            software_map[key]["AgentCount"] += 1
+            software_map[key]["Agents"].append({
+                "AgentId": agent.AgentId,
+                "Hostname": agent.Hostname
+            })
+
+    flat = list(software_map.values())
+    flat.sort(key=lambda x: (SEVERITY_ORDER.get(x["Severity"], 4), -x["AgentCount"], x["Name"].lower()))
+
+    return {
+        "total": len(flat),
+        "vulnerable": sum(1 for s in flat if s["IsVulnerable"]),
+        "updates_available": sum(1 for s in flat if s["UpdateStatus"] == "Update Available"),
+        "software": flat
+    }
+
+
+@router.get("/software-audit/{agent_id}")
+async def get_agent_software_audit(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [v2.8.0] Full software audit table for a specific agent.
+    Shows: Name | Installed Version | Latest Version | Update Status | Vulnerable | Severity | Patch Available
+    Sorted by severity (Critical first), then alphabetically.
+    """
+    from ..db.models import AgentSoftware  # type: ignore
+
+    # Verify agent access
+    agent_query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        agent_query = agent_query.where(Agent.TenantId == current_user.TenantId)
+
+    agent_result = await db.execute(agent_query)
+    agent = agent_result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    sw_query = select(AgentSoftware).where(AgentSoftware.AgentId == agent_id)
+    sw_res = await db.execute(sw_query)
+    software_list = sw_res.scalars().all()
+
+    SEVERITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "None": 4}
+
+    def build_update_status(installed: str, latest: str) -> str:
+        if not installed or not latest or installed == latest:
+            return "Up to Date"
+        try:
+            from packaging.version import Version  # type: ignore
+            return "Update Available" if Version(installed) < Version(latest) else "Up to Date"
+        except Exception:
+            return "Update Available" if installed != latest else "Up to Date"
+
+    rows = []
+    for s in software_list:
+        installed_ver = s.Version or "Unknown"
+        latest_ver = s.LatestVersion or installed_ver
+        rows.append({
+            "Name": s.Name,
+            "InstalledVersion": installed_ver,
+            "LatestVersion": latest_ver,
+            "Type": s.Type or "Unknown",
+            "UpdateStatus": build_update_status(installed_ver, latest_ver),
+            "IsVulnerable": s.VulnerabilityCount > 0,
+            "VulnerabilityCount": s.VulnerabilityCount,
+            "Severity": s.Severity or "None",
+            "HasPatchAvailable": s.HasPatchAvailable,
+            "LastSeen": s.LastSeen.isoformat() if s.LastSeen else None,
+        })
+
+    rows.sort(key=lambda x: (SEVERITY_ORDER.get(x["Severity"], 4), x["Name"].lower()))
+
+    return {
+        "AgentId": agent_id,
+        "Hostname": agent.Hostname,
+        "TotalPackages": len(rows),
+        "VulnerablePackages": sum(1 for r in rows if r["IsVulnerable"]),
+        "UpdatesAvailable": sum(1 for r in rows if r["UpdateStatus"] == "Update Available"),
+        "CriticalCount": sum(1 for r in rows if r["Severity"] == "Critical"),
+        "HighCount": sum(1 for r in rows if r["Severity"] == "High"),
+        "MediumCount": sum(1 for r in rows if r["Severity"] == "Medium"),
+        "Software": rows,
+    }
+
 
 @router.post("/status/{event_id}")
 async def update_vulnerability_status(
@@ -331,17 +428,18 @@ async def update_vulnerability_status(
     query = select(EventLog).join(Agent, EventLog.AgentId == Agent.AgentId).where(EventLog.Id == event_id)
     if current_user.Role != "SuperAdmin":
         query = query.where(Agent.TenantId == current_user.TenantId)
-    
+
     result = await db.execute(query)
     event = result.scalars().first()
     if not event:
         raise HTTPException(status_code=404, detail="Alert not found")
-        
+
     valid_statuses = ["Open", "In-Progress", "Resolved", "Risk-Accepted"]
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of {valid_statuses}")
-        
+
     event.Status = status
     await db.commit()
-    
+
     return {"status": "updated", "eventId": event_id, "newStatus": status}
+

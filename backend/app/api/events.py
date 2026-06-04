@@ -135,8 +135,10 @@ async def report_event(
             )
             
         import hmac, hashlib # type: ignore
-        key_seed = auth_api_key.encode()
-        if agent.MachineId: key_seed += agent.MachineId.encode()
+        if agent.MachineId:
+            key_seed = agent.MachineId.encode()
+        else:
+            key_seed = auth_api_key.encode()
         signing_key = hashlib.sha256(key_seed).digest()
         
         body_bytes = await request.body()
@@ -148,9 +150,7 @@ async def report_event(
         fallback_key = auth_api_key.encode()
         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
         
-        if not is_valid and dto.AgentId in ["RAJ-A71A27AF", "Raj-A71A27AF"]:
-            is_valid = True
-            print(f"[AUTH] [EMERGENCY] Bypassing signature for {dto.AgentId} to break synchronization deadlock.")
+        # [SECURITY] Removed hardcoded agent ID bypass. All agents must pass HMAC validation.
      
         if not is_valid and not agent.MachineId:
             # Fallback: Try ApiKey only (Initial registration handshake)
@@ -160,6 +160,14 @@ async def report_event(
      
         if not is_valid:
             raise HTTPException(status_code=403, detail="Invalid signature")
+
+        # [SEC] E2EE Payload Decryption
+        from ..core.security import decrypt_e2e_payload
+        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if (agent and agent.MachineSecret) else key_seed.decode())
+        if decrypted_bytes != body_bytes:
+            import json
+            decrypted_dict = json.loads(decrypted_bytes)
+            dto = SecurityEventDto(**decrypted_dict)
 
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
     
@@ -239,8 +247,10 @@ async def log_activity(
              raise HTTPException(status_code=403, detail="Stealth Breach: Plaintext Key Disallowed")
              
         import hmac, hashlib # type: ignore
-        key_seed = auth_api_key.encode()
-        if agent_obj.MachineId: key_seed += agent_obj.MachineId.encode()
+        if agent_obj.MachineId:
+            key_seed = agent_obj.MachineId.encode()
+        else:
+            key_seed = auth_api_key.encode()
         signing_key = hashlib.sha256(key_seed).digest()
     
         body_bytes = await request.body()
@@ -258,6 +268,14 @@ async def log_activity(
     
         if not is_valid:
             raise HTTPException(status_code=403, detail="Invalid signature")
+
+        # [SEC] E2EE Payload Decryption
+        from ..core.security import decrypt_e2e_payload
+        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent_obj.MachineSecret if (agent_obj and agent_obj.MachineSecret) else key_seed.decode())
+        if decrypted_bytes != body_bytes:
+            import json
+            decrypted_dict = json.loads(decrypted_bytes)
+            dto = ActivityLogDto(**decrypted_dict)
 
     risk_score, risk_level = analyze_risk(dto.WindowTitle, dto.ProcessName, dto.Url or "")
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp

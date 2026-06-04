@@ -1,6 +1,11 @@
 #!/bin/bash
 # Monitorix Agent Installer (Self-Detecting Mode)
-API_KEY="25005e1c-4dc5-459b-9599-db6ed09c9ad2"
+# Remove hardcoded key for security
+API_KEY="${MONITORIX_API_KEY:-}"
+if [ -z "$API_KEY" ]; then
+    echo "Error: MONITORIX_API_KEY must be set in environment"
+    exit 1
+fi
 BACKEND_URL="https://monitorix.co.in"
 BINARY_NAME="monitorix-agent-linux"
 

@@ -58,7 +58,6 @@ async def login_for_access_token(
 
     # [AUDIT] Log Login
     from ..db.models import AuditLog # type: ignore
-    from datetime import datetime # type: ignore
     
     audit = AuditLog(
         TenantId=user.TenantId,
@@ -283,7 +282,6 @@ async def register_tenant(
     
     # [AUDIT] Log Registration
     from ..db.models import AuditLog # type: ignore
-    from datetime import datetime # type: ignore
     
     audit = AuditLog(
         TenantId=new_tenant.Id,

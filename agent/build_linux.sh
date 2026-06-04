@@ -1,117 +1,190 @@
 #!/bin/bash
-# Build standalone Linux binary for Monitorix Agent
-# This binary will work without Python installed on the target system
+# ============================================================
+# Monitorix Agent — Linux Binary Build Script
+# Produces a standalone binary (no Python required on target)
+# Supports: x64 (amd64) and arm64 (aarch64)
+# ============================================================
+set -e
 
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-
-echo "=== Monitorix Agent Linux Binary Build ==="
-echo "Building standalone executable with PyInstaller..."
+echo -e "${BLUE}╔══════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║   Monitorix Agent — Linux Binary Build           ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════╝${NC}"
 
 cd "$(dirname "$0")"
 
-# [NEW] Sync version with backend
-chmod +x sync_version.sh
-./sync_version.sh
-
-# Install build dependencies if needed
-echo "[1/4] Installing build dependencies..."
-#pip3 install -q -r requirements.txt
-
-# Clean previous builds
-echo "[2/4] Cleaning previous builds..."
-rm -rf build_lin_v1 dist_lin_v1 __pycache__ *.spec
-
-# Architecture Detection
+# ── Architecture Detection ────────────────────────────────────────────────────
 ARCH=$(uname -m)
 if [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-    AGENT_ARCH="arm64"
+    ARCH_TAG="arm64"
 else
-    AGENT_ARCH="x64"
+    ARCH_TAG="x64"
 fi
-echo "Building for Architecture: ${AGENT_ARCH}"
+echo -e "  Platform : Linux-${ARCH_TAG}"
 
-# [3/4] Building binary with PyInstaller...
-echo "[3/4] Building binary with PyInstaller..."
+BINARY_NAME="monitorixagent"
+DIST_DIR="dist/linux-${ARCH_TAG}"
+BUILD_DIR="build/linux-${ARCH_TAG}"
+TEMPLATE_DIR="../backend/storage/AgentTemplate/linux-${ARCH_TAG}"
+
+echo -e "  Output   : ${DIST_DIR}/${BINARY_NAME}"
+echo -e "  Template : ${TEMPLATE_DIR}/"
+echo ""
+
+# ── Step 1: Sync version ──────────────────────────────────────────────────────
+if [ -f "sync_version.sh" ]; then
+    echo "[1/4] Syncing version with backend..."
+    chmod +x sync_version.sh
+    ./sync_version.sh 2>/dev/null || echo "  (version sync skipped)"
+else
+    echo "[1/4] Skipping version sync (sync_version.sh not found)"
+fi
+
+# ── Step 2: Install build dependencies ───────────────────────────────────────
+echo "[2/4] Checking build dependencies..."
+python3 -m pip install -q pyinstaller>=6.3 2>/dev/null || pip3 install -q pyinstaller>=6.3 2>/dev/null || true
+
+# ── Step 3: Clean ─────────────────────────────────────────────────────────────
+echo "[3/4] Cleaning previous builds..."
+rm -rf "$BUILD_DIR" "$DIST_DIR" build_staging *.spec 2>/dev/null || true
+
+# ── Step 4: PyInstaller Build ─────────────────────────────────────────────────
+echo "[4/4] Running PyInstaller..."
+echo ""
+
+# Auto-discover all module hidden imports
+HIDDEN_IMPORTS=""
+if [ -d "src/modules" ]; then
+    for f in src/modules/*.py; do
+        mod=$(basename "$f" .py)
+        [ "$mod" = "__init__" ] && continue
+        HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import=modules.${mod}"
+    done
+fi
+if [ -d "src/agent_core" ]; then
+    for f in src/agent_core/*.py; do
+        mod=$(basename "$f" .py)
+        [ "$mod" = "__init__" ] && continue
+        HIDDEN_IMPORTS="$HIDDEN_IMPORTS --hidden-import=agent_core.${mod}"
+    done
+fi
+
+# Run PyInstaller
 pyinstaller --clean --onefile \
-    --workpath build_lin_v1 \
-    --distpath dist_lin_v1 \
-    --specpath build_lin_v1 \
-    --name monitorix-agent-linux \
-    --hidden-import=modules.activity_monitor \
-    --hidden-import=modules.app_blocker \
-    --hidden-import=modules.audit_logger \
-    --hidden-import=modules.browser_enforcer \
-    --hidden-import=modules.clipboard_monitor \
-    --hidden-import=modules.data_queue \
-    --hidden-import=modules.file_manager \
-    --hidden-import=modules.file_monitor \
-    --hidden-import=modules.fim \
-    --hidden-import=modules.hardware \
-    --hidden-import=modules.input_simulation \
-    --hidden-import=modules.installer \
-    --hidden-import=modules.keylogger \
-    --hidden-import=modules.live_stream \
-    --hidden-import=modules.location_monitor \
-    --hidden-import=modules.mail_monitor \
-    --hidden-import=modules.network \
-    --hidden-import=modules.network_monitor \
-    --hidden-import=modules.network_utils \
-    --hidden-import=modules.power_monitor \
-    --hidden-import=modules.printer_monitor \
-    --hidden-import=modules.remote_shell \
-    --hidden-import=modules.screenshots \
-    --hidden-import=modules.security \
-    --hidden-import=modules.shadow_monitor \
-    --hidden-import=modules.speech_monitor \
-    --hidden-import=modules.usb_control \
-    --hidden-import=modules.usb_monitor \
-    --hidden-import=modules.webrtc_stream \
-    --hidden-import=modules.av_monitor \
-    --hidden-import=agent_core.bandwidth_manager \
-    --hidden-import=agent_core.remediation_handler \
-    --hidden-import=agent_core.self_protection \
-    --hidden-import=agent_core.session_monitor \
-    --hidden-import=agent_core.utils \
-    --hidden-import=agent_core.watchdog \
-    --hidden-import=engineio.async_drivers.aiohttp \
+    --workpath "$BUILD_DIR" \
+    --distpath "$DIST_DIR" \
+    --specpath "$BUILD_DIR" \
+    --name "$BINARY_NAME" \
+    \
+    --hidden-import=cryptography \
     --hidden-import=cryptography.hazmat.backends.openssl.backend \
-    --collect-all cryptography \
-    --collect-all PIL \
-    --collect-all watchdog \
-    --collect-all aiortc \
-    --collect-all av \
-    --collect-all sounddevice \
+    --collect-all=cryptography \
+    --hidden-import=socketio \
+    --hidden-import=engineio \
+    --hidden-import=engineio.client \
+    --hidden-import=engineio.async_drivers \
+    --hidden-import=engineio.async_drivers.aiohttp \
+    --hidden-import=aiohttp \
+    --hidden-import=psutil \
+    --collect-all=psutil \
+    --hidden-import=PIL \
+    --hidden-import=PIL.Image \
+    --collect-all=PIL \
+    --hidden-import=mss \
+    --hidden-import=requests \
+    --hidden-import=urllib3 \
+    \
+    --hidden-import=aiortc \
+    --collect-all=aiortc \
+    --hidden-import=av \
+    --collect-all=av \
+    --hidden-import=sounddevice \
+    --collect-all=sounddevice \
+    --hidden-import=numpy \
+    --hidden-import=wave \
+    \
+    --hidden-import=pyperclip \
+    --hidden-import=pynput \
+    --collect-all=pynput \
     --hidden-import=pynput.keyboard._xorg \
     --hidden-import=pynput.keyboard._uinput \
     --hidden-import=pynput.mouse._xorg \
     --hidden-import=pynput.mouse._uinput \
-    --exclude-module tkinter \
-    --exclude-module PyQt5 \
-    --exclude-module PyQt6 \
-    --exclude-module PySide2 \
-    --exclude-module PySide6 \
-    --exclude-module matplotlib \
+    --hidden-import=evdev \
+    --hidden-import=Xlib \
+    --hidden-import=Xlib.display \
+    \
+    --hidden-import=sqlite3 \
+    --hidden-import=_sqlite3 \
+    --collect-all=sqlite3 \
+    --hidden-import=keyring \
+    \
+    --hidden-import=jaraco.text \
+    --hidden-import=jaraco.classes \
+    --hidden-import=jaraco.functools \
+    --hidden-import=jaraco.context \
+    --hidden-import=platformdirs \
+    \
+    --exclude-module=tkinter \
+    --exclude-module=tcl \
+    --exclude-module=PyQt5 \
+    --exclude-module=PyQt6 \
+    --exclude-module=PySide2 \
+    --exclude-module=PySide6 \
+    --exclude-module=matplotlib \
+    --exclude-module=scipy \
+    --exclude-module=pandas \
+    --exclude-module=win32api \
+    --exclude-module=win32con \
+    --exclude-module=pythoncom \
+    --exclude-module=wmi \
+    --exclude-module=AppKit \
+    --exclude-module=Quartz \
+    \
     --strip \
     --console \
+    $HIDDEN_IMPORTS \
     src/main.py
 
-# Test the binary
-echo "[4/4] Testing binary..."
-if [ -f "dist_lin_v1/monitorix-agent-linux" ]; then
-    chmod +x dist_lin_v1/monitorix-agent-linux
-    SIZE=$(du -h dist_lin_v1/monitorix-agent-linux | cut -f1)
-    echo "✓ Binary built successfully: $SIZE"
-    echo "  Location: dist_lin_v1/monitorix-agent-linux"
-    
-    # Quick test
-    timeout 2 dist_lin_v1/monitorix-agent-linux 2>&1 | head -n 5 || true
-    
+# ── Post-Build ────────────────────────────────────────────────────────────────
+echo ""
+if [ -f "${DIST_DIR}/${BINARY_NAME}" ]; then
+    chmod +x "${DIST_DIR}/${BINARY_NAME}"
+    SIZE=$(du -h "${DIST_DIR}/${BINARY_NAME}" | cut -f1)
+    echo -e "${GREEN}✓ Build successful: ${DIST_DIR}/${BINARY_NAME} (${SIZE})${NC}"
+
+    # Copy config.json
+    if [ -f "config.json" ]; then
+        cp "config.json" "${DIST_DIR}/config.json"
+        echo "  ✓ config.json copied"
+    fi
+
+    # Deploy to AgentTemplate
+    if [ -d "$(dirname "${TEMPLATE_DIR}")" ]; then
+        mkdir -p "${TEMPLATE_DIR}"
+        cp "${DIST_DIR}/${BINARY_NAME}" "${TEMPLATE_DIR}/${BINARY_NAME}"
+        chmod +x "${TEMPLATE_DIR}/${BINARY_NAME}"
+        echo -e "  ${GREEN}✓ Deployed to AgentTemplate: ${TEMPLATE_DIR}/${BINARY_NAME}${NC}"
+        
+        # Quick smoke test
+        echo ""
+        echo "Running quick smoke test (2s)..."
+        timeout 2 "${DIST_DIR}/${BINARY_NAME}" 2>&1 | head -n 8 || true
+    else
+        echo -e "  ${YELLOW}Note: AgentTemplate path not found, skipping deploy.${NC}"
+        echo -e "  Manually copy: cp ${DIST_DIR}/${BINARY_NAME} ${TEMPLATE_DIR}/"
+    fi
+
     echo ""
-    echo "Next steps:"
-    echo "1. Copy to backend: cp dist_lin_v1/monitorix-agent-linux ../backend/storage/AgentTemplate/linux-${AGENT_ARCH}/"
-    echo "2. Remove .broken file: rm ../backend/storage/AgentTemplate/linux-${AGENT_ARCH}/monitorix-agent-linux.broken"
-    echo "3. Restart backend: docker restart watch-sec-backend"
+    echo -e "${BLUE}Next steps:${NC}"
+    echo "  sudo cp ${DIST_DIR}/${BINARY_NAME} /var/lib/monitorix/"
+    echo "  sudo ./install_agent_linux.sh"
 else
-    echo "✗ Build failed - binary not found"
+    echo -e "${RED}✗ Build FAILED — binary not found at ${DIST_DIR}/${BINARY_NAME}${NC}"
     exit 1
 fi

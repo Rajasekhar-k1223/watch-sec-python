@@ -260,7 +260,7 @@ async def rate_limit_middleware(request: Request, call_next):
     # Allows self, plus standard Google Fonts and Socket.IO requirements
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " # eval needed for some legacy dash components
+        "script-src 'self' 'unsafe-inline'; " # Removed unsafe-eval for security
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob:; "

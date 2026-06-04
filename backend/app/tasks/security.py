@@ -210,7 +210,6 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
 @celery_app.task
 def cleanup_agents():
     """[v2.6.0] Auto-Decommission Zombies (Short-lived Replicas)."""
-    from datetime import datetime, timedelta # type: ignore
     session = Session()
     try:
         # If an agent is offline for > 24h, mark as 'Decommissioned'

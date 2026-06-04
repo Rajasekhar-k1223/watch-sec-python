@@ -9,9 +9,21 @@ from datetime import datetime # type: ignore
 class DlpHandler(FileSystemEventHandler):
     def __init__(self, callback):
         self.callback = callback
+        self.mod_history = []
+        self.ransomware_triggered = False
+
+    def _check_ransomware_behavior(self, path):
+        if self.ransomware_triggered: return
+        now = time.time()
+        self.mod_history.append(now)
+        self.mod_history = [t for t in self.mod_history if now - t < 5.0]
+        if len(self.mod_history) > 20:
+            self.ransomware_triggered = True
+            self.callback("RansomwareAlert", f"Mass file modification detected near {path}. Triggering lockdown.")
 
     def on_modified(self, event):
         if event.is_directory: return
+        self._check_ransomware_behavior(event.src_path)
         self.callback("File Modified", event.src_path)
 
     def on_created(self, event):
@@ -24,6 +36,7 @@ class DlpHandler(FileSystemEventHandler):
         
     def on_moved(self, event):
         if event.is_directory: return
+        self._check_ransomware_behavior(event.dest_path)
         self.callback("File Moved", f"{event.src_path} -> {event.dest_path}")
 
 class FileIntegrityMonitor:
@@ -58,7 +71,8 @@ class FileIntegrityMonitor:
             if os.path.exists(path):
                 valid_paths.append(path)
                 try:
-                    self.observer.schedule(self._dlp_handler, path, recursive=True)
+                    # [v1.8.64] Memory Optimization: Avoid recursive memory bloat on Windows
+                    self.observer.schedule(self._dlp_handler, path, recursive=False)
                     print(f"[DLP] Monitoring File System: {path}")
                 except Exception as e:
                     print(f"[DLP] Failed to watch {path}: {e}")
@@ -97,6 +111,19 @@ class FileIntegrityMonitor:
         if any(k in lower_details for k in sensitive_keywords):
             action = f"{action} [SENSITIVE]"
             
+        # 3. Ransomware Alert Action
+        if action == "RansomwareAlert":
+            print(f"[CRITICAL THREAT] {details}")
+            # Isolate network
+            try:
+                import sys
+                main_mod = sys.modules.get("__main__")
+                if main_mod and hasattr(main_mod, 'net_mon') and main_mod.net_mon:
+                    main_mod.net_mon.isolate_network()
+                    details += " Network isolated."
+            except Exception as e:
+                details += f" Network isolation failed: {e}"
+
         # Log to Backend
         self._send_log(action, details)
 

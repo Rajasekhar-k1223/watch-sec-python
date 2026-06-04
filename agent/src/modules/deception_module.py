@@ -16,8 +16,7 @@ class DeceptionModule:
         # Traps are placed in common sensitive-looking directories
         self.base_dirs = [
             os.path.expanduser("~"),
-            "/tmp" if platform.system() != "Windows" else os.getenv("TEMP"),
-            "/etc" if platform.system() != "Windows" else "C:\\Windows\\System32\\drivers\\etc"
+            "/tmp" if platform.system() != "Windows" else os.getenv("TEMP")
         ]
 
     def deploy_honeyfiles(self):

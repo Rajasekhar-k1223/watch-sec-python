@@ -146,6 +146,29 @@ class HardwareMonitor:
         except:
             return "Unknown"
 
+    def check_disk_encryption(self):
+        """[v3.0.0] MDM Disk Encryption check."""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                # Check BitLocker status
+                cmd = ["powershell", "-Command", "Get-BitLockerVolume -MountPoint $env:SystemDrive | Select-Object -ExpandProperty ProtectionStatus"]
+                res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                return res.lower() == "on"
+            elif system == "Darwin":
+                # Check FileVault status
+                cmd = ["fdesetup", "status"]
+                res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                return "FileVault is On" in res
+            elif system == "Linux":
+                # Simple check for LUKS on root
+                cmd = ["lsblk", "-f"]
+                res = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
+                return "crypto_LUKS" in res
+        except Exception as e:
+            self.logger.error(f"Disk Encryption check error: {e}")
+        return False
+
     def check_for_software_changes(self):
         """
         Lightweight check to see if the software inventory has likely changed.
@@ -404,7 +427,8 @@ class HardwareMonitor:
             "DiskFreeGB": disk_free,
             "SerialNumber": f"HDP_{hdp_serial}",
             "GpuModel": self._gpu_cache,
-            "Bios": self._get_bios_info()
+            "Bios": self._get_bios_info(),
+            "DiskEncrypted": self.check_disk_encryption()
         }
 
     def _get_tpm_id(self):

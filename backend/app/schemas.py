@@ -107,7 +107,7 @@ class AgentSettingsUpdate(BaseModel):
 
 class AgentHeartbeat(BaseModel):
     AgentId: str
-    TenantApiKey: str
+    TenantApiKey: Optional[str] = None
     Status: str = "Online"
     Hostname: str = "Unknown"
     CpuUsage: float = 0.0

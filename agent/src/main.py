@@ -122,7 +122,8 @@ def apply_anti_debugging():
                 sys.exit(1)
     except: pass
 
-# apply_anti_debugging()
+# Activate anti-debugging globally
+apply_anti_debugging()
 
 # [v1.8.33] Local Immunity: Secure Subdirectory Setup
 # Create private data/tmp/logs vaults if they don't exist
@@ -712,6 +713,21 @@ def load_config():
             else:
                 cfg = json.loads(raw_data.decode('utf-8'))
                 log_to_file("Configuration loaded from raw JSON config.")
+
+            # [SEC] Cross-Platform Keyring for API Key
+            try:
+                import keyring
+                ring_key = keyring.get_password("monitorix_agent", "tenant_api_key")
+                if ring_key:
+                    cfg["TenantApiKey"] = ring_key
+                elif "TenantApiKey" in cfg:
+                    keyring.set_password("monitorix_agent", "tenant_api_key", cfg["TenantApiKey"])
+                    # Remove from raw config to prevent plaintext storage
+                    del cfg["TenantApiKey"]
+                    save_config(cfg)
+                    cfg["TenantApiKey"] = keyring.get_password("monitorix_agent", "tenant_api_key")
+            except Exception as e:
+                log_to_file(f"[SECURITY] Keyring unavailable: {e}")
 
         except Exception as e:
             log_to_file(f"[VAULT] Failed to decrypt config.json: {e}")
@@ -1845,14 +1861,56 @@ async def heartbeat_loop():
                     log_to_file(f"[Inventory] Sync triggered (Reason: {'First' if first_heartbeat else 'Change' if software_changed else 'Periodic'})")
                     payload["InstalledSoftwareJson"] = json.dumps(hw_mon.get_installed_software(force_scan=True))
 
-            resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=http_session.verify)
+            # [SEC] Dynamic Registration & Payload Signing
+            try:
+                import keyring, hmac, hashlib
+                import os, base64
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                
+                ms = keyring.get_password("monitorix_agent", "machine_secret")
+                if ms:
+                    key_seed = ms.encode()
+                else:
+                    key_seed = API_KEY.encode()
+                    
+                json_payload = json.dumps(payload, separators=(',', ':'))
+                
+                # [SEC] E2EE Payload Encryption
+                if ms:
+                    try:
+                        e2e_key = hashlib.sha256(ms.encode()).digest()
+                        aesgcm = AESGCM(e2e_key)
+                        nonce = os.urandom(12)
+                        ct = aesgcm.encrypt(nonce, json_payload.encode('utf-8'), None)
+                        json_payload = json.dumps({
+                            "e2e_payload": base64.b64encode(ct).decode('utf-8'),
+                            "nonce": base64.b64encode(nonce).decode('utf-8'),
+                            "AgentId": AGENT_ID # For routing
+                        })
+                    except Exception as e:
+                        log_to_file(f"E2EE Encryption Error: {e}")
+                        
+                timestamp = datetime.now(timezone.utc).isoformat()
+                msg = f"{json_payload}|{timestamp}".encode('utf-8')
+                signing_key = hashlib.sha256(key_seed).digest()
+                signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                
+                headers = {"X-Signature": signature, "X-Timestamp": timestamp}
+                if not ms:
+                    headers["X-Tenant-Api-Key"] = API_KEY
+            except Exception as e:
+                log_to_file(f"Signing Error: {e}")
+                json_payload = json.dumps(payload)
+                headers = {}
+
+            resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", data=json_payload, headers=headers, timeout=10, verify=http_session.verify)
             log_to_file(f"[Heartbeat] Response: {resp.status_code}")
             
             if resp.status_code == 401:
                 # [v2.0.0] Token Expired: Attempt Refresh
                 if await attempt_token_refresh():
                     # Retry once with new token
-                    resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", json=payload, timeout=10, verify=http_session.verify)
+                    resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/heartbeat", data=json_payload, headers=headers, timeout=10, verify=http_session.verify)
                     log_to_file(f"[Heartbeat] Retry Response: {resp.status_code}")
 
             if resp.status_code != 200:
@@ -2157,8 +2215,13 @@ async def ws_maintainer():
                     headers = {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
-                    await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY}, 
-                                     headers=headers, wait_timeout=10)
+                    ms = _get_machine_secret().decode()
+                    if ms:
+                        await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'machineSecret': ms}, 
+                                         headers=headers, wait_timeout=10)
+                    else:
+                        await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY}, 
+                                         headers=headers, wait_timeout=10)
                     log_to_file("WebSocket Connected (Handshake Pending)...")
                     retry_delay = 5  # Reset delay on success
             except Exception as e:
@@ -2167,7 +2230,11 @@ async def ws_maintainer():
                 elif "ClientWSTimeout" in str(e):
                     log_to_file("[Socket.IO] aiohttp timeout error (Legacy environment). Retrying simple connect...")
                     try:
-                        await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY})
+                        ms = _get_machine_secret().decode()
+                        if ms:
+                            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'machineSecret': ms})
+                        else:
+                            await sio.connect(BACKEND_URL, auth={'room': AGENT_ID, 'apiKey': API_KEY})
                         retry_delay = 5
                     except: pass
                 else:
@@ -2442,6 +2509,28 @@ async def main():
     REG_PATH = _s("69757c6e6d5b487f1c675554534e55485342")
 
     BACKEND_URL = config.get("BackendUrl", DEFAULT_URL).strip()
+
+    # [v2.8.1] Strict URL Sanitization & Integrity Recovery to handle bit-flips/tampering
+    if BACKEND_URL.startswith("https:") and not BACKEND_URL.startswith("https://"):
+        BACKEND_URL = "https://" + BACKEND_URL[6:]
+    elif BACKEND_URL.startswith("http:") and not BACKEND_URL.startswith("http://"):
+        BACKEND_URL = "http://" + BACKEND_URL[5:]
+
+    if "ooagdtu" in BACKEND_URL or "agdtu" in BACKEND_URL:
+        log_to_file("[SECURITY ALERT] Corrupted or tampered DEFAULT_URL detected in memory! Attempting recovery...")
+        # Check if on-disk config has a clean, uncorrupted BackendUrl
+        raw_config = {}
+        try:
+            raw_config = load_config() or {}
+        except: pass
+        url_candidate = raw_config.get("BackendUrl", "")
+        if url_candidate and "ooagdtu" not in url_candidate and "agdtu" not in url_candidate:
+            BACKEND_URL = url_candidate.strip()
+            log_to_file(f"[SECURITY] Recovered BackendUrl from on-disk config: {BACKEND_URL}")
+        else:
+            BACKEND_URL = "https://agent-api.monitorix.co.in"
+            log_to_file(f"[SECURITY] Hard fallback to clean default agent-api URL: {BACKEND_URL}")
+
     # [v1.8.37] Strict Transport Security: Force HTTPS for the backend
     if BACKEND_URL.startswith("http://") and "localhost" not in BACKEND_URL and "127.0.0.1" not in BACKEND_URL:
          BACKEND_URL = BACKEND_URL.replace("http://", "https://")
@@ -2474,21 +2563,6 @@ async def main():
                 res.append(enc_data[i] ^ m_id[i % len(m_id)])
             return res.decode()
         except: return raw_val
-
-    # Registry Auth Fallback
-    if platform.system() == "Windows":
-        try:
-            import winreg # type: ignore
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Monitorix", 0, winreg.KEY_READ | 0x0100) # KEY_WOW64_64KEY
-            val, _ = winreg.QueryValueEx(key, "TenantApiKey")
-            if val: API_KEY = _decrypt_id(str(val).strip())
-            winreg.CloseKey(key)
-        except: pass
-
-    # EnvVar Fallback
-    env_key = os.environ.get("MONITORIX_TENANT_API_KEY")
-    if env_key:
-        API_KEY = _decrypt_id(env_key.strip())
 
     if API_KEY:
          http_session.headers.update({"X-Tenant-Api-Key": API_KEY})
@@ -2741,6 +2815,23 @@ async def main():
             log_to_file(f"Watchdog Failure: {e}")
             # Fallback: run normally if watchdog fails
     
+    # [NEW] Mutual Process Monitoring: Spawn the lightweight external watchdog
+    try:
+        import subprocess
+        import sys
+        import os
+        watchdog_path = os.path.join(BASE_DIR, "src", "watchdog.py")
+        if os.path.exists(watchdog_path):
+            creationflags = 0x08000000 if platform.system() == "Windows" else 0
+            watchdog_proc = subprocess.Popen(
+                [sys.executable, watchdog_path, str(os.getpid()), sys.executable, *sys.argv],
+                creationflags=creationflags,
+                close_fds=True
+            )
+            log_to_file(f"External Watchdog Spawned (PID: {watchdog_proc.pid})")
+    except Exception as e:
+        log_to_file(f"Failed to spawn external watchdog: {e}")
+    
     # --- CHILD / MAIN AGENT LOGIC ---
     log_to_file("--- Agent Child Initializing ---")
     
@@ -2846,6 +2937,49 @@ async def main():
     asyncio.create_task(run_integrity_sentinel())
     asyncio.create_task(run_permission_sentinel())
 
+
+
+async def register_agent():
+    global API_KEY, config
+    try:
+        import keyring
+        machine_secret = keyring.get_password("monitorix_agent", "machine_secret")
+        if machine_secret:
+            return machine_secret
+        
+        # Need to register
+        payload = {
+            "AgentId": AGENT_ID,
+            "TenantApiKey": API_KEY,
+            "Hostname": current_hostname
+        }
+        log_to_file("[Register] Exchanging API Key for Machine Secret...")
+        resp = await asyncio.to_thread(http_session.post, f"{BACKEND_URL}/api/agent/register", json=payload, timeout=10, verify=http_session.verify)
+        if resp.status_code == 200:
+            data = resp.json()
+            new_secret = data.get("machine_secret")
+            if new_secret:
+                keyring.set_password("monitorix_agent", "machine_secret", new_secret)
+                log_to_file("[Register] Successfully obtained Machine Secret.")
+                
+                try: keyring.delete_password("monitorix_agent", "tenant_api_key")
+                except: pass
+                if "TenantApiKey" in config:
+                    del config["TenantApiKey"]
+                    save_config(config)
+                
+                return new_secret
+    except Exception as e:
+        log_to_file(f"[Register] Failed: {e}")
+    return None
+
+async def main_async():
+    global running, current_hostname
+    log_to_file("Entering main_async loop")
+
+    await register_agent()
+
+    # Create background tasks
     try:
         await asyncio.gather(heartbeat_loop(), ws_maintainer(), update_monitor_task())
     finally:
@@ -2927,6 +3061,37 @@ async def main():
             log_to_file(f"Memory Scrub Failed: {scrub_err}")
 
 if __name__ == "__main__":
+    if "--request-software" in sys.argv:
+        idx = sys.argv.index("--request-software")
+        software_name = sys.argv[idx+1] if len(sys.argv) > idx+1 else "Unknown"
+        reason = sys.argv[idx+2] if len(sys.argv) > idx+2 else "No reason provided"
+        
+        cfg = load_config()
+        b_url = cfg.get("BackendUrl", "")
+        a_id = cfg.get("AgentId", "")
+        a_key = cfg.get("TenantApiKey", "")
+        
+        if not b_url or not a_id:
+            print("Agent is not properly configured. Run setup first.")
+            sys.exit(1)
+            
+        print(f"Requesting software '{software_name}' (Reason: {reason}) from {b_url}...")
+        import requests
+        try:
+            resp = requests.post(f"{b_url}/api/software_requests", json={
+                "AgentId": a_id,
+                "SoftwareName": software_name,
+                "Reason": reason,
+                "TenantApiKey": a_key
+            }, verify=False)
+            if resp.status_code == 200:
+                print("Request submitted successfully. Waiting for admin approval.")
+            else:
+                print(f"Failed to submit request: {resp.status_code} - {resp.text}")
+        except Exception as e:
+            print(f"Error submitting request: {e}")
+        sys.exit(0)
+
     try:
         if platform.system() == 'Windows':
             policy = getattr(asyncio, 'WindowsSelectorEventLoopPolicy', None)

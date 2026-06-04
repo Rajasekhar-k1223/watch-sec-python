@@ -7,8 +7,10 @@ console.log("[Watch-Sec] Mail Interceptor Loaded.");
 console.log("[Watch-Sec] Mail Interceptor Loaded.");
 
 // Detect Platform
-const isGmail = window.location.hostname.includes("google.com");
-const isOutlook = window.location.hostname.includes("outlook");
+const urlLower = window.location.hostname.toLowerCase() + window.location.pathname.toLowerCase();
+const isGmail = urlLower.includes("google.com");
+const isOutlook = urlLower.includes("outlook");
+const isGenericMail = !isGmail && !isOutlook && (urlLower.includes("mail") || urlLower.includes("inbox") || urlLower.includes("compose"));
 
 document.addEventListener("click", async (e) => {
     // Heuristic: Check if clicked element is a "Send" button
@@ -27,6 +29,17 @@ document.addEventListener("click", async (e) => {
         if (target.getAttribute("title") === "Send (Ctrl+Enter)") isSendClick = true;
         if (target.innerText === "Send") isSendClick = true;
         if (!isSendClick && target.closest('button[title="Send (Ctrl+Enter)"]')) isSendClick = true;
+    } else if (isGenericMail) {
+        const text = (target.innerText || "").toLowerCase().trim();
+        const aria = (target.getAttribute("aria-label") || "").toLowerCase().trim();
+        if (text === "send" || aria === "send") isSendClick = true;
+        
+        // Also check if the closest button or anchor says Send
+        const closestBtn = target.closest('button, a');
+        if (closestBtn) {
+            const btnText = (closestBtn.innerText || "").toLowerCase().trim();
+            if (btnText === "send") isSendClick = true;
+        }
     }
 
     if (isSendClick) {
@@ -84,13 +97,43 @@ function captureEmail() {
         // Heuristic: Look for spans/divs with email-like text inside the "To" area
         // This is hard, defaulting to "Unknown" if not found is acceptable for PoC
         if (to.length === 0) to.push("(Outlook Web Recipient)");
+    } else if (isGenericMail) {
+        console.log("[Watch-Sec] Scrapping Generic Webmail...");
+        
+        // Heuristic Recipient
+        document.querySelectorAll('input').forEach(i => {
+            if (i.type === 'password' || i.type === 'hidden') return;
+            const val = i.value || "";
+            if (val.includes("@") && val.includes(".")) {
+                to.push(val);
+            }
+        });
+        
+        // Heuristic Subject
+        document.querySelectorAll('input').forEach(i => {
+            if (i.type === 'password' || i.type === 'hidden') return;
+            const p = (i.placeholder || "").toLowerCase();
+            const n = (i.name || "").toLowerCase();
+            if (p.includes("subject") || n.includes("subject")) {
+                subject = i.value;
+            }
+        });
+        
+        // Heuristic Body (largest textarea or contenteditable)
+        let maxLen = 0;
+        document.querySelectorAll('textarea, div[contenteditable="true"]').forEach(el => {
+            const text = el.innerText || el.value || "";
+            if (text.length > maxLen) {
+                maxLen = text.length;
+                body = text;
+            }
+        });
     }
 
     const recipient = [...new Set(to)].join("; ") || "Unknown/Bcc";
 
     const payload = {
         AgentId: CONFIG.AGENT_ID,
-        TenantApiKey: CONFIG.TENANT_API_KEY,
         Sender: "BrowserUser",
         Recipient: recipient,
         Subject: subject || "(No Subject)",
@@ -110,7 +153,8 @@ function sendToBackend(payload) {
     fetch(`${CONFIG.BACKEND_URL}/api/mail`, {
         method: "POST",
         headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Tenant-Api-Key": CONFIG.TENANT_API_KEY
         },
         body: JSON.stringify(payload)
     })

@@ -44,7 +44,8 @@ async def upload_diagnostic_bundle(
     upload_dir = f"/app/storage/diagnostics/{ticket_id}"
     os.makedirs(upload_dir, exist_ok=True)
     
-    file_path = os.path.join(upload_dir, file.filename)
+    safe_filename = os.path.basename(file.filename)
+    file_path = os.path.join(upload_dir, safe_filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         

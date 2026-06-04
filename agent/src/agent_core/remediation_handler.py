@@ -86,10 +86,59 @@ class RemediationHandler:
             lockdown_engine.release_lock()
         elif action == "PatchSoftware":
             await self._patch_software(params.get("SoftwareName"))
+        elif action == "InstallSoftware":
+            await self._install_software(params.get("SoftwareName"))
+        elif action == "TriggerYaraScan":
+            await self._trigger_yara_scan(params.get("rules"))
         elif action == "MemoryForensic":
             await self._memory_forensic_scan()
         else:
             log_remediation(f"Unknown remediation action received: {action}")
+
+    async def _trigger_yara_scan(self, rules_string):
+        """[v3.0.0] Execute a YARA scan."""
+        if not rules_string:
+            log_remediation("YARA scan failed: No rules provided.")
+            return
+
+        try:
+            import yara
+            import os
+            
+            rules = yara.compile(source=rules_string)
+            scan_dir = os.path.expanduser("~")
+            log_remediation(f"Starting YARA scan in {scan_dir}")
+            
+            matches_found = []
+            
+            for root, dirs, files in os.walk(scan_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    try:
+                        matches = rules.match(file_path)
+                        if matches:
+                            matches_found.append({
+                                "file": file_path,
+                                "matches": [str(m) for m in matches]
+                            })
+                    except:
+                        pass
+
+            if matches_found:
+                log_remediation(f"YARA MATCHES FOUND: {len(matches_found)} files matched.")
+                if hasattr(self, 'socket_client') and self.socket_client:
+                    await self.socket_client.emit('forensic_result', {
+                        "agentId": self.agent_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "findings": matches_found,
+                        "type": "YARA_SCAN_MATCH"
+                    })
+            else:
+                log_remediation("YARA scan completed: No matches found.")
+        except ImportError:
+            log_remediation("YARA scan failed: yara-python is not installed.")
+        except Exception as e:
+            log_remediation(f"YARA scan error: {e}")
 
     async def _memory_forensic_scan(self):
         """[v2.5.0] Memory Forensic: Scans active process memory for fileless malware patterns."""
@@ -416,3 +465,52 @@ class RemediationHandler:
             log_remediation(f"Patch command dispatched for {software_name}")
         except Exception as e:
             log_remediation(f"Error executing PatchSoftware for {software_name}: {e}")
+
+    async def _install_software(self, software_name):
+        """[v3.0.0] Executes cross-platform install command for the requested software."""
+        if not software_name:
+            log_remediation("InstallSoftware failed: No SoftwareName provided.")
+            return
+            
+        import re
+        if not re.match(r"^[a-zA-Z0-9\.\_\- ]+$", software_name):
+            log_remediation(f"SECURITY VIOLATION: Blocked malformed software name: {software_name}")
+            return
+            
+        try:
+            log_remediation(f"Initiating Install for {software_name}")
+            system = platform.system()
+            
+            if system == "Linux":
+                cmd = ["/bin/bash", "-c", f"export DEBIAN_FRONTEND=noninteractive; apt-get install -y '{software_name}' || pip3 install '{software_name}'"]
+            elif system == "Windows":
+                cmd = ["powershell", "-WindowStyle", "Hidden", "-Command", f"winget install --silent --accept-package-agreements '{software_name}'"]
+            elif system == "Darwin":
+                cmd = ["/bin/bash", "-c", f"brew install '{software_name}'"]
+            else:
+                log_remediation(f"Installing not supported on {system}")
+                return
+
+            import sys
+            main_mod = sys.modules.get("__main__")
+            tamper_paused = False
+            if main_mod and hasattr(main_mod, 'tamper_mon') and main_mod.tamper_mon:
+                try:
+                    main_mod.tamper_mon.relax_protection()
+                    tamper_paused = True
+                    log_remediation("AntiTamperMonitor paused for software installation.")
+                except Exception as e:
+                    log_remediation(f"Failed to pause AntiTamperMonitor: {e}")
+
+            try:
+                subprocess.run(cmd, check=False)
+                log_remediation(f"Install command finished for {software_name}")
+            finally:
+                if tamper_paused:
+                    try:
+                        main_mod.tamper_mon.enforce_protection()
+                        log_remediation("AntiTamperMonitor enforced after software installation.")
+                    except Exception as e:
+                        log_remediation(f"Failed to enforce AntiTamperMonitor: {e}")
+        except Exception as e:
+            log_remediation(f"Error executing InstallSoftware for {software_name}: {e}")

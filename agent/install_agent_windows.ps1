@@ -24,9 +24,19 @@ param (
     [string]$VersionCheckUrl = "",
     [string]$InstallDir = "C:\Program Files\Monitorix",
     [string]$ExeName = "MonitorixAgent.exe",
-    [string]$ApiKey = "",
     [string]$BackendUrl = ""
 )
+
+$ApiKeyEnv = [Environment]::GetEnvironmentVariable("MONITORIX_API_KEY")
+if ([string]::IsNullOrEmpty($ApiKeyEnv)) {
+    Write-Host "Secure Installation: API Key not found in environment." -ForegroundColor Yellow
+    $secureKey = Read-Host "Please enter your Tenant API Key" -AsSecureString
+    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+    $ApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+} else {
+    $ApiKey = $ApiKeyEnv
+}
 
 #Requires -RunAsAdministrator
 $ErrorActionPreference = 'Stop'
@@ -118,6 +128,7 @@ try {
     if ($lockedProcesses) {
         Write-Host "    [!] Force killing locked processes in target directory..." -ForegroundColor Red
         $lockedProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
     }
 
     # B. Remove Scheduled Task
@@ -127,17 +138,13 @@ try {
     Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue
 
-    # D. Cleanup Installation Directory
-    $OldExe = Join-Path $InstallDir $ExeName
-    if (Test-Path $OldExe) {
-        Remove-Item $OldExe -Force -ErrorAction SilentlyContinue
-    }
-    
-    # E. [SECURITY] Scrub legacy certificates and sensitive keys
-    Write-Host "    [!] Eradicating legacy certificates to ensure zero key exposure..." -ForegroundColor Yellow
-    Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    # Ensure directory exists for exclusion
-    if (-not (Test-Path $InstallDir)) {
+    # D. Aggressive Cleanup Installation Directory (Preserving Data & Config)
+    if (Test-Path $InstallDir) {
+        Write-Host "    [!] Wiping old agent files in $InstallDir..." -ForegroundColor Yellow
+        Get-ChildItem -Path $InstallDir -File | Where-Object { $_.Name -ne "config.json" -and $_.Name -ne "conf.json" } | Remove-Item -Force -ErrorAction SilentlyContinue
+        # Scrub legacy certificates and sensitive keys explicitly
+        Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    } else {
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     }
     
@@ -219,12 +226,11 @@ try {
         throw "Deployment Verification Failed"
     }
 
-    # [v1.8.13] Grant "Users" Modify permissions to the folder
-    # This is CRITICAL for the User-session agent to write its lock/log in Program Files.
+    # [SEC] Removed overly permissive Users:(OI)(CI)M to prevent privilege escalation
     Write-Host "[*] Configuring folder permissions for User session..."
     try {
-        & icacls "$InstallDir" /grant "Users:(OI)(CI)M" /T /C /Q | Out-Null
-        Write-Host "    [+] Permissions granted to Users group." -ForegroundColor Green
+        & icacls "$InstallDir" /grant "Administrators:(OI)(CI)F" "SYSTEM:(OI)(CI)F" "Users:(OI)(CI)RX" /T /C /Q | Out-Null
+        Write-Host "    [+] Permissions hardened (Read/Execute for Users, Full Control for Admins)." -ForegroundColor Green
     } catch {
         Write-Warning "Failed to update folder permissions: $_"
     }
@@ -261,8 +267,9 @@ try {
             if (!(Test-Path $RegPath)) {
                 New-Item -Path $RegPath -Force | Out-Null
             }
-            New-ItemProperty -Path $RegPath -Name "TenantApiKey" -Value $ApiKey -PropertyType String -Force | Out-Null
-            Write-Host "    [+] API Key written to Registry (HKLM)." -ForegroundColor Green
+            # Remove plain text registry key entirely to prevent exposure
+            # New-ItemProperty -Path $RegPath -Name "TenantApiKey" -Value $ApiKey -PropertyType String -Force | Out-Null
+            Write-Host "    [+] (Skipped) Plaintext registry write disabled for security." -ForegroundColor Yellow
         } catch {
             Write-Warning "Failed to write API Key to Registry: $_"
         }

@@ -35,13 +35,15 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
     
     # Fallback to query param if logic changes, but auth dict is standard
     # Fallback to query param if logic changes, but auth dict is standard
-    # [AGENT AUTH] Check for API Key if no User Token
+    # [AGENT AUTH] Check for API Key or Machine Secret if no User Token
     api_key = None
+    machine_secret = None
     if auth:
         api_key = auth.get('apiKey')
+        machine_secret = auth.get('machineSecret')
 
-    if not token and not api_key:
-        print(f"[Socket.IO] Connection Rejected: No Token or API Key ({sid})")
+    if not token and not api_key and not machine_secret:
+        print(f"[Socket.IO] Connection Rejected: No Token, API Key, or Machine Secret ({sid})")
         return False # Reject
 
     # A. User Auth (JWT)
@@ -99,6 +101,37 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
                 return False
         except Exception as e:
             print(f"[Socket.IO] Agent Auth Error: {e}")
+            return False
+
+    # C. Agent Auth (Machine Secret / Zero Trust)
+    if machine_secret:
+        try:
+            async with AsyncSessionLocal() as db:
+                agent_id = auth.get('room') if auth else None
+                if not agent_id: return False
+                
+                res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+                agent = res.scalars().first()
+                
+                if agent and agent.MachineId:
+                    # Validate the provided machine secret directly
+                    # In this setup, MachineId IS the MachineSecret (or derived from it).
+                    # Actually, the agent has the MachineSecret. We need to verify it.
+                    # For a websocket, we can just issue a challenge as well.
+                    challenge = secrets.token_hex(16)
+                    await sio.save_session(sid, {
+                        'role': 'Agent',
+                        'is_agent': True,
+                        'tenantId': agent.TenantId,
+                        'agent_id': agent_id,
+                        'challenge': challenge,
+                        'is_verified': False
+                    })
+                    await sio.emit('identity_challenge', {'challenge': challenge}, to=sid)
+                    return True
+                return False
+        except Exception as e:
+            print(f"[Socket.IO] Agent Machine Secret Auth Error: {e}")
             return False
 
     return False

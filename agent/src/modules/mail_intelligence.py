@@ -153,16 +153,19 @@ class WindowsOutlookStrategy(MailMonitorStrategy):
                          tpath = os.path.join(temp_dir, f"mx_{int(time.time())}_{fname}")
                          att.SaveAsFile(tpath)
                          
-                         with open(tpath, "rb") as f:
-                             content = base64.b64encode(f.read()).decode()
-                         
-                         atts.append({
-                             "FileName": fname,
-                             "ContentType": "application/octet-stream",
-                             "Content": content,
-                             "Size": os.path.getsize(tpath)
-                         })
-                         os.remove(tpath)
+                         try:
+                             with open(tpath, "rb") as f:
+                                 content = base64.b64encode(f.read()).decode()
+                             
+                             atts.append({
+                                 "FileName": fname,
+                                 "ContentType": "application/octet-stream",
+                                 "Content": content,
+                                 "Size": os.path.getsize(tpath)
+                             })
+                         finally:
+                             if os.path.exists(tpath):
+                                 os.remove(tpath)
                      except: pass
              
              print(f"[WindowsOutlookStrategy] New Email: {subject}")

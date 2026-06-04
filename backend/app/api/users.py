@@ -97,8 +97,8 @@ async def create_user(
     )
 
 class ChangePasswordRequest(BaseModel):
-    OldPassword: str
-    NewPassword: str
+    oldPassword: str
+    newPassword: str
 
 @router.get("/", response_model=List[UserDto])
 async def get_users(
@@ -150,16 +150,16 @@ async def change_password(
     # Here we should support both plain (for seed compatibility) and hashed.
     
     is_valid = False
-    if user.PasswordHash == req.OldPassword: # Legacy/Seed compat
+    if user.PasswordHash == req.oldPassword: # Legacy/Seed compat
         is_valid = True
-    elif verify_password(req.OldPassword, user.PasswordHash): # Prod compat
+    elif verify_password(req.oldPassword, user.PasswordHash): # Prod compat
         is_valid = True
         
     if not is_valid:
          raise HTTPException(status_code=400, detail="Incorrect current password.")
 
     # 3. Update with Hashing
-    user.PasswordHash = get_password_hash(req.NewPassword)
+    user.PasswordHash = get_password_hash(req.newPassword)
     
     # [AUDIT]
     from datetime import datetime # type: ignore

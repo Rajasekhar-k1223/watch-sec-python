@@ -1,4 +1,8 @@
-import sqlite3 # type: ignore
+import keyring # type: ignore
+try:
+    from pysqlcipher3 import dbapi2 as sqlite3 # type: ignore
+except ImportError:
+    import sqlite3 # Fallback if sqlcipher is not installed
 import threading # type: ignore
 import time # type: ignore
 import json # type: ignore
@@ -29,8 +33,10 @@ class DataQueue:
         
         # [v2.1.0] Strong Encryption Anchor: Use Fernet for AES-256
         from cryptography.fernet import Fernet # type: ignore
-        key_seed = self.api_key.encode()
-        if self.machine_secret: key_seed += self.machine_secret
+        if self.machine_secret:
+            key_seed = self.machine_secret
+        else:
+            key_seed = self.api_key.encode()
         # Fernet requires a 32-byte URL-safe base64-encoded key
         derived_key = hashlib.sha256(key_seed).digest()
         self._fernet = Fernet(base64.urlsafe_b64encode(derived_key))
@@ -40,6 +46,17 @@ class DataQueue:
             'Accept': 'application/json',
             'Content-Type': 'application/json'
         })
+        
+        # [SEC] Cross-Platform SQLCipher Key Management via OS Keyring
+        self.sqlcipher_key = keyring.get_password("monitorix_agent", "db_key")
+        if not self.sqlcipher_key:
+            import secrets
+            self.sqlcipher_key = secrets.token_hex(32)
+            try:
+                keyring.set_password("monitorix_agent", "db_key", self.sqlcipher_key)
+            except Exception as e:
+                self.logger.warning(f"[SECURITY] Keyring failed: {e}. Falling back to machine secret derivation.")
+                self.sqlcipher_key = base64.urlsafe_b64encode(derived_key).decode()
 
         # [v1.8.37] Strict Transport Security: Force HTTPS for the backend
         if self.backend_url.startswith("http://") and "localhost" not in self.backend_url and "127.0.0.1" not in self.backend_url:
@@ -60,8 +77,9 @@ class DataQueue:
                 self._log(f"WRN: Database size ({db_size_mb:.1f}MB) exceeds limit. Purging oldest telemetry...")
                 with self.lock:
                     with sqlite3.connect(self.db_path) as conn:
+                        conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                         # Purge oldest 500 non-critical items
-                        conn.execute("""
+                        cursor = conn.execute("""
                             DELETE FROM queue 
                             WHERE id IN (
                                 SELECT id FROM queue 
@@ -70,6 +88,19 @@ class DataQueue:
                                 LIMIT 500
                             )
                         """)
+                        
+                        # [NEW] Emergency Fallback if DB is 100% full of 'high' priority items
+                        if cursor.rowcount == 0:
+                            self._log("WRN: Storage exhausted with only HIGH priority telemetry! Purging oldest critical data to prevent crash.")
+                            conn.execute("""
+                                DELETE FROM queue 
+                                WHERE id IN (
+                                    SELECT id FROM queue 
+                                    ORDER BY id ASC 
+                                    LIMIT 500
+                                )
+                            """)
+                        
                         conn.commit()
                         conn.execute("VACUUM") # Reclaim space
                 self._log("Purge complete. Storage Sovereignty restored.")
@@ -128,6 +159,10 @@ class DataQueue:
                 except: pass
 
             with sqlite3.connect(self.db_path, timeout=5.0) as conn:
+                # [SEC] Enable SQLCipher Encryption
+                conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
+                conn.execute("PRAGMA cipher_compatibility=4")
+                
                 # [v1.8.37] Hardening: Restrict file permissions immediately
                 try: os.chmod(self.db_path, 0o600)
                 except: pass
@@ -195,6 +230,7 @@ class DataQueue:
             
             with self.lock:
                 with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                     conn.execute(
                         "INSERT INTO queue (endpoint, payload, priority) VALUES (?, ?, ?)", 
                         (endpoint, encrypted_payload, priority)
@@ -207,6 +243,7 @@ class DataQueue:
         """Return estimated buffer size in bytes"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                 cursor = conn.execute("SELECT SUM(LENGTH(payload)) FROM queue")
                 result = cursor.fetchone()[0]
                 return result if result else 0
@@ -217,6 +254,7 @@ class DataQueue:
         """Return number of pending items"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                 cursor = conn.execute("SELECT COUNT(*) FROM queue")
                 return cursor.fetchone()[0]
         except:
@@ -260,12 +298,13 @@ class DataQueue:
         
         with self.lock:
             with sqlite3.connect(self.db_path) as conn:
+                conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                 if can_upload_bulk:
                     cursor = conn.execute("""
                         SELECT id, endpoint, payload, retries, priority 
                         FROM queue 
                         ORDER BY CASE WHEN priority = 'high' THEN 1 ELSE 0 END DESC, id ASC 
-                        LIMIT 50
+                        LIMIT 10
                     """)
                 else:
                     cursor = conn.execute("""
@@ -273,7 +312,7 @@ class DataQueue:
                         FROM queue 
                         WHERE priority = 'high'
                         ORDER BY id ASC 
-                        LIMIT 50
+                        LIMIT 10
                     """)
                 items = cursor.fetchall()
         
@@ -311,9 +350,27 @@ class DataQueue:
                 timestamp = datetime.utcnow().isoformat()
                 
                 # Derive HMAC Key (ApiKey + MachineSecret)
-                key_seed = self.api_key.encode()
-                if self.machine_secret: key_seed += self.machine_secret
+                if self.machine_secret:
+                    key_seed = self.machine_secret
+                else:
+                    key_seed = self.api_key.encode()
                 signing_key = hashlib.sha256(key_seed).digest()
+                
+                # [SEC] E2EE Payload Encryption
+                if self.machine_secret:
+                    try:
+                        import os, base64
+                        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                        aesgcm = AESGCM(signing_key)
+                        nonce = os.urandom(12)
+                        ct = aesgcm.encrypt(nonce, decrypted_payload.encode('utf-8'), None)
+                        decrypted_payload = json.dumps({
+                            "e2e_payload": base64.b64encode(ct).decode('utf-8'),
+                            "nonce": base64.b64encode(nonce).decode('utf-8'),
+                            "AgentId": self.agent_id
+                        })
+                    except Exception as e:
+                        self._log(f"E2EE Encryption Error: {e}")
                 
                 # Sign the raw payload + timestamp
                 msg = f"{decrypted_payload}|{timestamp}".encode('utf-8')
@@ -350,6 +407,7 @@ class DataQueue:
         if ids_to_delete:
             with self.lock:
                 with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(f"PRAGMA key='{self.sqlcipher_key}'")
                     placeholders = ','.join('?' * len(ids_to_delete))
                     conn.execute(f"DELETE FROM queue WHERE id IN ({placeholders})", ids_to_delete)
                     conn.commit()
@@ -358,3 +416,7 @@ class DataQueue:
                 self._log(f"Flushed {len(ids_to_delete)} items.")
             else:
                 self._log(f"Flushed {len(ids_to_delete)} items (Bandwidth Restricted).")
+                
+            # [Optimization] Force garbage collection of large JSON/E2EE strings
+            import gc
+            gc.collect()

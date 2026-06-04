@@ -33,7 +33,6 @@ async def get_audit_logs(
         raise HTTPException(status_code=403, detail="Not authorized")
     
     # [NEW] Handle Date Range
-    from datetime import timedelta # type: ignore
     if date_range:
         now = datetime.utcnow()
         if date_range == "24h":
