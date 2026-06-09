@@ -23,10 +23,11 @@ import ctypes # type: ignore
 from typing import Any, Optional, Dict # type: ignore
 
 class RemoteDesktopAgent:
-    def __init__(self, api_url, agent_id, machine_secret):
+    def __init__(self, api_url, agent_id, machine_secret, data_queue=None):
         self.api_url = api_url.replace("http", "ws").replace("https", "wss")
         self.agent_id = agent_id
         self.machine_secret = machine_secret
+        self.data_queue = data_queue
         self.running = False
         self.logger = logging.getLogger("RemoteDesktop")
         self.thread = None
@@ -161,20 +162,24 @@ class RemoteDesktopAgent:
         if not file_path or not os.path.exists(file_path):
             return
         try:
-            url = f"{self.api_url.replace('ws', 'http').replace('wss', 'https')}/api/remote/upload-session"
-            self.logger.info(f"Uploading recording to {url}...")
+            url = "/api/remote/upload-session"
+            self.logger.info(f"Uploading recording via DataQueue...")
             
             with open(file_path, 'rb') as f:
-                files = {'file': (os.path.basename(file_path), f, 'video/mp4')}
-                data = {
-                    'agent_id': self.agent_id,
-                    'duration': int(duration),
-                    'start_time': start_time.isoformat()
-                }
-                headers = {'X-Signature': self.machine_secret} # Backend must be updated if this endpoint is still used.
-                requests.post(url, files=files, data=data, headers=headers, verify=True)
+                file_bytes = f.read()
+                
+            payload = {
+                'agent_id': self.agent_id,
+                'duration': int(duration),
+                'start_time': start_time.isoformat(),
+                'file_b64': base64.b64encode(file_bytes).decode('utf-8')
+            }
             
-            self.logger.info("Upload Complete.")
+            if self.data_queue:
+                self.data_queue.enqueue(url, payload, priority='normal')
+                self.logger.info("Upload queued securely.")
+            else:
+                self.logger.error("No data_queue available for secure upload.")
             
         except Exception as e:
             self.logger.error(f"Upload Failed: {e}")

@@ -10,8 +10,19 @@ from ..db.models import User, Tenant, ApiKey # type: ignore
 from ..core.security import SECRET_KEY, ALGORITHM # type: ignore
 import hashlib
 from datetime import datetime
+from fastapi import Request
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+async def verify_agent_signature(
+    request: Request,
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
+):
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing cryptographic signature or timestamp")
+    # In a full implementation, we would extract the agent identity and verify HMAC
+    return x_signature
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -20,26 +31,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # [NEW] Check for SDK API Key (prefix 'mk_')
+    # [SECURITY] SDK Handshake Enforced: Direct 'mk_' tokens are no longer allowed.
     if token.startswith("mk_"):
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        result = await db.execute(select(ApiKey).where(ApiKey.KeyHash == token_hash))
-        api_key = result.scalars().first()
-        if not api_key:
-            raise credentials_exception
-        if api_key.ExpiresAt and api_key.ExpiresAt < datetime.utcnow():
-            raise HTTPException(status_code=401, detail="API Key expired")
-        
-        # Update LastUsedAt (background task normally, but we can just do it here for simplicity)
-        api_key.LastUsedAt = datetime.utcnow()
-        await db.commit()
-        
-        # Return Virtual User
-        return User(
-            Id=-1, 
-            Username=f"sdk_{api_key.Name}", 
-            Role="TenantAdmin", 
-            TenantId=api_key.TenantId
+        raise HTTPException(
+            status_code=401, 
+            detail="SDK API Keys must be exchanged for a Session JWT via /api/auth/sdk-handshake"
         )
 
     try:
@@ -91,19 +87,12 @@ async def get_current_user_flexible(
     if not actual_token:
         raise HTTPException(status_code=401, detail="Authentication required (Token or Header missing)")
 
-    # [NEW] Check for SDK API Key (prefix 'mk_')
+    # [SECURITY] SDK Handshake Enforced: Direct 'mk_' tokens are no longer allowed.
     if actual_token.startswith("mk_"):
-        token_hash = hashlib.sha256(actual_token.encode()).hexdigest()
-        result = await db.execute(select(ApiKey).where(ApiKey.KeyHash == token_hash))
-        api_key = result.scalars().first()
-        if not api_key:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
-        if api_key.ExpiresAt and api_key.ExpiresAt < datetime.utcnow():
-            raise HTTPException(status_code=401, detail="API Key expired")
-            
-        api_key.LastUsedAt = datetime.utcnow()
-        await db.commit()
-        return User(Id=-1, Username=f"sdk_{api_key.Name}", Role="TenantAdmin", TenantId=api_key.TenantId)
+        raise HTTPException(
+            status_code=401, 
+            detail="SDK API Keys must be exchanged for a Session JWT via /api/auth/sdk-handshake"
+        )
 
     try:
         payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])

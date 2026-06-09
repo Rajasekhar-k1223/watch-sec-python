@@ -117,57 +117,51 @@ async def report_event(
         
     auth_api_key = tenant.ApiKey
 
-    # Check for legacy (unsigned) handshake from older agents
-    is_legacy = False
+    # [SEC] Strict Zero-Trust Enforcement: No legacy fallback allowed.
     if not x_signature or not x_timestamp:
-        if api_key_sent and api_key_sent == auth_api_key:
-            is_legacy = True
-            print(f"[AUTH] [LEGACY] Graceful fallback allowed for legacy agent {dto.AgentId} (/report)")
-        else:
-            raise HTTPException(status_code=401, detail="Signature missing and legacy key mismatch")
+        raise HTTPException(status_code=401, detail="Missing cryptographic signature or timestamp")
         
-    if not is_legacy:
-        # Enforce Stealth key suppression for modern signed requests
-        if api_key_sent:
-            raise HTTPException(
-                status_code=403, 
-                detail="SECURITY VIOLATION: Cleartext API Key suppressed in Stealth Mode. Update Agent."
-            )
-            
-        import hmac, hashlib # type: ignore
-        if agent.MachineId:
-            key_seed = agent.MachineId.encode()
-        else:
-            key_seed = auth_api_key.encode()
-        signing_key = hashlib.sha256(key_seed).digest()
+    # Enforce Stealth key suppression for modern signed requests
+    if api_key_sent:
+        raise HTTPException(
+            status_code=403, 
+            detail="SECURITY VIOLATION: Cleartext API Key suppressed in Stealth Mode. Update Agent."
+        )
         
-        body_bytes = await request.body()
-        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-        is_valid = hmac.compare_digest(expected, x_signature)
-        
-        # [DEBUG] Log ApiKey-only signature for comparison
-        fallback_key = auth_api_key.encode()
-        expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
-        
-        # [SECURITY] Removed hardcoded agent ID bypass. All agents must pass HMAC validation.
-     
-        if not is_valid and not agent.MachineId:
-            # Fallback: Try ApiKey only (Initial registration handshake)
-            if hmac.compare_digest(expected_fallback, x_signature):
-                is_valid = True
-                print(f"[AUTH] Initial handshake successful for {dto.AgentId}. Awaiting MachineId sync via Heartbeat.")
-     
-        if not is_valid:
-            raise HTTPException(status_code=403, detail="Invalid signature")
+    import hmac, hashlib # type: ignore
+    if agent.MachineId:
+        key_seed = agent.MachineId.encode()
+    else:
+        key_seed = auth_api_key.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    
+    body_bytes = await request.body()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    is_valid = hmac.compare_digest(expected, x_signature)
+    
+    # [DEBUG] Log ApiKey-only signature for comparison
+    fallback_key = auth_api_key.encode()
+    expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+    
+    # [SECURITY] Removed hardcoded agent ID bypass. All agents must pass HMAC validation.
+    
+    if not is_valid and not agent.MachineId:
+        # Fallback: Try ApiKey only (Initial registration handshake)
+        if hmac.compare_digest(expected_fallback, x_signature):
+            is_valid = True
+            print(f"[AUTH] Initial handshake successful for {dto.AgentId}. Awaiting MachineId sync via Heartbeat.")
+    
+    if not is_valid:
+        raise HTTPException(status_code=403, detail="Invalid signature")
 
-        # [SEC] E2EE Payload Decryption
-        from ..core.security import decrypt_e2e_payload
-        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if (agent and agent.MachineSecret) else key_seed.decode())
-        if decrypted_bytes != body_bytes:
-            import json
-            decrypted_dict = json.loads(decrypted_bytes)
-            dto = SecurityEventDto(**decrypted_dict)
+    # [SEC] E2EE Payload Decryption
+    from ..core.security import decrypt_e2e_payload
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if (agent and agent.MachineSecret) else key_seed.decode())
+    if decrypted_bytes != body_bytes:
+        import json
+        decrypted_dict = json.loads(decrypted_bytes)
+        dto = SecurityEventDto(**decrypted_dict)
 
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
     
@@ -232,50 +226,44 @@ async def log_activity(
 
     auth_api_key = tenant.ApiKey
 
-    # Check for legacy (unsigned) handshake from older agents
-    is_legacy = False
+    # [SEC] Strict Zero-Trust Enforcement: No legacy fallback allowed.
     if not x_signature or not x_timestamp:
-        if api_key_sent and api_key_sent == auth_api_key:
-            is_legacy = True
-            print(f"[AUTH] [LEGACY] Graceful fallback allowed for legacy agent {dto.AgentId} (/activity)")
-        else:
-            raise HTTPException(status_code=401, detail="Signature missing and legacy key mismatch")
+        raise HTTPException(status_code=401, detail="Missing cryptographic signature or timestamp")
 
-    if not is_legacy:
-        # Enforce Stealth key suppression for modern signed requests
-        if api_key_sent:
-             raise HTTPException(status_code=403, detail="Stealth Breach: Plaintext Key Disallowed")
-             
-        import hmac, hashlib # type: ignore
-        if agent_obj.MachineId:
-            key_seed = agent_obj.MachineId.encode()
-        else:
-            key_seed = auth_api_key.encode()
-        signing_key = hashlib.sha256(key_seed).digest()
-    
-        body_bytes = await request.body()
-        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-    
-        # [v1.8.61] Cryptographic Handshake Fallback
-        is_valid = hmac.compare_digest(expected, x_signature)
-        
-        if not is_valid and not agent_obj.MachineId:
-            fallback_key = auth_api_key.encode()
-            expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(expected_fallback, x_signature):
-                is_valid = True
-    
-        if not is_valid:
-            raise HTTPException(status_code=403, detail="Invalid signature")
+    # Enforce Stealth key suppression for modern signed requests
+    if api_key_sent:
+         raise HTTPException(status_code=403, detail="Stealth Breach: Plaintext Key Disallowed")
+         
+    import hmac, hashlib # type: ignore
+    if agent_obj.MachineId:
+        key_seed = agent_obj.MachineId.encode()
+    else:
+        key_seed = auth_api_key.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
 
-        # [SEC] E2EE Payload Decryption
-        from ..core.security import decrypt_e2e_payload
-        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent_obj.MachineSecret if (agent_obj and agent_obj.MachineSecret) else key_seed.decode())
-        if decrypted_bytes != body_bytes:
-            import json
-            decrypted_dict = json.loads(decrypted_bytes)
-            dto = ActivityLogDto(**decrypted_dict)
+    body_bytes = await request.body()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+
+    # [v1.8.61] Cryptographic Handshake Fallback
+    is_valid = hmac.compare_digest(expected, x_signature)
+    
+    if not is_valid and not agent_obj.MachineId:
+        fallback_key = auth_api_key.encode()
+        expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected_fallback, x_signature):
+            is_valid = True
+
+    if not is_valid:
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    # [SEC] E2EE Payload Decryption
+    from ..core.security import decrypt_e2e_payload
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent_obj.MachineSecret if (agent_obj and agent_obj.MachineSecret) else key_seed.decode())
+    if decrypted_bytes != body_bytes:
+        import json
+        decrypted_dict = json.loads(decrypted_bytes)
+        dto = ActivityLogDto(**decrypted_dict)
 
     risk_score, risk_level = analyze_risk(dto.WindowTitle, dto.ProcessName, dto.Url or "")
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp

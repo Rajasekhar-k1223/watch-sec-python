@@ -184,6 +184,8 @@ class Agent(Base):
     ThreatScore = Column(Integer, default=0) # [v2.1.0] AI Risk Assessment
     RiskLevel = Column(String(50), default="Normal") # [v2.1.0] AI Risk Assessment
     BehavioralMetadataJson = Column(LONGTEXT, nullable=True) # [v2.7.5] Human Intelligence Analytics
+    RequireMtls = Column(Boolean, default=False) # [Layer 1] Require mTLS authentication
+    TpmHash = Column(String(255), nullable=True) # [Layer 1] TPM Attestation Hash
 
 class RefreshToken(Base):
     """Store hashed refresh tokens for session rotation [v2.0.0]"""
@@ -575,6 +577,7 @@ class ApiKey(Base):
     CreatedAt = Column(DateTime, default=datetime.utcnow)
     ExpiresAt = Column(DateTime, nullable=True) # None = Never expires
     LastUsedAt = Column(DateTime, nullable=True)
+    AllowedIpsJson = Column(Text, default="[]") # [SECURITY] IP Whitelist array
 
 class SoftwareRequest(Base):
     __tablename__ = "SoftwareRequests"
@@ -599,4 +602,360 @@ class AgentRegistrationToken(Base):
     TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
     TokenHash = Column(String(255), index=True, nullable=False) # SHA256 of the 6-digit PIN
     ExpiresAt = Column(DateTime, nullable=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class DeviceCertificate(Base):
+    __tablename__ = "DeviceCertificates"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True, nullable=False)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    SerialNumber = Column(String(128), unique=True, index=True, nullable=False)
+    PublicKeyHash = Column(String(255), nullable=False)
+    TpmAttestationData = Column(Text, nullable=True) # Proof of hardware origin
+    IssuedAt = Column(DateTime, default=datetime.utcnow)
+    ExpiresAt = Column(DateTime, nullable=False)
+    RevokedAt = Column(DateTime, nullable=True)
+    RevocationReason = Column(String(255), nullable=True)
+    Status = Column(String(50), default="ACTIVE") # ACTIVE, REVOKED, EXPIRED
+
+class DeviceRiskProfile(Base):
+    __tablename__ = "DeviceRiskProfiles"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), unique=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True)
+    
+    # Vector Scores (0-100)
+    UserRiskScore = Column(Float, default=0.0)
+    ProcessRiskScore = Column(Float, default=0.0)
+    DeviceRiskScore = Column(Float, default=0.0)
+    NetworkRiskScore = Column(Float, default=0.0)
+    BehavioralRiskScore = Column(Float, default=0.0)
+    ThreatIntelRiskScore = Column(Float, default=0.0)
+    
+    # Aggregated
+    TotalRiskScore = Column(Float, default=0.0)
+    RiskLevel = Column(String(20), default="Low") # Low, Medium, High, Critical
+    
+    LastCalculatedAt = Column(DateTime, default=datetime.utcnow)
+
+class ThreatFeed(Base):
+    __tablename__ = "ThreatFeeds"
+    Id = Column(Integer, primary_key=True, index=True)
+    Name = Column(String(255), unique=True)
+    SourceUrl = Column(String(500))
+    FeedType = Column(String(50)) # TAXII, MISP, CSV, JSON
+    PollIntervalMinutes = Column(Integer, default=1440)
+    LastSync = Column(DateTime, nullable=True)
+    IsActive = Column(Boolean, default=True)
+
+class IndicatorOfCompromise(Base):
+    __tablename__ = "IndicatorsOfCompromise"
+    Id = Column(Integer, primary_key=True, index=True)
+    IndicatorValue = Column(String(500), index=True) # The actual hash, IP, or domain
+    IndicatorType = Column(String(50), index=True) # IPv4, Domain, URL, SHA256, MD5, Email
+    FeedId = Column(Integer, ForeignKey("ThreatFeeds.Id"), nullable=True)
+    Severity = Column(String(50), default="High")
+    Confidence = Column(Integer, default=50) # 0-100
+    ValidUntil = Column(DateTime, nullable=True) # Decay model
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class DetectionRule(Base):
+    __tablename__ = "DetectionRules"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True) # Null = Global
+    Name = Column(String(255), nullable=False)
+    Type = Column(String(50), default="Sigma") # Sigma, YARA, Correlation
+    Category = Column(String(100)) # e.g., Credential Dumping, Persistence
+    MitreTactic = Column(String(100)) # e.g., TA0006 (Credential Access)
+    MitreTechnique = Column(String(100)) # e.g., T1003 (OS Credential Dumping)
+    Severity = Column(String(50), default="High")
+    RuleContent = Column(Text, nullable=False) # The raw Sigma YAML or YARA string
+    IsActive = Column(Boolean, default=True)
+
+class DetectionAlert(Base):
+    __tablename__ = "DetectionAlerts"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    RuleId = Column(Integer, ForeignKey("DetectionRules.Id"))
+    TelemetryId = Column(Integer) # Link back to the ActivityLog or Network log
+    MatchedContent = Column(Text) # The specific cmdline or file that triggered the rule
+    Status = Column(String(50), default="New") # New, Investigating, False Positive, Confirmed
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class UebaBaseline(Base):
+    __tablename__ = "UebaBaselines"
+    Id = Column(Integer, primary_key=True, index=True)
+    EntityId = Column(String(255), index=True) # E.g., User email, AgentId
+    EntityType = Column(String(50)) # "User" or "Device"
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True)
+    
+    # Baseline JSON payload storing statistical norms (mean, stddev, common IPs)
+    # e.g., {"common_ips": ["1.2.3.4", "5.6.7.8"], "login_hours": {"start": 8, "end": 18}}
+    ProfileDataJson = Column(Text, default="{}")
+    
+    LastUpdated = Column(DateTime, default=datetime.utcnow)
+
+class SoarPlaybook(Base):
+    __tablename__ = "SoarPlaybooks"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Name = Column(String(255), nullable=False)
+    TriggerCondition = Column(String(255)) # e.g. "RiskLevel == Critical"
+    ActionsJson = Column(Text) # Array of actions: [{"action": "LockDevice"}]
+    RequiresApproval = Column(Boolean, default=False)
+    IsActive = Column(Boolean, default=True)
+
+class SoarActionExecution(Base):
+    __tablename__ = "SoarActionExecutions"
+    Id = Column(Integer, primary_key=True, index=True)
+    PlaybookId = Column(Integer, ForeignKey("SoarPlaybooks.Id"), nullable=True)
+    TargetAgentId = Column(String(50), index=True)
+    ActionType = Column(String(100)) # "KillProcess", "LockDevice", etc.
+    Status = Column(String(50), default="Pending") # Pending, Executing, Success, Failed, RolledBack
+    ExecutedBy = Column(String(100), default="System") # System or AdminId
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class SoarApprovalQueue(Base):
+    __tablename__ = "SoarApprovalQueue"
+    Id = Column(Integer, primary_key=True, index=True)
+    ExecutionId = Column(Integer, ForeignKey("SoarActionExecutions.Id"))
+    Status = Column(String(50), default="Pending") # Pending, Approved, Denied
+    ApproverId = Column(String(100), nullable=True)
+    RequestedAt = Column(DateTime, default=datetime.utcnow)
+    ResolvedAt = Column(DateTime, nullable=True)
+
+class SavedHunt(Base):
+    __tablename__ = "SavedHunts"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Name = Column(String(255), nullable=False)
+    Description = Column(Text, nullable=True)
+    QueryString = Column(Text, nullable=False)
+    CreatedBy = Column(String(100), nullable=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class InvestigationWorkspace(Base):
+    __tablename__ = "InvestigationWorkspaces"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Title = Column(String(255), nullable=False)
+    Status = Column(String(50), default="Open") # Open, Closed
+    OwnerId = Column(String(100), nullable=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class InvestigationEvidence(Base):
+    __tablename__ = "InvestigationEvidence"
+    Id = Column(Integer, primary_key=True, index=True)
+    WorkspaceId = Column(Integer, ForeignKey("InvestigationWorkspaces.Id"))
+    TelemetryId = Column(Integer)
+    TelemetryType = Column(String(50)) # Process, Network, File, DNS
+    AnalystNote = Column(Text, nullable=True)
+    AddedAt = Column(DateTime, default=datetime.utcnow)
+
+class ProcessLineageNode(Base):
+    __tablename__ = "ProcessLineageNodes"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), index=True)
+    
+    # Process Identifiers
+    ProcessId = Column(Integer, index=True)
+    ParentProcessId = Column(Integer, index=True, nullable=True)
+    
+    # Metadata
+    ProcessName = Column(String(255))
+    CommandLine = Column(Text)
+    ImagePath = Column(String(500))
+    Sha256 = Column(String(64), nullable=True)
+    
+    # Threat Intelligence & Detection
+    MitreTactic = Column(String(100), nullable=True)
+    MitreTechnique = Column(String(100), nullable=True)
+    IsMalicious = Column(Boolean, default=False)
+    
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class DlpRule(Base):
+    __tablename__ = "DlpRules"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Name = Column(String(100), nullable=False) # e.g. "Credit Cards"
+    Category = Column(String(50)) # PII, PHI, Secrets
+    Pattern = Column(String(500), nullable=False) # Regex string
+    IsActive = Column(Boolean, default=True)
+
+class DlpPolicy(Base):
+    __tablename__ = "DlpPolicies"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Name = Column(String(100), nullable=False)
+    TargetChannelsJson = Column(Text) # ["USB", "Clipboard", "Email"]
+    Action = Column(String(50), default="Alert") # Alert, Block, Audit
+    IsActive = Column(Boolean, default=True)
+
+class DlpPolicyRuleLink(Base):
+    __tablename__ = "DlpPolicyRuleLinks"
+    Id = Column(Integer, primary_key=True, index=True)
+    PolicyId = Column(Integer, ForeignKey("DlpPolicies.Id"))
+    RuleId = Column(Integer, ForeignKey("DlpRules.Id"))
+
+class DlpViolation(Base):
+    __tablename__ = "DlpViolations"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), index=True)
+    PolicyId = Column(Integer, ForeignKey("DlpPolicies.Id"))
+    RuleId = Column(Integer, ForeignKey("DlpRules.Id"))
+    Channel = Column(String(50)) # e.g. "USB"
+    MatchedContentObfuscated = Column(Text) # E.g., "4532 **** **** 1234"
+    ActionTaken = Column(String(50)) # Alerted, Blocked
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class CloudMetadata(Base):
+    __tablename__ = "CloudMetadata"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True, unique=True)
+    Provider = Column(String(50)) # AWS, Azure, GCP
+    AccountId = Column(String(100))
+    Region = Column(String(50))
+    Zone = Column(String(50))
+    InstanceId = Column(String(100))
+    InstanceType = Column(String(100))
+    IamRole = Column(String(255))
+    TagsJson = Column(Text)
+    LastSeen = Column(DateTime, default=datetime.utcnow)
+
+class ContainerAsset(Base):
+    __tablename__ = "ContainerAssets"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    ContainerId = Column(String(255), index=True, unique=True)
+    ImageName = Column(String(500))
+    ImageHash = Column(String(255))
+    State = Column(String(50)) # Running, Stopped
+    IsPrivileged = Column(Boolean, default=False)
+    PortsJson = Column(Text)
+    MountsJson = Column(Text)
+    LastSeen = Column(DateTime, default=datetime.utcnow)
+
+class KubernetesAsset(Base):
+    __tablename__ = "KubernetesAssets"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    ClusterName = Column(String(255))
+    Namespace = Column(String(255))
+    PodName = Column(String(255))
+    NodeName = Column(String(255))
+    ServiceAccount = Column(String(255))
+    LabelsJson = Column(Text)
+    LastSeen = Column(DateTime, default=datetime.utcnow)
+
+class CloudSecuritySignal(Base):
+    __tablename__ = "CloudSecuritySignals"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    ResourceType = Column(String(50)) # Container, K8s, CloudVM
+    ResourceId = Column(String(255))
+    SignalType = Column(String(100)) # e.g. ExposedDockerSocket
+    Severity = Column(String(50))
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class RansomwareIncident(Base):
+    __tablename__ = "RansomwareIncidents"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    ProcessId = Column(Integer)
+    FilePath = Column(String(500), nullable=True)
+    HeuristicMatched = Column(String(100)) # MassFileRename, VssadminDeletion, HighEntropy
+    Severity = Column(String(50), default="Critical")
+    IsActive = Column(Boolean, default=True)
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class RansomwareMitigationLog(Base):
+    __tablename__ = "RansomwareMitigationLogs"
+    Id = Column(Integer, primary_key=True, index=True)
+    IncidentId = Column(Integer, ForeignKey("RansomwareIncidents.Id"), index=True)
+    ActionTaken = Column(String(100)) # ProcessKilled, HostQuarantined
+    Success = Column(Boolean, default=True)
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class DeceptionCampaign(Base):
+    __tablename__ = "DeceptionCampaigns"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
+    Name = Column(String(255), nullable=False)
+    Type = Column(String(50)) # File, Credential, NetworkShare
+    PayloadTemplate = Column(Text, nullable=True) # e.g. "username=admin\npassword=fake123"
+    IsActive = Column(Boolean, default=True)
+
+class HoneyToken(Base):
+    __tablename__ = "HoneyTokens"
+    Id = Column(Integer, primary_key=True, index=True)
+    CampaignId = Column(Integer, ForeignKey("DeceptionCampaigns.Id"))
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    TokenPath = Column(String(500), index=True) # E.g., C:\Users\Admin\passwords.txt
+    TokenHash = Column(String(64), nullable=True)
+    DeployedAt = Column(DateTime, default=datetime.utcnow)
+
+class DeceptionAlert(Base):
+    __tablename__ = "DeceptionAlerts"
+    Id = Column(Integer, primary_key=True, index=True)
+    TokenId = Column(Integer, ForeignKey("HoneyTokens.Id"))
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    ProcessId = Column(Integer)
+    Action = Column(String(50)) # Read, Modified, Executed, LoginAttempt
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class ForensicEvidence(Base):
+    __tablename__ = "ForensicEvidence"
+    Id = Column(Integer, primary_key=True, index=True)
+    WorkspaceId = Column(Integer, ForeignKey("InvestigationWorkspaces.Id"), nullable=True)
+    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    Filename = Column(String(255))
+    Type = Column(String(50)) # MemoryDump, Pcap, Screenshot, Mft
+    StorageUri = Column(String(500)) # S3 URI
+    Sha256Hash = Column(String(64))
+    SizeInBytes = Column(Integer)
+    Status = Column(String(50), default="PendingUpload") # PendingUpload, Verified, Corrupted
+    IsLegalHold = Column(Boolean, default=False)
+    UploadedAt = Column(DateTime, default=datetime.utcnow)
+
+class ChainOfCustodyLog(Base):
+    __tablename__ = "ChainOfCustodyLogs"
+    Id = Column(Integer, primary_key=True, index=True)
+    EvidenceId = Column(Integer, ForeignKey("ForensicEvidence.Id"), index=True)
+    Action = Column(String(100)) # Uploaded, Downloaded, HashVerified, LegalHoldApplied
+    PerformedBy = Column(String(100)) # Admin / System
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class AiCopilotSession(Base):
+    __tablename__ = "AiCopilotSessions"
+    Id = Column(Integer, primary_key=True, index=True)
+    WorkspaceId = Column(Integer, ForeignKey("InvestigationWorkspaces.Id"), nullable=True)
+    AdminId = Column(String(100))
+    StartedAt = Column(DateTime, default=datetime.utcnow)
+
+class AiCopilotMessage(Base):
+    __tablename__ = "AiCopilotMessages"
+    Id = Column(Integer, primary_key=True, index=True)
+    SessionId = Column(Integer, ForeignKey("AiCopilotSessions.Id"), index=True)
+    Role = Column(String(50)) # User, System, Assistant
+    Content = Column(Text)
+    TokensUsed = Column(Integer, default=0)
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class AiIncidentReport(Base):
+    __tablename__ = "AiIncidentReports"
+    Id = Column(Integer, primary_key=True, index=True)
+    AlertId = Column(Integer, ForeignKey("DetectionAlerts.Id"), index=True)
+    ExecutiveSummary = Column(Text)
+    TechnicalDetails = Column(Text)
+    RemediationSteps = Column(Text)
+    GeneratedAt = Column(DateTime, default=datetime.utcnow)
+
+class FederatedTrust(Base):
+    __tablename__ = "FederatedTrusts"
+    Id = Column(Integer, primary_key=True, index=True)
+    PlatformName = Column(String(100), unique=True, index=True) # SentinelX, UniCloudOps, RedRainbow
+    ApiKeyHash = Column(String(255), nullable=False)
+    PermissionsJson = Column(Text) # e.g. ["ReadTelemetry", "TriggerSoar", "WriteIntel"]
+    IsActive = Column(Boolean, default=True)
     CreatedAt = Column(DateTime, default=datetime.utcnow)

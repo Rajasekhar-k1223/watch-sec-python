@@ -1453,7 +1453,7 @@ def apply_policy(config_src):
             global shadow_audit
             if not shadow_audit:
                 cls = load_module("Shadow")
-                if cls: shadow_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, machine_secret=_get_machine_secret())
+                if cls: shadow_audit = cls(AGENT_ID, API_KEY, BACKEND_URL, data_queue=data_queue)
             if shadow_audit: shadow_audit.start()
         elif shadow_audit:
             shadow_audit.stop()
@@ -1515,6 +1515,15 @@ def apply_policy(config_src):
         elif isinstance(blocked_apps_str, list) and app_enforcement:
             app_enforcement.set_blocked_apps(blocked_apps_str)
             
+        # [NEW] Apply Offline Buffer Size
+        if data_queue and "MaxOfflineBufferMb" in config_src:
+            try:
+                new_size = int(config_src["MaxOfflineBufferMb"])
+                if new_size >= 100: # Enforce absolute minimum 100MB
+                    data_queue.max_db_size_mb = new_size
+                    log_to_file(f"[Policy] Updated MaxOfflineBufferMb to {new_size}MB")
+            except: pass
+            
         # Persist important policy flags
         sync_config_to_file(config_src, [
             "VisualActivityEnabled", "UsbComplianceEnabled", "NetworkAuditEnabled",
@@ -1523,7 +1532,7 @@ def apply_policy(config_src):
             "PrintAuditEnabled", "ShadowAuditEnabled", "SessionForensicEnabled",
             "VoiceIntelligenceEnabled", "VulnerabilityIntelligenceEnabled",
             "MonitoringConsentRequired", "ShadowPaths", "TenantApiKey", "BandwidthConfig", 
-            "ScreenshotInterval", "ScreenshotQuality", "ScreenshotResolution", "MaxScreenshotSize"
+            "ScreenshotInterval", "ScreenshotQuality", "ScreenshotResolution", "MaxScreenshotSize", "MaxOfflineBufferMb"
         ])
         
         # [v2.8.0] SHIELD RESILIENCE: Update Offline Vault
@@ -1560,9 +1569,25 @@ def upload_update_log_to_backend():
             if log_content:
                 log_to_file("Uploading update debug log to backend...")
                 payload = {"AgentId": AGENT_ID, "Log": log_content}
+                
+                import hmac, hashlib
+                from datetime import timezone
+                json_payload = json.dumps(payload, separators=(',', ':'))
+                timestamp = datetime.now(timezone.utc).isoformat()
+                
+                ms = _get_machine_secret()
+                key_seed = ms if ms else API_KEY.encode()
+                msg = f"{json_payload}|{timestamp}".encode('utf-8')
+                signing_key = hashlib.sha256(key_seed).digest()
+                signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                
+                headers = {"X-Signature": signature, "X-Timestamp": timestamp}
+                if not ms: headers["X-Tenant-Api-Key"] = API_KEY
+                
                 response = http_session.post(
                     f"{BACKEND_URL}/api/agents/{AGENT_ID}/update-log", 
-                    json=payload, 
+                    data=json_payload, 
+                    headers=headers,
                     timeout=15, 
                     verify=True # Enforce SSL verification
                 )
@@ -2425,15 +2450,32 @@ def ensure_secure_modules():
                 self.data_queue.enqueue("/api/events/report", payload)
             except: pass
         else:
+            import json, hmac, hashlib
             payload = {
                 "AgentId": self.agent_id,
-                "TenantApiKey": self.api_key,
                 "Type": event_type,
                 "Details": details,
                 "Timestamp": datetime.utcnow().isoformat()
             }
             try:
-                self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
+                json_payload = json.dumps(payload, separators=(',', ':'))
+                ts = payload["Timestamp"]
+                key_seed = self.api_key.encode()
+                msg = f"{json_payload}|{ts}".encode('utf-8')
+                signing_key = hashlib.sha256(key_seed).digest()
+                signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                headers = {
+                    "X-Signature": signature,
+                    "X-Timestamp": ts,
+                    "X-Tenant-Api-Key": self.api_key
+                }
+                self.session.post(
+                    f"{self.backend_url}/api/events/report",
+                    data=json_payload,
+                    headers=headers,
+                    timeout=5,
+                    verify=True
+                )
             except: pass"""
                 content = re.sub(
                     r'def _report_audit\(self,\s*event_type,\s*details\):.*?self\.session\.post\(.*?verify=True\).*?except:\s*pass',
@@ -2753,9 +2795,23 @@ async def main():
                     "Timestamp": datetime.utcnow().isoformat()
                  }
                  try:
+                     import hmac, hashlib
+                     from datetime import timezone
+                     json_payload = json.dumps(payload, separators=(',', ':'))
+                     ts = datetime.now(timezone.utc).isoformat()
+                     ms = _get_machine_secret()
+                     key_seed = ms if ms else API_KEY.encode()
+                     msg = f"{json_payload}|{ts}".encode('utf-8')
+                     signing_key = hashlib.sha256(key_seed).digest()
+                     signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                     
+                     headers = {"X-Signature": signature, "X-Timestamp": ts}
+                     if not ms: headers["X-Tenant-Api-Key"] = API_KEY
+
                      requests.post(
                          f"{BACKEND_URL}/api/agents/{AGENT_ID}/events", 
-                         json=payload, 
+                         data=json_payload, 
+                         headers=headers,
                          timeout=10, 
                          verify=http_session.verify
                      )
@@ -3027,13 +3083,29 @@ async def main_async():
             if BACKEND_URL and AGENT_ID:
                 log_to_file(f"Reporting Shutdown to {BACKEND_URL}...")
                 import requests # type: ignore
+                import hmac, hashlib
+                from datetime import timezone
+                
+                payload = {
+                    "EventType": "SystemShutdown",
+                    "Message": "Agent process is shutting down (System Exit or Service Stop).",
+                    "Timestamp": datetime.utcnow().isoformat()
+                }
+                json_payload = json.dumps(payload, separators=(',', ':'))
+                ts = datetime.now(timezone.utc).isoformat()
+                ms = _get_machine_secret()
+                key_seed = ms if ms else API_KEY.encode()
+                msg = f"{json_payload}|{ts}".encode('utf-8')
+                signing_key = hashlib.sha256(key_seed).digest()
+                signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                
+                headers = {"X-Signature": signature, "X-Timestamp": ts}
+                if not ms: headers["X-Tenant-Api-Key"] = API_KEY
+
                 requests.post(
                     f"{BACKEND_URL}/api/agents/{AGENT_ID}/events",
-                    json={
-                        "EventType": "SystemShutdown",
-                        "Message": "Agent process is shutting down (System Exit or Service Stop).",
-                        "Timestamp": datetime.utcnow().isoformat()
-                    },
+                    data=json_payload,
+                    headers=headers,
                     timeout=5,
                     verify=http_session.verify
                 )
@@ -3077,13 +3149,43 @@ if __name__ == "__main__":
             
         print(f"Requesting software '{software_name}' (Reason: {reason}) from {b_url}...")
         import requests
+        import json
+        import hmac, hashlib
+        from datetime import timezone, datetime
         try:
-            resp = requests.post(f"{b_url}/api/software_requests", json={
+            payload = {
                 "AgentId": a_id,
                 "SoftwareName": software_name,
                 "Reason": reason,
                 "TenantApiKey": a_key
-            }, verify=False)
+            }
+            json_payload = json.dumps(payload, separators=(',', ':'))
+            ts = datetime.now(timezone.utc).isoformat()
+            
+            # Since this is a CLI command, _get_machine_secret might not be available directly in this scope
+            # without reading the token file. We'll try to read it.
+            ms = ""
+            token_file = os.path.join(BASE_DIR, "agent_token.key")
+            try:
+                if os.path.exists(token_file):
+                    with open(token_file, 'r') as f:
+                        ms = f.read().strip()
+            except: pass
+            
+            key_seed = ms if ms else a_key.encode()
+            msg = f"{json_payload}|{ts}".encode('utf-8')
+            signing_key = hashlib.sha256(key_seed).digest()
+            signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+            
+            headers = {"X-Signature": signature, "X-Timestamp": ts}
+            if not ms: headers["X-Tenant-Api-Key"] = a_key
+
+            resp = requests.post(
+                f"{b_url}/api/software_requests", 
+                data=json_payload,
+                headers=headers,
+                verify=False
+            )
             if resp.status_code == 200:
                 print("Request submitted successfully. Waiting for admin approval.")
             else:

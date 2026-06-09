@@ -104,6 +104,7 @@ class AgentSettingsUpdate(BaseModel):
     ShadowPaths: Optional[List[str]] = None
     ScreenshotInterval: Optional[int] = 60
     GeolocationEnabled: Optional[bool] = None
+    MaxOfflineBufferMb: Optional[int] = 2000
 
 class AgentHeartbeat(BaseModel):
     AgentId: str

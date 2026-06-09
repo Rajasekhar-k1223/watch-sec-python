@@ -10,12 +10,12 @@ from watchdog.events import FileSystemEventHandler # type: ignore
 from agent_core.privacy_utils import PrivacyRedactor
 
 class ShadowHandler(FileSystemEventHandler):
-    def __init__(self, agent_id, api_key, backend_url, vault_path):
+    def __init__(self, agent_id, api_key, backend_url, vault_path, data_queue=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.vault_path = vault_path
-        self.session = requests.Session()
+        self.data_queue = data_queue
         # To avoid multiple triggers for the same file write
         self.processed_files = {} # path -> last_processed_time
 
@@ -75,7 +75,7 @@ class ShadowHandler(FileSystemEventHandler):
             print(f"[Shadow] Error shadowing {src_path}: {e}")
 
     def _upload_shadow(self, local_path, original_path, delete_on_success=True):
-        url = f"{self.backend_url}/api/uploads/shadow"
+        import base64
         try:
             filename = os.path.basename(original_path)
             import hashlib # type: ignore
@@ -86,35 +86,36 @@ class ShadowHandler(FileSystemEventHandler):
             content_hash = sha256_hash.hexdigest()
 
             with open(local_path, 'rb') as f:
-                files = {'file': (filename, f)}
-                data = {'agent_id': self.agent_id}
-                headers = {
-                    'X-Tenant-Api-Key': self.api_key,
-                    'X-Content-Sha256': content_hash
-                }
+                file_bytes = f.read()
                 
-                resp = self.session.post(url, files=files, data=data, headers=headers, timeout=60, verify=True)
-                if resp.status_code == 200:
-                    redacted_name = PrivacyRedactor.redact_text(filename)
-                    print(f"[Shadow] Uploaded successfully: {redacted_name}")
-                    if delete_on_success:
-                        try:
-                            os.remove(local_path)
-                            # print(f"[Shadow] Cleaned up local copy")
-                        except: pass
-                else:
-                    print(f"[Shadow] Upload failed ({resp.status_code})")
+            payload = {
+                "agent_id": self.agent_id,
+                "filename": filename,
+                "content_sha256": content_hash,
+                "file_b64": base64.b64encode(file_bytes).decode('utf-8')
+            }
+            
+            if self.data_queue:
+                self.data_queue.enqueue("/api/uploads/shadow", payload, priority='normal')
+                redacted_name = PrivacyRedactor.redact_text(filename)
+                print(f"[Shadow] Queued securely: {redacted_name}")
+                if delete_on_success:
+                    try:
+                        os.remove(local_path)
+                    except: pass
+            else:
+                print(f"[Shadow] Error: No data_queue available")
         except Exception as e:
             redacted_orig = PrivacyRedactor.redact_text(original_path)
             print(f"[Shadow] Upload error for {redacted_orig}: {e}")
 
 class ShadowMonitor:
-    def __init__(self, agent_id, api_key, backend_url, vault_path="shadow_vault", machine_secret=None):
+    def __init__(self, agent_id, api_key, backend_url, vault_path="shadow_vault", data_queue=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
         self.vault_path = vault_path
-        self.machine_secret = machine_secret
+        self.data_queue = data_queue
         self.observer = None
         self.active_watches = {} # drive_path -> watch_info
         self.running = False
@@ -155,7 +156,7 @@ class ShadowMonitor:
         
         try:
             print(f"[Shadow] Starting monitor on drive: {drive_path}")
-            handler = ShadowHandler(self.agent_id, self.api_key, self.backend_url, self.vault_path)
+            handler = ShadowHandler(self.agent_id, self.api_key, self.backend_url, self.vault_path, self.data_queue)
             if not self.observer:
                 self.observer = Observer()
                 self.observer.start()
@@ -218,7 +219,7 @@ class ShadowMonitor:
 
     def _do_upload(self, local_path, original_filename):
         # Move actual upload logic to a helper for reuse
-        handler = ShadowHandler(self.agent_id, self.api_key, self.backend_url, self.vault_path)
+        handler = ShadowHandler(self.agent_id, self.api_key, self.backend_url, self.vault_path, self.data_queue)
         handler._upload_shadow(local_path, original_filename, delete_on_success=True)
 
 # Update ShadowHandler to support deletion on success

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Header # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Header, Request # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from datetime import datetime # type: ignore
@@ -485,17 +485,26 @@ async def on_webrtc_ice_candidate(sid, data):
 
 @router.post("/upload-session")
 async def upload_session_recording(
-    agent_id: str = Form(...),
-    duration: int = Form(...),
-    start_time: str = Form(...), # ISO Format
-    file: UploadFile = File(...),
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key")
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # [v1.8.37] SECURITY: Authenticate Agent Identity
-    if not x_tenant_api_key:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    body_bytes = await request.body()
+    
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature")
         
+    try:
+        req_data = json.loads(body_bytes)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+        
+    agent_id = req_data.get("agent_id") or req_data.get("AgentId")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id missing")
+
     # Validate Agent & Tenant Ownership
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = result.scalars().first()
@@ -505,20 +514,51 @@ async def upload_session_recording(
 
     res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
     tenant = res_t.scalars().first()
-    if not tenant or tenant.ApiKey != x_tenant_api_key:
-        print(f"[SECURITY ALERT] Remote Session upload spoofing attempt for Agent {agent_id}")
-        raise HTTPException(status_code=403, detail="Unauthorized session upload")
+    if not tenant:
+        raise HTTPException(status_code=403, detail="Tenant not found")
+
+    # Cryptographic Validation
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature):
+             is_valid = True
+             
+    if not is_valid:
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    # E2EE Decryption
+    from ..core.security import decrypt_e2e_payload
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if agent.MachineSecret else key_seed.decode())
+    if decrypted_bytes != body_bytes:
+        req_data = json.loads(decrypted_bytes)
 
     # [SECURITY] Plan Check
     verify_feature_access(tenant.Plan, "LiveStreamEnabled")
-
-    # Save File
-    filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}.mp4"
-    file_path = os.path.join(STORAGE_DIR, filename)
     
     try:
+        file_b64 = req_data.get("file_b64")
+        if not file_b64:
+             raise HTTPException(status_code=400, detail="file_b64 missing")
+        file_bytes = base64.b64decode(file_b64)
+        
+        duration = int(req_data.get("duration", 0))
+        start_time = req_data.get("start_time", datetime.utcnow().isoformat())
+
+        # Save File
+        filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}.mp4"
+        file_path = os.path.join(STORAGE_DIR, filename)
+        
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_bytes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
         

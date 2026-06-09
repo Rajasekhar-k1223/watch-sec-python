@@ -110,6 +110,113 @@ async def login_for_access_token(
         }
     }
 
+class SdkHandshakeRequest(BaseModel):
+    sdk_key: str
+
+@router.post("/sdk-handshake", response_model=LoginResponse)
+async def sdk_handshake(
+    payload: SdkHandshakeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _ = Depends(RateLimiter(times=10, seconds=60)) # [SEC] rate limit
+):
+    """[SECURITY] Exchange a static SDK key for a short-lived Session JWT"""
+    from ..db.models import ApiKey
+    import json
+    
+    if not payload.sdk_key.startswith("mk_"):
+        raise HTTPException(status_code=401, detail="Invalid SDK Key format")
+        
+    token_hash = hashlib.sha256(payload.sdk_key.encode()).hexdigest()
+    result = await db.execute(select(ApiKey).where(ApiKey.KeyHash == token_hash))
+    api_key = result.scalars().first()
+    
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Invalid SDK Key")
+        
+    if api_key.ExpiresAt and api_key.ExpiresAt < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="SDK Key expired")
+
+    # [SECURITY] SDK IP Whitelist Validation
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    real_ip = request.headers.get("X-Real-IP")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    elif real_ip:
+        client_ip = real_ip
+    else:
+        client_ip = request.client.host if request.client else "Unknown"
+
+    try:
+        allowed_ips = json.loads(api_key.AllowedIpsJson) if api_key.AllowedIpsJson else []
+    except Exception:
+        allowed_ips = []
+        
+    if allowed_ips and client_ip not in allowed_ips:
+        raise HTTPException(status_code=403, detail=f"Handshake Forbidden: IP address {client_ip} is not authorized for this SDK Key")
+        
+    # Update usage
+    api_key.LastUsedAt = datetime.utcnow()
+    await db.commit()
+    
+    # Generate short-lived JWT (15 mins)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={
+            "sub": f"sdk_{api_key.Name}", 
+            "role": "TenantAdmin", 
+            "tenantId": api_key.TenantId
+        },
+        expires_delta=access_token_expires
+    )
+    
+    # Generate standard refresh token
+    refresh_token_raw = secrets.token_urlsafe(64)
+    refresh_token_hash = hashlib.sha256(refresh_token_raw.encode()).hexdigest()
+    
+    # We use a placeholder user ID (-1) for SDK tokens in the RefreshToken table
+    # But wait, RefreshToken requires a valid UserId due to foreign keys. 
+    # Let's find the tenant admin or skip DB insert for SDK refresh tokens.
+    # Actually, let's just find the first TenantAdmin user for this tenant to bind the refresh token.
+    user_res = await db.execute(select(User).where(User.TenantId == api_key.TenantId, User.Role == "TenantAdmin"))
+    admin_user = user_res.scalars().first()
+    
+    if not admin_user:
+        raise HTTPException(status_code=500, detail="Cannot issue SDK token: No TenantAdmin found for tenant")
+        
+    new_rt = RefreshToken(
+        UserId=admin_user.Id,
+        TokenHash=refresh_token_hash,
+        ExpiresAt=datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        UserAgent=request.headers.get("User-Agent", "SDK"),
+        IpAddress=request.client.host if request.client else None
+    )
+    db.add(new_rt)
+    
+    # Log Audit
+    from ..db.models import AuditLog
+    audit = AuditLog(
+        TenantId=api_key.TenantId,
+        Actor=f"SDK ({api_key.Name})",
+        Action="SDK Handshake",
+        Target="Auth System",
+        Details="Static SDK key exchanged for Session JWT",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return {
+        "token": access_token,
+        "refresh_token": refresh_token_raw,
+        "user": {
+            "username": f"sdk_{api_key.Name}",
+            "role": "TenantAdmin",
+            "tenantId": api_key.TenantId,
+            "plan": "API" # Placeholder
+        }
+    }
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

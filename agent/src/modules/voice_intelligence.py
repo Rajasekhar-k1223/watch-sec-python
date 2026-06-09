@@ -8,10 +8,13 @@ from datetime import datetime # type: ignore
 from typing import Optional, Any # type: ignore
 
 class SpeechMonitor:
-    def __init__(self, agent_id, api_key, backend_url):
+    def __init__(self, agent_id, api_key, backend_url, data_queue=None):
         self.agent_id = agent_id
         self.api_key = api_key
         self.backend_url = backend_url
+        self.data_queue = data_queue
+        self.policy_enabled = False  # Set by policy engine before starting
+        self.notified_user = False
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.sample_rate = 44100
@@ -19,10 +22,17 @@ class SpeechMonitor:
         
     def start(self):
         if self.running: return
+        if not self.policy_enabled:
+            print("[Speech] Voice monitoring disabled by policy. Not starting.")
+            return
         self.running = True
         self.thread = threading.Thread(target=self._record_loop, daemon=True)
         self.thread.start()
-        print("[Speech] Started.")
+        
+        if not self.notified_user:
+            # Privacy notification
+            print("[Speech] Privacy Notice: Voice monitoring is active for enterprise security.")
+            self.notified_user = True
 
     def stop(self):
         self.running = False
@@ -68,14 +78,23 @@ class SpeechMonitor:
     def _upload_audio(self, filepath):
         if not os.path.exists(filepath): return
         
+        # Enforce max chunk size (5MB)
+        if os.path.getsize(filepath) > 5 * 1024 * 1024:
+            print("[Speech] Chunk exceeds 5MB limit, discarding.")
+            return
+            
         try:
-            with open(filepath, 'rb') as f:
-                files = {'file': (filepath, f, 'audio/wav')}
-                headers = {'X-Tenant-Api-Key': self.api_key}
-                # Using the generic upload endpoint or specific speech one
-                url = f"{self.backend_url}/api/speech/upload/{self.agent_id}"
-                
-                requests.post(url, files=files, headers=headers, verify=True, timeout=30)
-                # print(f"[Speech] Uploaded {filepath}")
+            if self.data_queue:
+                import base64
+                with open(filepath, 'rb') as f:
+                    audio_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    
+                self.data_queue.enqueue(
+                    endpoint="/api/speech/upload",
+                    data={"filename": os.path.basename(filepath), "audio_b64": audio_b64, "agent_id": self.agent_id},
+                    priority='normal'
+                )
+            else:
+                print("[Speech] No data_queue available for secure upload.")
         except Exception as e:
-            print(f"[Speech] Upload Failed: {e}")
+            print(f"[Speech] Queueing Failed: {e}")

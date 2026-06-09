@@ -67,3 +67,6 @@ evdev; sys_platform == "linux"
 #   apt-get install -y zenity   (Debian/Ubuntu)
 #   dnf install -y zenity       (Fedora/RHEL)
 yara-python
+cryptography
+websockets
+psutil

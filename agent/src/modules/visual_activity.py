@@ -108,15 +108,32 @@ class ScreenshotCapture:
                 self.data_queue.enqueue("/api/events/report", payload)
             except: pass
         else:
+            import json, hmac, hashlib
             payload = {
                 "AgentId": self.agent_id,
-                "TenantApiKey": self.api_key,
                 "Type": event_type,
                 "Details": details,
                 "Timestamp": datetime.utcnow().isoformat()
             }
             try:
-                self.session.post(f"{self.backend_url}/api/events/report", json=payload, timeout=5, verify=True)
+                json_payload = json.dumps(payload, separators=(',', ':'))
+                ts = payload["Timestamp"]
+                key_seed = self.api_key.encode() # In fallback, we might only have api_key
+                msg = f"{json_payload}|{ts}".encode('utf-8')
+                signing_key = hashlib.sha256(key_seed).digest()
+                signature = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+                headers = {
+                    "X-Signature": signature,
+                    "X-Timestamp": ts,
+                    "X-Tenant-Api-Key": self.api_key
+                }
+                self.session.post(
+                    f"{self.backend_url}/api/events/report",
+                    data=json_payload,
+                    headers=headers,
+                    timeout=5,
+                    verify=True
+                )
             except: pass
 
     def _loop(self):
@@ -252,23 +269,22 @@ class ScreenshotCapture:
         self._send_raw_bytes(img_bytes, ext, mime)
         
     def _send_raw_bytes(self, img_bytes: bytes, ext="webp", mime="image/webp"):
+        import base64
         now = datetime.utcnow()
-        files = {
-            'file': (f'screen.{ext}', img_bytes, mime)
-        }
-        data = {
-            'agent_id': self.agent_id,
-            'created_at': now.isoformat()
+        
+        payload = {
+            "agent_id": self.agent_id,
+            "created_at": now.isoformat(),
+            "filename": f"screen.{ext}",
+            "file_b64": base64.b64encode(img_bytes).decode('utf-8')
         }
         
-        try:
-            url = f"{self.backend_url}/api/screenshots/upload"
-            resp = self.session.post(url, files=files, data=data, timeout=20, verify=True)
-            if resp.status_code == 200:
-                print(f"[Screens] Sent Screenshot")
-            else:
-                print(f"[Screens] Upload Failed: {resp.status_code}")
-                raise Exception(f"Upload Failed: {resp.status_code}")
-        except Exception as e:
-            print(f"[Screens] Network Error: {e}")
-            raise
+        if self.data_queue:
+            try:
+                self.data_queue.enqueue("/api/screenshots/upload", payload, priority='normal')
+                print(f"[Screens] Queued Screenshot via DataQueue")
+            except Exception as e:
+                print(f"[Screens] Queue Error: {e}")
+                raise
+        else:
+            print("[Screens] Error: No data_queue available for secure upload.")

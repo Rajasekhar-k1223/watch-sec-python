@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -24,10 +24,17 @@ class CreateSoftwareRequest(BaseModel):
 @router.post("")
 async def create_software_request(
     payload: CreateSoftwareRequest,
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
     """Agent calls this endpoint to request new software."""
-    # Authenticate via TenantApiKey if provided, otherwise find agent
+    body_bytes = await request.body()
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature")
+
     agent_query = select(Agent).where(Agent.AgentId == payload.AgentId)
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalars().first()
@@ -35,12 +42,25 @@ async def create_software_request(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
         
-    if payload.TenantApiKey:
-        tenant_query = select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey)
-        tenant_result = await db.execute(tenant_query)
-        tenant = tenant_result.scalars().first()
-        if not tenant or tenant.Id != agent.TenantId:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+    tenant_query = select(Tenant).where(Tenant.Id == agent.TenantId)
+    tenant_result = await db.execute(tenant_query)
+    tenant = tenant_result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=403, detail="Tenant not found")
+        
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature): is_valid = True
+             
+    if not is_valid: raise HTTPException(status_code=403, detail="Invalid signature")
     
     # Create request
     new_request = SoftwareRequest(

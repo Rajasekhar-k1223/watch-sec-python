@@ -63,8 +63,8 @@ class DataQueue:
              self.logger.warning("[SECURITY] Insecure backend URL detected. Upgrading to HTTPS.")
              self.backend_url = self.backend_url.replace("http://", "https://")
         
-        # [v1.8.37] Local Buffer Sovereignty: Hard Storage Ceiling (500MB)
-        self.max_db_size_mb = 500
+        # [v1.8.37] Local Buffer Sovereignty: Hard Storage Ceiling (Default: 2GB)
+        self.max_db_size_mb = 2000
         
         # Init DB
         self._init_db()
@@ -101,9 +101,25 @@ class DataQueue:
                                 )
                             """)
                         
+                        # [ALERT] Notify SOC of Local Data Loss
+                        import json
+                        from datetime import datetime
+                        alert_payload = {
+                            "AgentId": self.agent_id,
+                            "Type": "OFFLINE_BUFFER_PURGED",
+                            "Details": f"Buffer exceeded {self.max_db_size_mb}MB. Dropped 500 oldest telemetry events to prevent disk exhaustion.",
+                            "Timestamp": datetime.utcnow().isoformat(),
+                            "Severity": "High"
+                        }
+                        encrypted_alert = self._encrypt(json.dumps(alert_payload))
+                        conn.execute(
+                            "INSERT INTO queue (endpoint, payload, priority) VALUES (?, ?, ?)", 
+                            ("/api/events/report", encrypted_alert, "high")
+                        )
+                        
                         conn.commit()
                         conn.execute("VACUUM") # Reclaim space
-                self._log("Purge complete. Storage Sovereignty restored.")
+                self._log("Purge complete. Storage Sovereignty restored. Alert generated.")
         except Exception as e:
             self._log(f"Storage limit enforcement failed: {e}")
 

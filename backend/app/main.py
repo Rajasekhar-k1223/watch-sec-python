@@ -300,6 +300,7 @@ Instrumentator().instrument(app).expose(app)
 # [v2.1.0] Modular Plugin Architecture: Dynamic Route Discovery
 plugin_manager.app = app
 plugin_manager.load_api_plugins("app.api")
+plugin_manager.load_api_plugins("app.api.v2")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Header # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, Request, Header # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from typing import List, Optional # type: ignore
@@ -19,34 +19,84 @@ router = APIRouter()
 UPLOAD_DIR = "uploads/audio"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@router.post("/upload/{agent_id}")
+@router.post("/upload")
 async def upload_speech_log(
-    agent_id: str,
-    file: UploadFile = File(...),
-    duration: float = Form(0.0),
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key")
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # 1. Validate Tenant via Header (matches Agent logic)
-    if not x_tenant_api_key:
-        raise HTTPException(status_code=401, detail="Authentication required")
+    body_bytes = await request.body()
+    
+    # [SEC] Strict Zero-Trust Enforcement
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing cryptographic signature or timestamp")
         
-    result_t = await db.execute(select(Tenant).where(Tenant.ApiKey == x_tenant_api_key))
+    try:
+        req_data = json.loads(body_bytes)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        
+    agent_id = req_data.get("agent_id") or req_data.get("AgentId")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id missing")
+        
+    # 1. Validate Tenant & Agent
+    result_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result_a.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    result_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
     tenant = result_t.scalars().first()
     if not tenant:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
+        raise HTTPException(status_code=401, detail="Tenant not found")
+        
+    # 2. Cryptographic Validation
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature):
+             is_valid = True
+             
+    if not is_valid:
+        raise HTTPException(status_code=403, detail="Invalid signature")
+        
+    # 3. E2EE Decryption
+    from ..core.security import decrypt_e2e_payload
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if agent.MachineSecret else key_seed.decode())
+    if decrypted_bytes != body_bytes:
+        req_data = json.loads(decrypted_bytes)
+        
     # [SECURITY] Plan Check
     verify_feature_access(tenant.Plan, "SpeechMonitorEnabled")
+    
+    import base64
+    audio_b64 = req_data.get("audio_b64")
+    if not audio_b64:
+        raise HTTPException(status_code=400, detail="audio_b64 missing")
+    file_bytes = base64.b64decode(audio_b64)
+    
+    duration = float(req_data.get("duration", 0.0))
+    filename = req_data.get("filename", f"{agent_id}_audio.wav")
 
-    # 2. Save Audio File
+    # 4. Save Audio File
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    safe_filename = os.path.basename(file.filename)
-    filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    safe_filename = os.path.basename(filename)
+    save_filename = f"{agent_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_filename}"
+    file_path = os.path.join(UPLOAD_DIR, save_filename)
     
     with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        buffer.write(file_bytes)
 
     # 3. Transcription (v2.6.0: Intelligent Keyword Mock)
     # In a full deployment, this would call OpenAI Whisper or Azure Speech
@@ -71,7 +121,7 @@ async def upload_speech_log(
     # 5. Save DB Record
     log = SpeechLog(
         AgentId=agent_id,
-        AudioUrl=f"/api/speech/download/{filename}", # Fixed URL path
+        AudioUrl=f"/api/speech/download/{save_filename}", # Fixed URL path
         TranscribedText=transcribed_text,
         Confidence=0.92, 
         DurationSeconds=duration,

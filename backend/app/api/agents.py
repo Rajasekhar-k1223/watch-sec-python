@@ -234,13 +234,39 @@ from ..core.rate_limit import RateLimiter # type: ignore
 async def report_update_log(
     agent_id: str,
     payload: AgentUpdateLogRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_tenant_by_key)
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # [SECURITY] Ownership check
-    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
-    if not agent_res.scalars().first():
-         raise HTTPException(status_code=403, detail="Access denied")
+    body_bytes = await request.body()
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+         raise HTTPException(status_code=404, detail="Agent not found")
+         
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=403, detail="Tenant not found")
+
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature): is_valid = True
+             
+    if not is_valid: raise HTTPException(status_code=403, detail="Invalid signature")
     # [SECURITY] [v1.8.36] Path Traversal Protection
     # Strictly validate agent_id to prevent directory traversal payloads (../../)
     import re
@@ -265,14 +291,39 @@ async def report_update_log(
 async def report_update_failure(
     agent_id: str,
     payload: AgentUpdateFailedRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_tenant_by_key)
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # [SECURITY] Ownership check
-    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
+    body_bytes = await request.body()
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
     agent = agent_res.scalars().first()
     if not agent:
-         raise HTTPException(status_code=403, detail="Access denied")
+         raise HTTPException(status_code=404, detail="Agent not found")
+         
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=403, detail="Tenant not found")
+
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature): is_valid = True
+             
+    if not is_valid: raise HTTPException(status_code=403, detail="Invalid signature")
     # Log the failure in EventLogs
     event = EventLog(
         AgentId=agent_id,
@@ -1441,23 +1492,39 @@ async def agent_heartbeat(
 async def report_agent_event(
     agent_id: str,
     payload: AgentEvent,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    tenant: Tenant = Depends(get_tenant_by_key)
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    # Backward Compatibility for API Key
-    if not tenant:
-        if not payload.TenantApiKey:
-             raise HTTPException(status_code=401, detail="API Key required")
-        result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.TenantApiKey))
-        tenant = result_tenant.scalars().first()
-        if not tenant:
-            raise HTTPException(status_code=401, detail="Invalid API Key")
+    body_bytes = await request.body()
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature")
 
-    # 1. Find Agent & Verify Tenant Ownership
-    result = await db.execute(
-        select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id)
-    )
-    agent = result.scalars().first()
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+         raise HTTPException(status_code=404, detail="Agent not found")
+         
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=403, detail="Tenant not found")
+
+    import hmac, hashlib
+    key_seed = agent.MachineId.encode() if agent.MachineId else tenant.ApiKey.encode()
+    signing_key = hashlib.sha256(key_seed).digest()
+    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+    
+    is_valid = hmac.compare_digest(expected, x_signature)
+    if not is_valid and not agent.MachineId:
+         fallback_key = tenant.ApiKey.encode()
+         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+         if hmac.compare_digest(expected_fallback, x_signature): is_valid = True
+             
+    if not is_valid: raise HTTPException(status_code=403, detail="Invalid signature")
     
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
