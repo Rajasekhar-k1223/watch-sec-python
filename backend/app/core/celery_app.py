@@ -52,4 +52,8 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.behavior_analysis.analyze_workforce_productivity",
         "schedule": 3600.0,  # Every hour
     },
+    "agentless-polling": {
+        "task": "tasks.agentless.poll_endpoints",
+        "schedule": 300.0,  # Every 5 minutes
+    },
 }
