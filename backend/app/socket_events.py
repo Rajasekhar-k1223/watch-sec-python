@@ -460,3 +460,126 @@ async def on_agent_ice_candidate(sid: str, data: Dict[str, Any]):
     if agent_id:
         await sio.emit('ice_candidate', data, room=agent_id)
 
+# ======================================================
+# AGENTLESS TERMINAL (SSH)
+# ======================================================
+
+import asyncssh # type: ignore
+import asyncio # type: ignore
+
+# Dictionary to hold active SSH processes mapped by Socket ID and Endpoint IP
+# active_terminals[sid][endpoint_ip] = process
+active_terminals = {}
+
+@sio.on('start_agentless_terminal')
+async def on_start_agentless_terminal(sid: str, data: Dict[str, Any]):
+    session = await sio.get_session(sid)
+    if not session or session.get('role') not in ['SuperAdmin', 'TenantAdmin']:
+        await sio.emit('agentless_terminal_output', {'output': '\r\nAccess Denied\r\n'}, to=sid)
+        return
+        
+    endpoint_ip = data.get('ip')
+    terminal_id = data.get('terminal_id')
+    if not endpoint_ip or not terminal_id: return
+    
+    # Spawn background task so we don't block the socket thread
+    asyncio.create_task(_run_agentless_ssh(sid, endpoint_ip, terminal_id))
+
+async def _run_agentless_ssh(sid: str, endpoint_ip: str, terminal_id: str):
+    from .services.agentless_engine import agentless_engine # type: ignore
+    from .db.session import AsyncSessionLocal # type: ignore
+    from .db.models import AgentlessEndpoint # type: ignore
+    try:
+        async with AsyncSessionLocal() as db:
+            # 1. Tenant Isolation Check
+            res = await db.execute(select(AgentlessEndpoint).where(AgentlessEndpoint.IpAddress == endpoint_ip))
+            endpoint = res.scalars().first()
+            
+            if not endpoint:
+                await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\nError: Endpoint not found in database.\r\n'}, to=sid)
+                return
+                
+            session = await sio.get_session(sid)
+            user_tenant_id = int(session.get('tenantId', -1))
+            if session.get('role') != 'SuperAdmin' and endpoint.TenantId != user_tenant_id:
+                await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\n[SECURITY ALERT] Access Denied: Tenant Isolation Enforcement blocked cross-tenant connection.\r\n'}, to=sid)
+                return
+                
+            await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': f'\r\n[Monitorix] Initializing secure connection to {endpoint_ip}...\r\n'}, to=sid)
+            
+            creds = await agentless_engine.get_vault_credentials_for_terminal(endpoint_ip, db)
+            
+        if creds['type'] != 'ssh_key' and creds['type'] != 'password':
+            await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\nError: Unsupported credential type.\r\n'}, to=sid)
+            return
+            
+        # Construct kwargs based on credential type
+        connect_kwargs = {
+            'host': endpoint_ip,
+            'username': creds['username'],
+        }
+        
+        # 2. Trust On First Use (TOFU)
+        if endpoint.SshHostKeyFingerprint:
+            connect_kwargs['known_hosts'] = asyncssh.import_known_hosts(f"{endpoint_ip} {endpoint.SshHostKeyFingerprint}")
+        else:
+            connect_kwargs['known_hosts'] = None # Accept any on first use
+        
+        if creds['type'] == 'ssh_key':
+            connect_kwargs['client_keys'] = [asyncssh.import_private_key(creds['secret'])]
+        elif creds['type'] == 'password':
+            connect_kwargs['password'] = creds['secret']
+            
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            # Handle TOFU save
+            if not endpoint.SshHostKeyFingerprint:
+                new_fingerprint = conn.get_server_host_key().export_public_key('openssh').decode('utf-8').strip()
+                async with AsyncSessionLocal() as db_update:
+                    res_up = await db_update.execute(select(AgentlessEndpoint).where(AgentlessEndpoint.IpAddress == endpoint_ip))
+                    ep_up = res_up.scalars().first()
+                    ep_up.SshHostKeyFingerprint = new_fingerprint
+                    await db_update.commit()
+                await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\n[Security] First time connecting. Host Key Fingerprint saved (TOFU).\r\n'}, to=sid)
+            
+            # Request a pseudo-terminal (PTY)
+            async with conn.create_process(term_type='xterm-256color', term_size=(80, 24)) as process:
+                if sid not in active_terminals:
+                    active_terminals[sid] = {}
+                active_terminals[sid][terminal_id] = process
+                
+                await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\n--- SECURE SHELL ESTABLISHED ---\r\n'}, to=sid)
+                
+                # Continuously read from stdout/stderr and pipe to websocket
+                while True:
+                    out = await process.stdout.read(4096)
+                    if not out:
+                        break
+                    # If bytes, decode, else string
+                    if isinstance(out, bytes):
+                        out = out.decode('utf-8', errors='replace')
+                    await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': out}, to=sid)
+                    
+    except asyncssh.PermissionDenied:
+        await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\n[Terminal Error] Permission Denied: Invalid credentials in vault.\r\n'}, to=sid)
+    except asyncssh.KeyExchangeFailed as e:
+        await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': f'\r\n[CRITICAL SECURITY ALERT] Host Key Mismatch! Possible Man-In-The-Middle Attack.\r\nConnection Aborted.\r\nDetails: {str(e)}\r\n'}, to=sid)
+    except Exception as e:
+        await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': f'\r\n[Terminal Error] {str(e)}\r\n'}, to=sid)
+    finally:
+        if sid in active_terminals and terminal_id in active_terminals[sid]:
+            del active_terminals[sid][terminal_id]
+        await sio.emit('agentless_terminal_output', {'terminal_id': terminal_id, 'ip': endpoint_ip, 'output': '\r\n--- CONNECTION CLOSED ---\r\n'}, to=sid)
+
+@sio.on('agentless_terminal_input')
+async def on_agentless_terminal_input(sid: str, data: Dict[str, Any]):
+    char = data.get('input')
+    terminal_id = data.get('terminal_id')
+    
+    if sid in active_terminals and terminal_id in active_terminals[sid] and char:
+        process = active_terminals[sid][terminal_id]
+        # Write to process stdin
+        if isinstance(char, str):
+            process.stdin.write(char)
+        else:
+            process.stdin.write(char.decode('utf-8'))
+

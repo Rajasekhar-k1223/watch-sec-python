@@ -97,7 +97,7 @@ async def get_system_versions():
         "latest": LATEST_AGENT_VERSION
     }
 
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, Request # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, Request, Header # type: ignore
 @router.get("")
 @router.get("/", include_in_schema=False)
 async def get_agents(
@@ -1633,7 +1633,7 @@ async def toggle_screenshots(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     agent.ScreenshotsEnabled = enabled
@@ -1682,7 +1682,7 @@ async def update_screenshot_settings(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     # Update Fields
@@ -1738,7 +1738,7 @@ async def toggle_location(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     agent.LocationTrackingEnabled = enabled
@@ -1784,7 +1784,7 @@ async def toggle_usb(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     agent.UsbBlockingEnabled = enabled
@@ -1883,7 +1883,7 @@ async def toggle_network(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     agent.NetworkMonitoringEnabled = enabled
@@ -1929,7 +1929,7 @@ async def toggle_file_dlp(
     
     # Check Tenant Scoping
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     agent.FileDlpEnabled = enabled
@@ -1976,7 +1976,7 @@ async def toggle_agent_feature(
     
     # Check Tenant Scoping & Role
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
         
         if current_user.Role != "TenantAdmin":
@@ -2057,7 +2057,7 @@ async def take_screenshot(
         
         # Check Tenant Scoping
         if current_user.Role != "SuperAdmin":
-            if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+            if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
                  raise HTTPException(status_code=403, detail="Not authorized")
 
         # Emit Command to Agent Room
@@ -2154,7 +2154,7 @@ async def update_settings(
         raise HTTPException(status_code=404, detail="Agent not found")
         
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
 
     # Partial Updates: only change fields if they are explicitly sent
@@ -2266,7 +2266,7 @@ async def update_blocked_apps(
         raise HTTPException(status_code=404, detail="Agent not found")
         
     if current_user.Role != "SuperAdmin":
-        if not current_user.TenantId or agent.TenantId != current_user.TenantId:
+        if current_user.Role != "SuperAdmin" and (not current_user.TenantId or agent.TenantId != current_user.TenantId):
              raise HTTPException(status_code=403, detail="Not authorized")
              
     # [NEW] Enforce Plan

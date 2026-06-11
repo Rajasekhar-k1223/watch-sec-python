@@ -27,6 +27,9 @@ class Tenant(Base):
     UnlockKeyHash = Column(String(255), nullable=True)
     LockdownReason = Column(Text, nullable=True) # [v2.6.8] Audit justification for banner
     
+    # [NEW] Enterprise Agentless Check
+    AgentlessEnabled = Column(Boolean, default=True)
+    
     # Bandwidth Configuration [NEW]
     bandwidth_config = Column(JSON, default={
         "max_rate_kbps": 0,  # 0 = unlimited
@@ -310,20 +313,12 @@ class AgentSoftware(Base):
     HasPatchAvailable = Column(Boolean, default=False) # [NEW]
     LastSeen = Column(DateTime, default=datetime.utcnow)
 
-class SoftwareRequest(Base):
-    __tablename__ = "software_requests"
-    Id = Column(Integer, primary_key=True, index=True)
-    AgentId = Column(String(50), ForeignKey("agents.AgentId"))
-    TenantId = Column(Integer, ForeignKey("tenants.TenantId"))
-    SoftwareName = Column(String(100))
-    Status = Column(String(50), default="Pending") # Pending, Approved, Rejected
-    RequestedAt = Column(DateTime, default=datetime.utcnow)
-    ResolvedAt = Column(DateTime, nullable=True)
+
 
 class YaraRule(Base):
     __tablename__ = "yara_rules"
     Id = Column(Integer, primary_key=True, index=True)
-    TenantId = Column(Integer, ForeignKey("tenants.TenantId"))
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"))
     Name = Column(String(100))
     RuleContent = Column(Text)
     CreatedAt = Column(DateTime, default=datetime.utcnow)
@@ -959,3 +954,27 @@ class FederatedTrust(Base):
     PermissionsJson = Column(Text) # e.g. ["ReadTelemetry", "TriggerSoar", "WriteIntel"]
     IsActive = Column(Boolean, default=True)
     CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class AgentlessEndpoint(Base):
+    __tablename__ = "AgentlessEndpoints"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    IpAddress = Column(String(50), nullable=False)
+    Hostname = Column(String(255), nullable=True)
+    OsType = Column(String(50), default="Linux") # Linux, Windows
+    MacAddress = Column(String(50), nullable=True)
+    SshHostKeyFingerprint = Column(Text, nullable=True) # Trust on First Use (TOFU)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    LastSeen = Column(DateTime, default=datetime.utcnow)
+
+class AgentlessCredential(Base):
+    __tablename__ = "AgentlessCredentials"
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=False)
+    EndpointId = Column(Integer, ForeignKey("AgentlessEndpoints.Id"), nullable=False)
+    AuthType = Column(String(50), default="SSH_KEY") # SSH_KEY, PASSWORD, WINRM
+    Username = Column(String(255), nullable=False)
+    EncryptedPassword = Column(Text, nullable=True) # AES-256-GCM Vault Data
+    EncryptedKey = Column(Text, nullable=True) # AES-256-GCM Vault Data
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+

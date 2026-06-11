@@ -17,6 +17,7 @@ from .api import ( # type: ignore
     searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
     notifications, report_downloads, incidents, network, apikeys # type: ignore
 ) # type: ignore
+from .api.v2 import agentless # type: ignore
 import asyncio # type: ignore
 
 @asynccontextmanager
@@ -94,6 +95,56 @@ async def lifespan(app: FastAPI):
                 print(f"[Trial Expiration Error] {e}")
     
     asyncio.create_task(expire_trials_task())
+    
+    # [NEW] Agentless Background Telemetry Task
+    async def agentless_background_telemetry():
+        from .services.agentless_engine import AgentlessEngine
+        from .db.session import AsyncSessionLocal
+        from .db.models import AgentlessCredential
+        from sqlalchemy.future import select
+
+        engine = AgentlessEngine()
+        
+        # Initial wait before starting loop
+        await asyncio.sleep(5)
+        
+        while True:
+            try:
+                from .db.models import AgentlessEndpoint
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(AgentlessCredential, AgentlessEndpoint)
+                        .join(AgentlessEndpoint, AgentlessCredential.EndpointId == AgentlessEndpoint.Id)
+                    )
+                    creds_endpoints = result.all()
+                    
+                for c, ep in creds_endpoints:
+                    try:
+                        ip = ep.IpAddress
+                        os_type = ep.OsType
+                        if not ip: continue
+                        
+                        # Poll
+                        if os_type.lower() == 'windows':
+                            data = await engine.poll_windows_wmi(ip, str(c.Id))
+                        else:
+                            data = await engine.poll_linux_ssh(ip, str(c.Id))
+                        data['ip'] = ip
+                        data['os'] = os_type
+                        
+                        # Broadcast to UI
+                        print(f"[Agentless] Emitting telemetry for {ip}", flush=True)
+                        await sio.emit('AgentlessTelemetry', data)
+                    except Exception as poll_err:
+                        print(f"[Agentless Telemetry Error] {c.Id}: {poll_err}", flush=True)
+                        
+            except Exception as e:
+                print(f"[Agentless Telemetry Task Error] {e}", flush=True)
+
+            await asyncio.sleep(30) # Poll every 30 seconds
+
+    asyncio.create_task(agentless_background_telemetry())
+    
     yield
     # --- SHUTDOWN ---
     print("--- SHUTDOWN ---")
@@ -164,6 +215,7 @@ app.include_router(report_downloads.router, prefix="/api", tags=["Report Downloa
 app.include_router(incidents.router, prefix="/api/incidents", tags=["Incidents"])
 app.include_router(network.router, prefix="/api/network", tags=["Network"])
 app.include_router(apikeys.router, prefix="/api/apikeys", tags=["API Keys"])
+app.include_router(agentless.router, prefix="/api/v2/agentless", tags=["Agentless"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

@@ -205,3 +205,22 @@ async def update_tenant(
     await db.commit()
     return tenant
 
+@router.put("/{tenant_id}/agentless")
+async def toggle_tenant_agentless(
+    tenant_id: int,
+    enabled: bool,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
+    tenant = result.scalars().first()
+    
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    tenant.AgentlessEnabled = enabled
+    await db.commit()
+    return {"status": "success", "AgentlessEnabled": enabled}

@@ -19,6 +19,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
       - ./backend:/app
@@ -43,6 +44,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
       - ./backend:/app
@@ -75,6 +77,7 @@ services:
       - CELERY_BROKER_URL=redis://watch-sec-redis:6379/0
       - CELERY_RESULT_BACKEND=redis://watch-sec-redis:6379/0
       - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend:/app
       - ./backend/storage:/app/storage

@@ -15,14 +15,19 @@ def poll_all_agentless_endpoints():
     logger.info("[v2.2.0] Background Task: Polling Agentless Endpoints...")
     
     async def _run_poll():
-        # Simulated database fetch for agentless endpoints
-        # In a real scenario, this queries the DB for managed IP addresses
-        endpoints = [
-            {"ip": "10.0.0.15", "os": "Linux", "cred": "vault-id-123"},
-            {"ip": "10.0.0.22", "os": "Windows", "cred": "vault-id-456"}
-        ]
+        from sqlalchemy.future import select
+        from ..db.models import AgentlessEndpoint, AgentlessCredential
         
-        for ep in endpoints:
+        endpoints_data = []
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(AgentlessEndpoint))
+            for ep in result.scalars().all():
+                cred_res = await db.execute(select(AgentlessCredential).where(AgentlessCredential.EndpointId == ep.Id))
+                if cred_res.scalars().first(): # Only poll if we have credentials linked
+                    endpoints_data.append({"ip": ep.IpAddress, "os": ep.OsType, "cred": "vault-default"})
+        
+        
+        for ep in endpoints_data:
             try:
                 if ep["os"] == "Linux":
                     data = await agentless_engine.poll_linux_ssh(ep["ip"], ep["cred"])

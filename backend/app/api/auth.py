@@ -26,6 +26,7 @@ class UserDto(BaseModel):
     role: str
     tenantId: Optional[int] = None
     plan: Optional[str] = "Starter"
+    agentlessEnabled: Optional[bool] = False
 
 class LoginResponse(BaseModel):
     token: str
@@ -93,11 +94,13 @@ async def login_for_access_token(
 
     # Fetch Plan if TenantId exists
     plan = "Starter"
+    agentless_enabled = True
     if user.TenantId:
         t_res = await db.execute(select(Tenant).where(Tenant.Id == user.TenantId))
         tenant_obj = t_res.scalars().first()
         if tenant_obj:
             plan = tenant_obj.Plan
+            agentless_enabled = getattr(tenant_obj, "AgentlessEnabled", True)
 
     return {
         "token": access_token, 
@@ -106,7 +109,8 @@ async def login_for_access_token(
             "username": user.Username,
             "role": user.Role,
             "tenantId": user.TenantId,
-            "plan": plan
+            "plan": plan,
+            "agentlessEnabled": agentless_enabled
         }
     }
 
@@ -262,14 +266,25 @@ async def refresh_access_token(
     )
     db.add(new_rt)
     await db.commit()
-    
+    # Fetch Tenant info
+    plan = "Starter"
+    agentless_enabled = True
+    if user.TenantId:
+        t_res = await db.execute(select(Tenant).where(Tenant.Id == user.TenantId))
+        tenant_obj = t_res.scalars().first()
+        if tenant_obj:
+            plan = tenant_obj.Plan
+            agentless_enabled = getattr(tenant_obj, "AgentlessEnabled", True)
+            
     return {
         "token": access_token,
         "refresh_token": new_raw,
         "user": {
             "username": user.Username,
             "role": user.Role,
-            "tenantId": user.TenantId
+            "tenantId": user.TenantId,
+            "plan": plan,
+            "agentlessEnabled": agentless_enabled
         }
     }
 
