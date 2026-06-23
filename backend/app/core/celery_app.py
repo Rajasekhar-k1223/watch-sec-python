@@ -54,6 +54,6 @@ celery_app.conf.beat_schedule = {
     },
     "agentless-polling": {
         "task": "tasks.agentless.poll_endpoints",
-        "schedule": 300.0,  # Every 5 minutes
+        "schedule": 30.0,  # Every 30 seconds
     },
 }
