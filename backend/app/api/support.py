@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 
 from ..db.session import get_db  # type: ignore
-from ..db.models import User, Tenant, Policy  # type: ignore
+from ..db.models import User, Tenant, Policy, SupportTicket  # type: ignore
 from .deps import get_current_user  # type: ignore
 
 router = APIRouter()
@@ -71,11 +71,8 @@ class TicketStatusUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory ticket store (production: use a proper SupportTicket DB model)
-# TODO: Replace with DB model once SupportTicket table is added to models.py
+# Ticket ID Generator
 # ---------------------------------------------------------------------------
-_ticket_store: dict = {}
-
 
 def _generate_ticket_id() -> str:
     return f"TIC-{str(uuid.uuid4()).upper()[:8]}"
@@ -96,19 +93,19 @@ async def create_support_ticket(
     Persists the ticket with a unique ID tied to the requesting user/tenant.
     """
     ticket_id = _generate_ticket_id()
-    record = {
-        "ticketId": ticket_id,
-        "subject": ticket.subject,
-        "description": ticket.description,
-        "priority": ticket.priority,
-        "status": "Open",
-        "createdBy": current_user.Username,
-        "tenantId": current_user.TenantId,
-        "createdAt": datetime.utcnow().isoformat(),
-        "updatedAt": datetime.utcnow().isoformat(),
-        "attachments": []
-    }
-    _ticket_store[ticket_id] = record
+    new_ticket = SupportTicket(
+        TicketId=ticket_id,
+        TenantId=current_user.TenantId,
+        Subject=ticket.subject,
+        Description=ticket.description,
+        Priority=ticket.priority,
+        Status="Open",
+        CreatedBy=current_user.Username,
+        AttachmentsJson="[]"
+    )
+    db.add(new_ticket)
+    await db.commit()
+    
     # NOTE: Do not log subject/description — may contain sensitive info
     logger.info(f"[Support] Ticket {ticket_id} created by tenant {current_user.TenantId}")
     return {"status": "created", "ticketId": ticket_id, "message": "Monitorix support has been notified."}
@@ -120,15 +117,34 @@ async def create_support_ticket(
 
 @router.get("/tickets")
 async def list_support_tickets(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Returns all support tickets for the current tenant, newest first."""
-    tickets = [
-        t for t in _ticket_store.values()
-        if t["tenantId"] == current_user.TenantId
-    ]
-    tickets.sort(key=lambda t: t["createdAt"], reverse=True)
-    return {"tickets": tickets, "total": len(tickets)}
+    result = await db.execute(
+        select(SupportTicket)
+        .where(SupportTicket.TenantId == current_user.TenantId)
+        .order_by(SupportTicket.CreatedAt.desc())
+    )
+    tickets = result.scalars().all()
+    
+    response_tickets = []
+    import json
+    for t in tickets:
+        response_tickets.append({
+            "ticketId": t.TicketId,
+            "subject": t.Subject,
+            "description": t.Description,
+            "priority": t.Priority,
+            "status": t.Status,
+            "createdBy": t.CreatedBy,
+            "tenantId": t.TenantId,
+            "createdAt": t.CreatedAt.isoformat() if t.CreatedAt else None,
+            "updatedAt": t.UpdatedAt.isoformat() if t.UpdatedAt else None,
+            "attachments": json.loads(t.AttachmentsJson) if t.AttachmentsJson else []
+        })
+        
+    return {"tickets": response_tickets, "total": len(response_tickets)}
 
 
 # ---------------------------------------------------------------------------
@@ -138,16 +154,32 @@ async def list_support_tickets(
 @router.get("/tickets/{ticket_id}")
 async def get_ticket(
     ticket_id: str,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Returns a single ticket — only accessible by the owning tenant."""
-    ticket = _ticket_store.get(ticket_id)
+    result = await db.execute(select(SupportTicket).where(SupportTicket.TicketId == ticket_id))
+    ticket = result.scalars().first()
+    
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
     # Tenant isolation: ensure the ticket belongs to the requesting tenant
-    if ticket["tenantId"] != current_user.TenantId and current_user.Role != "SuperAdmin":
+    if ticket.TenantId != current_user.TenantId and current_user.Role != "SuperAdmin":
         raise HTTPException(status_code=403, detail="Access denied")
-    return ticket
+        
+    import json
+    return {
+        "ticketId": ticket.TicketId,
+        "subject": ticket.Subject,
+        "description": ticket.Description,
+        "priority": ticket.Priority,
+        "status": ticket.Status,
+        "createdBy": ticket.CreatedBy,
+        "tenantId": ticket.TenantId,
+        "createdAt": ticket.CreatedAt.isoformat() if ticket.CreatedAt else None,
+        "updatedAt": ticket.UpdatedAt.isoformat() if ticket.UpdatedAt else None,
+        "attachments": json.loads(ticket.AttachmentsJson) if ticket.AttachmentsJson else []
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -158,20 +190,25 @@ async def get_ticket(
 async def update_ticket_status(
     ticket_id: str,
     body: TicketStatusUpdate,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Updates the status of a support ticket. TenantAdmin or SuperAdmin only."""
     if current_user.Role not in ("TenantAdmin", "SuperAdmin"):
         raise HTTPException(status_code=403, detail="Insufficient permissions to update ticket status")
 
-    ticket = _ticket_store.get(ticket_id)
+    result = await db.execute(select(SupportTicket).where(SupportTicket.TicketId == ticket_id))
+    ticket = result.scalars().first()
+    
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if ticket["tenantId"] != current_user.TenantId and current_user.Role != "SuperAdmin":
+    if ticket.TenantId != current_user.TenantId and current_user.Role != "SuperAdmin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    ticket["status"] = body.status
-    ticket["updatedAt"] = datetime.utcnow().isoformat()
+    ticket.Status = body.status
+    ticket.UpdatedAt = datetime.utcnow()
+    await db.commit()
+    
     logger.info(f"[Support] Ticket {ticket_id} status → {body.status}")
     return {"status": "updated", "ticketId": ticket_id, "newStatus": body.status}
 
@@ -184,7 +221,8 @@ async def update_ticket_status(
 async def upload_diagnostic_bundle(
     ticket_id: str,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Secure diagnostic log upload. Enforces:
@@ -194,10 +232,12 @@ async def upload_diagnostic_bundle(
     - Path traversal prevention via os.path.realpath boundary check
     """
     # Validate ticket ownership
-    ticket = _ticket_store.get(ticket_id)
+    result = await db.execute(select(SupportTicket).where(SupportTicket.TicketId == ticket_id))
+    ticket = result.scalars().first()
+    
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if ticket["tenantId"] != current_user.TenantId and current_user.Role != "SuperAdmin":
+    if ticket.TenantId != current_user.TenantId and current_user.Role != "SuperAdmin":
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Validate file extension against allowlist
@@ -230,12 +270,16 @@ async def upload_diagnostic_bundle(
         f.write(content)
 
     # Record attachment in ticket
-    ticket.setdefault("attachments", []).append({
+    import json
+    attachments = json.loads(ticket.AttachmentsJson) if ticket.AttachmentsJson else []
+    attachments.append({
         "originalName": original_name,
         "storedAs": safe_name,
         "uploadedAt": datetime.utcnow().isoformat(),
         "sizeBytes": len(content)
     })
+    ticket.AttachmentsJson = json.dumps(attachments)
+    await db.commit()
 
     logger.info(f"[Support] Diagnostic uploaded for ticket {ticket_id} ({len(content)} bytes)")
     return {"status": "uploaded", "storedAs": safe_name, "sizeBytes": len(content)}

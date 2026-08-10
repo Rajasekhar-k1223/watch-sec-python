@@ -185,7 +185,7 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
         # [Updated] Check if Binary Exists for Linux
         # If so, serve Binary Payload instead of Source Zip
         use_binary = False
-        binary_name = "monitorix-agent-linux" if "linux" in os_type.lower() else "monitorix-agent-mac"
+        binary_name = "monitorix-agent-rust-linux" if "linux" in os_type.lower() else "monitorix-agent-rust-mac"
         
         # Check if parts or file exist in template
         check_path_part = os.path.join(template_path, f"{binary_name}.part0")
@@ -353,6 +353,16 @@ cat > "$dir_name/config.json" <<EOF
   "BackendUrl": "{backend_url}"
 }
 EOF
+
+if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
+    echo "[*] Enrolling Agent securely..."
+    "$dir_name/$BINARY_NAME" --enroll "$API_KEY"
+    if [ $? -ne 0 ]; then
+        echo "Error: Agent enrollment failed!"
+        exit 1
+    fi
+    echo "    [+] Agent enrolled successfully!"
+fi
 
 # Create Systemd Service (Linux)
 if [ "$(uname)" = "Linux" ] && [ -d "/etc/systemd/system" ]; then
@@ -611,59 +621,40 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
         # Fallback to Mock Tenant to prevent 500/401 errors when database is recovering
         tenant = MockTenant(key)
 
-    # Resolve absolute path relative to this file
-    file_dir = os.path.dirname(os.path.abspath(__file__))
-    # [FIX] Path is backend/app/api/downloads.py -> ..(api) -> ..(app) -> ..(backend)
-    backend_root = os.path.join(file_dir, "..", "..")
-    base_path = os.path.join(backend_root, "storage", "AgentTemplate")
+    # --- Rust Agent Build Output Path Resolution ---
+    # Maps os_type -> (rust_target_triple, filename, download_filename)
+    RUST_AGENT_ROOT = "/opt/apps/monitorix/agent-rust/target"
     
-    # OS Path Resolution
-    template_folder_map = {
-        "linux-x64": "linux-x64",
-        "linux-arm64": "linux-arm64",
-        "mac-x64": "osx-x64",
-        "mac-arm64": "osx-arm64",
-        "windows-x64": "win-x64",
-        "linux": "linux-x64", # Fallbacks
-        "mac": "osx-x64",
-        "windows": "win-x64"
+    rust_target_map = {
+        "windows":     (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/agent-rust.exe",   "monitorix-agent.exe"),
+        "windows-x64": (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/agent-rust.exe",   "monitorix-agent.exe"),
+        "linux":       (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/agent-rust",     "monitorix-agent-linux"),
+        "linux-x64":   (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/agent-rust",     "monitorix-agent-linux"),
+        "linux-arm64": (f"{RUST_AGENT_ROOT}/aarch64-unknown-linux-gnu/release/agent-rust",    "monitorix-agent-linux-arm64"),
+        "mac":         (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/agent-rust",          "monitorix-agent-mac"),
+        "mac-x64":     (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/agent-rust",          "monitorix-agent-mac"),
+        "mac-arm64":   (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/agent-rust",         "monitorix-agent-mac-arm64"),
     }
-    folder_name = template_folder_map.get(os_type.lower(), "win-x64")
-    template_dir = os.path.join(base_path, folder_name)
     
-    if not os.path.exists(template_dir):
-         # If specific arch is requested but missing, we should NOT fallback to x64 here
-         # as it will serve the wrong architecture binary.
-         raise HTTPException(status_code=404, detail=f"Agent Template for {os_type} not found.")
-    
+    os_key = os_type.lower()
+    if os_key in rust_target_map:
+        binary_path, binary_name = rust_target_map[os_key]
+        # Linux x64 can also be the native build (fallback)
+        if not os.path.exists(binary_path) and "linux" in os_key and "arm" not in os_key:
+            binary_path = f"{RUST_AGENT_ROOT}/release/agent-rust"
+    else:
+        # Legacy fallback to AgentTemplate storage
+        file_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_root = os.path.join(file_dir, "..", "..")
+        base_path = os.path.join(backend_root, "storage", "AgentTemplate")
+        template_folder_map = {
+            "windows": "win-x64", "linux": "linux-x64", "mac": "osx-x64",
+        }
+        folder_name = template_folder_map.get(os_key, "win-x64")
+        template_dir = os.path.join(base_path, folder_name)
+        binary_path = os.path.join(template_dir, "monitorix.zip")
+        binary_name = "monitorix.zip"
 
-    
-    # --- Payload Resolution ---
-    # The One-Liner and Worker scripts expect a ZIP package to extract.
-    # We must ensure we serve the ZIP and NOT the NSIS installer here.
-    
-    binary_name = "monitorix.zip" # Default
-    
-    if "linux" in os_type.lower(): 
-        binary_name = "monitorix-agent-linux"
-    elif "mac" in os_type.lower() or "osx" in os_type.lower(): 
-        binary_name = "monitorix-agent-mac"
-    elif "windows" in os_type.lower():
-        # Check for zip payload (Preferred for automated installation)
-        if os.path.exists(os.path.join(template_dir, "monitorix.zip")):
-             binary_name = "monitorix.zip"
-        elif os.path.exists(os.path.join(template_dir, "monitorix-windows.zip")):
-             binary_name = "monitorix-windows.zip"
-        else:
-             # Fallback to binary only if zip is missing (Legacy)
-             if os.path.exists(os.path.join(template_dir, "monitorix-agent.exe")):
-                  binary_name = "monitorix-agent.exe"
-             elif os.path.exists(os.path.join(template_dir, "monitorixagent.exe")):
-                  binary_name = "monitorixagent.exe"
-             else:
-                  binary_name = "monitorix.exe"
-    
-    binary_path = os.path.join(template_dir, binary_name)
     
     # 1.5 Check for Part Request
     if part is not None:
@@ -824,9 +815,9 @@ exit 1
 
     file_dir = os.path.dirname(os.path.abspath(__file__))
     possible_paths = [
+        os.path.normpath(os.path.join(file_dir, f"../{template_name}")), # Agent Folder (Dev)
         os.path.normpath(os.path.join(file_dir, f"../../{template_name}")), # Backend Root
-        os.path.normpath(os.path.join(file_dir, f"../../../agent/{template_name}")), # Agent Folder (Dev)
-        f"/app/{template_name}"
+        f"/app/app/{template_name}"
     ]
     
     installer_script_path = None
@@ -837,7 +828,7 @@ exit 1
             
     if not installer_script_path or not os.path.exists(str(installer_script_path)):
         # Fallback: always try standard binary template
-        fallback = os.path.normpath(os.path.join(file_dir, "../../install_agent_windows.ps1"))
+        fallback = os.path.normpath(os.path.join(file_dir, "../install_agent_windows.ps1"))
         if os.path.exists(fallback):
             installer_script_path = fallback
             print(f"[Downloads] Falling back to standard binary template.")
@@ -854,12 +845,15 @@ exit 1
     pass
 
     # Prepend all required variables so the script is fully self-contained.
-    # [SECURE INSTALL]: Do NOT inject $ApiKey here. Rely on the interactive prompt!
+    api_key_val = tenant.ApiKey if tenant else ""
+    
+    # Prepend all required variables so the script is fully self-contained.
     variables = f"""
+$ApiKey = "{api_key_val}"
 $BackendUrl = "{backend_url}"
-$DownloadUrl = "$BackendUrl/api/downloads/exe/windows?key=$ApiKey"
+$DownloadUrl = "$BackendUrl/api/downloads/exe/windows?key=$ApiKey&t=$(Get-Date -UFormat %s)"
 $InstallDir = "C:\\Program Files\\Monitorix"
-$ExeName = "monitorix-agent.exe"
+$ExeName = "monitorix-agent-rust.exe"
 $VersionCheckUrl = ""
 """
     
@@ -908,46 +902,31 @@ async def get_python_windows():
 async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     """
     Serves the raw monitorixagent.exe for clean PowerShell deployments.
-    No ZIP, no certs exposed. The EXE reads its API key from config.json
-    that the PowerShell script creates alongside it.
     """
     tenant_result = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
     tenant = tenant_result.scalars().first()
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    # Resolve exe path  
-    file_dir = os.path.dirname(os.path.abspath(__file__))
-    base = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64"))
+    # Serve the new Rust Agent executable for Windows
+    exe_path = "/opt/apps/monitorix/agent-rust/target/x86_64-pc-windows-gnu/release/agent-rust.exe"
     
-    # Priority Match: Monolithic Hyphenated -> Legacy Compressed -> Standard
-    exe_names = ["monitorix-agent.exe", "monitorixagent.exe", "monitorix.exe"]
-    exe_path = None
-    final_name = "monitorix-agent.exe"
+    # Check if a specific Windows build exists (cross-compiled), otherwise fallback to the linux release build we just made
+    if not os.path.exists(exe_path):
+        exe_path = "/opt/apps/monitorix/agent-rust/target/release/agent-rust"
 
-    for name in exe_names:
-        p = os.path.join(base, name)
-        if os.path.exists(p):
-            exe_path = p
-            final_name = name
-            break
+    if not os.path.exists(exe_path):
+        file_dir = os.path.dirname(os.path.abspath(__file__))
+        exe_path = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64/monitorix-agent.exe"))
     
-    if not exe_path:
-        # Final fallback: any exe in the folder
-        for f in os.listdir(base):
-            if f.endswith(".exe") and "vc_redist" not in f:
-                exe_path = os.path.join(base, f)
-                final_name = f
-                break
-
-    if not exe_path:
+    if not os.path.exists(exe_path):
         raise HTTPException(status_code=404, detail="Agent binary not found on server.")
     
     # Serve the raw EXE - installer script will place config.json next to it
     return FileResponse(
         exe_path,
         media_type="application/vnd.microsoft.portable-executable",
-        filename=final_name,
+        filename="monitorix-agent-rust.exe",
         headers={"Cache-Control": "no-cache"}
     )
 

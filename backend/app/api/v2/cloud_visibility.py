@@ -12,7 +12,7 @@ from typing import Optional, List
 import logging
 
 from ...db.session import get_db  # type: ignore
-from ...db.models import CloudMetadata, ContainerAsset, KubernetesAsset, User  # type: ignore
+from ...db.models import CloudMetadata, ContainerAsset, KubernetesAsset, User, CloudIntegrationCredential
 from ...services.cloud_visibility_engine import cloud_engine  # type: ignore
 from ..deps import get_current_user  # type: ignore
 
@@ -52,6 +52,13 @@ class ContainerPayload(BaseModel):
 class K8sPayload(BaseModel):
     agent_id: str
     pods: List[dict]
+
+class CspmCredentialPayload(BaseModel):
+    provider: str
+    account_id: str
+    access_key_id: Optional[str] = None
+    secret_access_key: Optional[str] = None
+    region: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +147,49 @@ async def get_cloud_inventory(
         ]
     }
 
+
+# ---------------------------------------------------------------------------
+# CSPM Credentials 
+# ---------------------------------------------------------------------------
+
+@router.post("/cspm/credentials")
+async def add_cspm_credential(
+    payload: CspmCredentialPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Configures a new agentless cloud integration (AWS/Azure/GCP)."""
+    cred = CloudIntegrationCredential(
+        TenantId=current_user.TenantId,
+        Provider=payload.provider.lower(),
+        AccountId=payload.account_id,
+        AccessKeyId=payload.access_key_id,
+        SecretAccessKey=payload.secret_access_key,
+        Region=payload.region
+    )
+    db.add(cred)
+    await db.commit()
+    return {"status": "success", "id": cred.Id}
+
+@router.get("/cspm/credentials")
+async def get_cspm_credentials(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Returns active cloud integrations (secrets masked)."""
+    creds = (await db.execute(
+        select(CloudIntegrationCredential).where(CloudIntegrationCredential.TenantId == current_user.TenantId)
+    )).scalars().all()
+    
+    return [
+        {
+            "id": c.Id,
+            "provider": c.Provider,
+            "account_id": c.AccountId,
+            "region": c.Region,
+            "is_active": c.IsActive
+        } for c in creds
+    ]
 
 # ---------------------------------------------------------------------------
 # GET /api/v2/cloud/inventory/summary  — Aggregated summary for dashboard

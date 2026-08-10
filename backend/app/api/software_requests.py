@@ -11,7 +11,7 @@ import hmac
 from ..db.session import get_db
 from ..db.models import SoftwareRequest, Agent, Tenant, User, EventLog
 from .deps import get_current_user
-from ..main_dashboard import sio_manager
+from ..socket_instance import sio as sio_manager
 
 router = APIRouter()
 

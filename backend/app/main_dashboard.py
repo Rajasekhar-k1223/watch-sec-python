@@ -10,14 +10,19 @@ from .db.session import settings, engine # type: ignore
 
 from .api import ( # type: ignore
     auth, tenants, users, agents, install, # type: ignore
-    downloads, commands, events, mail, audit, # type: ignore
+    downloads, commands, events, mail, audit, audit_export, # type: ignore
     screenshots, policies, productivity, billing, # type: ignore
     uploads, reports, dashboard, ai, system, # type: ignore
     ocr, thesaurus, speech, hashbank, fingerprints, # type: ignore
     searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
-    notifications, report_downloads, incidents, network, apikeys # type: ignore
+    notifications, report_downloads, incidents, network, apikeys, # type: ignore
+    yara, software_requests, remediation, sso, support, clusters # type: ignore
 ) # type: ignore
-from .api.v2 import agentless # type: ignore
+from .api.v2 import ( # type: ignore
+    agentless, agentless_receiver, cloud_visibility, compliance, threat_intel, # type: ignore
+    hunting, ransomware, risk, lineage, copilot, detection, dlp, # type: ignore
+    ueba, deception, vault, soar, pki, federation, remote as remote_v2 # type: ignore
+) # type: ignore
 import asyncio # type: ignore
 
 @asynccontextmanager
@@ -41,6 +46,35 @@ async def lifespan(app: FastAPI):
             print(f"[MongoDB Index Error] {e}")
 
     await ensure_mongo_indexes()
+
+    # [SOAR] Ensure default playbooks exist
+    async def ensure_default_playbooks():
+        try:
+            from .db.session import AsyncSessionLocal # type: ignore
+            from .db.models import SoarPlaybook # type: ignore
+            from sqlalchemy.future import select # type: ignore
+            import json
+            
+            async with AsyncSessionLocal() as db:
+                playbook_id_1 = (await db.execute(select(SoarPlaybook).where(SoarPlaybook.Id == 1))).scalars().first()
+                if not playbook_id_1:
+                    print("[SOAR] Seeding Default Playbook 1 (Critical Mitigation)...")
+                    # Force ID 1 if possible, but sqlalchemy will auto-increment. We'll search by name if ID varies, but let's just insert it and hope it's ID 1.
+                    # Or we can just insert with Id=1 explicitly since it's Postgres.
+                    playbook = SoarPlaybook(
+                        Id=1,
+                        Name="Critical Threat Mitigation",
+                        TriggerCondition="Ransomware/Sigma",
+                        ActionsJson=json.dumps([{"action": "KillProcess"}, {"action": "IsolateNetwork"}]),
+                        RequiresApproval=False
+                    )
+                    db.add(playbook)
+                    await db.commit()
+                    print("[SOAR] Default Playbook 1 seeded.")
+        except Exception as e:
+            print(f"[SOAR Seeding Error] {e}")
+
+    await ensure_default_playbooks()
 
     async def cleanup_update_status():
         while True:
@@ -145,6 +179,25 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(agentless_background_telemetry())
     
+    # [CSPM] Background Telemetry Task
+    async def cspm_background_telemetry():
+        from .services.cspm_engine import cspm_engine
+        from .db.session import AsyncSessionLocal
+        
+        # Initial wait before starting loop
+        await asyncio.sleep(10)
+        
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    await cspm_engine.poll_cloud_telemetry(db)
+            except Exception as e:
+                print(f"[CSPM Telemetry Task Error] {e}", flush=True)
+
+            await asyncio.sleep(60) # Poll every 60 seconds
+
+    asyncio.create_task(cspm_background_telemetry())
+    
     yield
     # --- SHUTDOWN ---
     print("--- SHUTDOWN ---")
@@ -216,6 +269,31 @@ app.include_router(incidents.router, prefix="/api/incidents", tags=["Incidents"]
 app.include_router(network.router, prefix="/api/network", tags=["Network"])
 app.include_router(apikeys.router, prefix="/api/apikeys", tags=["API Keys"])
 app.include_router(agentless.router, prefix="/api/v2/agentless", tags=["Agentless"])
+app.include_router(yara.router, prefix="/api/yara", tags=["YARA"])
+app.include_router(software_requests.router, prefix="/api/software_requests", tags=["Software Requests"])
+app.include_router(remediation.router, prefix="/api/remediation", tags=["Remediation"])
+app.include_router(sso.router, prefix="/api/sso", tags=["SSO"])
+app.include_router(support.router, prefix="/api/support", tags=["Support"])
+app.include_router(clusters.router, prefix="/api/clusters", tags=["Clusters"])
+app.include_router(audit_export.router, prefix="/api/audit", tags=["Audit Export"])
+app.include_router(agentless_receiver.router, prefix="/api/v2/agentless", tags=["Agentless Receiver"])
+app.include_router(cloud_visibility.router, prefix="/api/v2/cloud", tags=["Cloud Visibility"])
+app.include_router(compliance.router, prefix="/api/v2/compliance", tags=["Compliance"])
+app.include_router(threat_intel.router, prefix="/api/v2/threat-intel", tags=["Threat Intel"])
+app.include_router(hunting.router, prefix="/api/v2/hunting", tags=["Hunting"])
+app.include_router(ransomware.router, prefix="/api/v2/ransomware", tags=["Ransomware"])
+app.include_router(risk.router, prefix="/api/v2/risk", tags=["Risk Engine"])
+app.include_router(lineage.router, prefix="/api/v2/lineage", tags=["Process Lineage"])
+app.include_router(copilot.router, prefix="/api/v2/copilot", tags=["AI Copilot"])
+app.include_router(detection.router, prefix="/api/v2/detection", tags=["Detection"])
+app.include_router(dlp.router, prefix="/api/v2/dlp", tags=["DLP"])
+app.include_router(ueba.router, prefix="/api/v2/ueba", tags=["UEBA"])
+app.include_router(deception.router, prefix="/api/v2/deception", tags=["Deception"])
+app.include_router(vault.router, prefix="/api/v2/vault", tags=["Forensic Vault"])
+app.include_router(soar.router, prefix="/api/v2/soar", tags=["SOAR"])
+app.include_router(pki.router, prefix="/api/v2/pki", tags=["PKI"])
+app.include_router(federation.router, prefix="/api/v2/federation", tags=["Federation"])
+app.include_router(remote_v2.router, prefix="/api/v2/remote", tags=["Remote Control V2"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

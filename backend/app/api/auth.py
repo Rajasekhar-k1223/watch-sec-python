@@ -374,6 +374,7 @@ async def register_tenant(
     # 3. Create Admin User
     new_user = User(
         Username=form_data.adminUsername,
+        Email=form_data.email,
         PasswordHash=get_password_hash(form_data.password),
         Role="TenantAdmin",
         TenantId=new_tenant.Id

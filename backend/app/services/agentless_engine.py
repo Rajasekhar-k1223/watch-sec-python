@@ -415,8 +415,8 @@ class AgentlessEngine:
         try:
             async with AsyncSessionLocal() as db:
                 if os_type.lower() == "linux":
-                    # SSH command here (requires ssh_run like winrm)
-                    pass
+                    cmd = f"echo '*.* @{receiver_url}:514' > /etc/rsyslog.d/99-monitorix.conf && systemctl restart rsyslog"
+                    await self._run_ssh_command(target_ip, db, cmd)
                 elif os_type.lower() == "windows":
                     cmd = "wevtutil im C:\\Windows\\System32\\winevt\\wef.xml" # Simplified WEF config
                     await self._run_winrm_command(target_ip, db, cmd)

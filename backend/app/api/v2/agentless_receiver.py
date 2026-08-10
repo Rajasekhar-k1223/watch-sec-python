@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, BackgroundTasks, Depends # type: ignore
 from typing import Dict, Any
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
-from ..db.session import get_db # type: ignore
+from ...db.session import get_db # type: ignore
 
 logger = logging.getLogger(__name__)
 

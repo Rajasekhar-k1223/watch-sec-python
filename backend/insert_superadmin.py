@@ -1,4 +1,5 @@
 import asyncio
+import os
 from app.db.session import engine, AsyncSessionLocal
 from app.db.models import User
 from app.core.security import get_password_hash
@@ -18,7 +19,7 @@ async def insert_superadmin():
         superadmin = User(
             Username="superadmin",
             Email="superadmin@monitorix.com",
-            PasswordHash=get_password_hash("monitorix2025!"),
+            PasswordHash=get_password_hash(os.getenv("INITIAL_ADMIN_PASSWORD", "changeme!")),
             Role="SuperAdmin",
             ActiveStatus=True,
             CreatedDate=datetime.utcnow(),

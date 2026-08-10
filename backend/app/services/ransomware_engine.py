@@ -1,19 +1,28 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import RansomwareIncident, RansomwareMitigationLog
 
 class RansomwareEngine:
-    
-    def process_signal(self, db: Session, payload: dict):
-        """
-        Receives high-priority ransomware heuristics from the edge agent.
-        Instantly orchestrates mitigation.
-        """
+
+    async def process_signal(self, db: AsyncSession, payload: dict):
         agent_id = payload.get("agent_id")
-        process_id = payload.get("process_id")
-        heuristic = payload.get("heuristic_matched") # e.g., "HighEntropy", "VssadminDeletion"
-        file_path = payload.get("file_path")
         
-        # Log the incident
+        # Determine heuristics based on Golang agent payload or legacy payload
+        event_type = payload.get("EventType")
+        
+        if event_type == "RansomwareAlert":
+            heuristic = f"HighEntropy: {payload.get('Entropy')}"
+            file_path = payload.get("FilePath")
+            process_id = 0 # Go agent currently doesn't map PID for fsnotify writes
+        elif event_type == "ShadowCopyDeletion":
+            heuristic = f"VssadminDeletion: {payload.get('OldCount')} -> {payload.get('NewCount')}"
+            file_path = "Volume Shadow Copy"
+            process_id = 0
+        else:
+            # Legacy Python Agent
+            heuristic = payload.get("heuristic_matched")
+            file_path = payload.get("file_path")
+            process_id = payload.get("process_id", 0)
+
         incident = RansomwareIncident(
             AgentId=agent_id,
             ProcessId=process_id,
@@ -21,39 +30,26 @@ class RansomwareEngine:
             HeuristicMatched=heuristic
         )
         db.add(incident)
-        db.commit() # Commit to get ID
-        
-        # Trigger Autonomous Response
-        self._trigger_mitigation(db, incident)
-        
+        await db.commit()
+
+        await self._trigger_mitigation(db, incident)
         return incident.Id
+
+    async def _trigger_mitigation(self, db: AsyncSession, incident: RansomwareIncident):
+        from app.services.soar_engine import soar_engine
         
-    def _trigger_mitigation(self, db: Session, incident: RansomwareIncident):
-        """
-        Executes immediate response actions to halt the ransomware outbreak.
-        This ties directly into the Layer 6 SOAR capability, but operates autonomously.
-        """
-        mitigations = []
+        print(f"[RANSOMWARE SHIELD] Triggering SOAR Playbook for Agent {incident.AgentId}")
         
-        # 1. Terminate the offending process
-        print(f"[RANSOMWARE SHIELD] Terminating PID {incident.ProcessId} on Agent {incident.AgentId}")
-        # MOCK: socket_manager.emit_to_agent(incident.AgentId, "kill_process", {"pid": incident.ProcessId})
-        mitigations.append("ProcessKilled")
-        
-        # 2. Isolate the host from the network to prevent lateral movement (worming)
-        print(f"[RANSOMWARE SHIELD] Isolating Agent {incident.AgentId}")
-        # MOCK: socket_manager.emit_to_agent(incident.AgentId, "isolate_network", {})
-        mitigations.append("HostQuarantined")
-        
-        # Log the actions
-        for action in mitigations:
-            log = RansomwareMitigationLog(
-                IncidentId=incident.Id,
-                ActionTaken=action,
-                Success=True
-            )
-            db.add(log)
+        # Trigger Playbook ID 1 (Critical Mitigation) via SOAR Engine
+        action_params = None
+        if incident.ProcessId and incident.ProcessId > 0:
+            action_params = {"TargetPID": str(incident.ProcessId)}
             
-        db.commit()
+        await soar_engine.trigger_playbook(
+            db, 
+            playbook_id=1, 
+            target_agent_id=incident.AgentId,
+            action_params=action_params
+        )
 
 ransomware_engine = RansomwareEngine()

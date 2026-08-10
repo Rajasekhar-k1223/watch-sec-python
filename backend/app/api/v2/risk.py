@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from sqlalchemy import desc
 from app.db.session import get_db
 from app.db.models import DeviceRiskProfile, Agent, User
@@ -9,13 +10,13 @@ from app.api.deps import get_current_user
 router = APIRouter()
 
 @router.get("/agent/{agent_id}")
-async def get_agent_risk(agent_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    profile = db.query(DeviceRiskProfile).filter(DeviceRiskProfile.AgentId == agent_id).first()
+async def get_agent_risk(agent_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    profile = (await db.execute(select(DeviceRiskProfile).where(DeviceRiskProfile.AgentId == agent_id))).scalars().first()
     if not profile:
-        profile = calculate_risk_score(db, agent_id)
+        profile = await calculate_risk_score(db, agent_id)
         if not profile:
             raise HTTPException(status_code=404, detail="Agent not found")
-            
+
     return {
         "agent_id": profile.AgentId,
         "total_score": profile.TotalRiskScore,
@@ -32,11 +33,14 @@ async def get_agent_risk(agent_id: str, db: Session = Depends(get_db), current_u
     }
 
 @router.get("/tenant")
-async def get_tenant_risk(tenant_id: int = 1, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Assuming tenant_id=1 for now, in production extracted from JWT
-    profiles = db.query(DeviceRiskProfile).filter(DeviceRiskProfile.TenantId == tenant_id)\
-                 .order_by(desc(DeviceRiskProfile.TotalRiskScore)).limit(100).all()
-                 
+async def get_tenant_risk(tenant_id: int = 1, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    profiles = (await db.execute(
+        select(DeviceRiskProfile)
+        .where(DeviceRiskProfile.TenantId == tenant_id)
+        .order_by(desc(DeviceRiskProfile.TotalRiskScore))
+        .limit(100)
+    )).scalars().all()
+
     return [
         {
             "agent_id": p.AgentId,
@@ -47,11 +51,11 @@ async def get_tenant_risk(tenant_id: int = 1, db: Session = Depends(get_db), cur
     ]
 
 @router.post("/evaluate/{agent_id}")
-async def force_evaluate_risk(agent_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    profile = calculate_risk_score(db, agent_id)
+async def force_evaluate_risk(agent_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    profile = await calculate_risk_score(db, agent_id)
     if not profile:
-         raise HTTPException(status_code=404, detail="Agent not found")
-         
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     return {
         "status": "success",
         "agent_id": profile.AgentId,

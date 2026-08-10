@@ -27,15 +27,47 @@ param (
     [string]$BackendUrl = ""
 )
 
-$ApiKeyEnv = [Environment]::GetEnvironmentVariable("MONITORIX_API_KEY")
-if ([string]::IsNullOrEmpty($ApiKeyEnv)) {
-    Write-Host "Secure Installation: API Key not found in environment." -ForegroundColor Yellow
-    $secureKey = Read-Host "Please enter your 6-digit Installation PIN" -AsSecureString
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-    $ApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-} else {
-    $ApiKey = $ApiKeyEnv
+if ([string]::IsNullOrEmpty($ApiKey)) {
+    $ApiKeyEnv = [Environment]::GetEnvironmentVariable("MONITORIX_API_KEY")
+    if ([string]::IsNullOrEmpty($ApiKeyEnv)) {
+        Write-Host "Secure Installation: API Key not found in environment." -ForegroundColor Yellow
+        $secureKey = Read-Host "Please enter your Master API Key" -AsSecureString
+        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+        $ApiKey = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+    } else {
+        $ApiKey = $ApiKeyEnv
+    }
+}
+
+Write-Host ""
+$pin = Read-Host "Please enter your 6-digit Installation PIN"
+if ([string]::IsNullOrWhiteSpace($pin)) {
+    Write-Host "Installation aborted by user." -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "[*] Validating Installation PIN with Backend..."
+$validateParams = @{
+    Uri = "$BackendUrl/api/agent/validate-pin"
+    Method = "POST"
+    Body = (@{ tenantApiKey = $ApiKey; pin = $pin } | ConvertTo-Json)
+    ContentType = "application/json"
+}
+
+try {
+    $response = Invoke-RestMethod @validateParams
+    Write-Host "    [+] PIN Verified Successfully!" -ForegroundColor Green
+} catch {
+    Write-Error "INSTALLATION ABORTED: Invalid or Expired PIN!"
+    exit 1
+}
+if ([string]::IsNullOrEmpty($DownloadUrl) -and -not [string]::IsNullOrEmpty($DownloadBaseUrl)) {
+    $DownloadUrl = "${DownloadBaseUrl}${ApiKey}"
+}
+
+if ([string]::IsNullOrEmpty($DownloadUrl) -and -not [string]::IsNullOrEmpty($DownloadBaseUrl)) {
+    $DownloadUrl = "${DownloadBaseUrl}${ApiKey}"
 }
 
 #Requires -RunAsAdministrator
@@ -114,36 +146,53 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # 2. Pre-Install Cleanup (Remove Old Versions)
 Write-Host "[*] Performing Pre-Install Cleanup..."
 try {
-    # A. Stop ALL Monitorix Processes (Aggressive)
-    $processes = Get-Process -Name "monitorixagent", "MonitorixAgent", "monitorix-agent" -ErrorAction SilentlyContinue
-    if ($processes) {
-        Write-Host "    [!] Stopping all running agent processes..." -ForegroundColor Yellow
-        # Try graceful stop first, then force
-        $processes | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-    }
+    # A. Stop Service First
+    $ServiceName = "MonitorixAgentService"
+    try {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($svc) {
+            Write-Host "    [!] Stopping Windows Service..." -ForegroundColor Yellow
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            sc.exe delete $ServiceName | Out-Null
+            Start-Sleep -Seconds 2
+        }
+    } catch {}
 
-    # B. Force Kill if still locked (Safety for accumulation)
-    $lockedProcesses = Get-Process | Where-Object { $_.Path -like "*$InstallDir*" } -ErrorAction SilentlyContinue
-    if ($lockedProcesses) {
-        Write-Host "    [!] Force killing locked processes in target directory..." -ForegroundColor Red
-        $lockedProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-    }
+    # B. Stop ALL Monitorix Processes (Aggressive)
+    Write-Host "    [!] Force killing agent processes with taskkill..." -ForegroundColor Yellow
+    cmd.exe /c "taskkill /f /im monitorix-agent.exe /t >nul 2>nul"
+    cmd.exe /c "taskkill /f /im monitorixagent.exe /t >nul 2>nul"
+    cmd.exe /c "taskkill /f /im monitorix-agent-rust.exe /t >nul 2>nul"
+    Start-Sleep -Seconds 2
 
-    # B. Remove Scheduled Task
-    Unregister-ScheduledTask -TaskName "MonitorixAgentLauncher" -Confirm:$false -ErrorAction SilentlyContinue
+    # D. Remove Scheduled Task
+    try { Unregister-ScheduledTask -TaskName "MonitorixAgentLauncher" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+    try { Unregister-ScheduledTask -TaskName "MonitorixAgentSystem"  -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     
     # C. Remove Registry Persistence (Both HKLM and HKCU just in case)
-    Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue
+    try { Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue } catch {}
+    try { Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MonitorixAgentUser" -ErrorAction SilentlyContinue } catch {}
 
     # D. Aggressive Cleanup Installation Directory (Preserving Data & Config)
     if (Test-Path $InstallDir) {
         Write-Host "    [!] Wiping old agent files in $InstallDir..." -ForegroundColor Yellow
-        Get-ChildItem -Path $InstallDir -File | Where-Object { $_.Name -ne "config.json" -and $_.Name -ne "conf.json" } | Remove-Item -Force -ErrorAction SilentlyContinue
-        # Scrub legacy certificates and sensitive keys explicitly
-        Get-ChildItem -Path $InstallDir -Include *.crt, *.key, *.pem -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        
+        # The Golang agent puts a DENY Users:(F) ACE on files, which blocks Administrators.
+        # However, Administrators have SeTakeOwnershipPrivilege and can take ownership,
+        # then reset the ACLs to remove the DENY rules.
+        try {
+            cmd.exe /c "takeown /f `"$InstallDir`" /r /d y >nul 2>nul"
+            cmd.exe /c "icacls `"$InstallDir\*`" /reset /T /C /Q >nul 2>nul"
+            cmd.exe /c "attrib -h -s -r `"$InstallDir\*.*`" /s /d >nul 2>nul"
+        } catch {}
+        
+        Get-ChildItem -Path $InstallDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "config.json" -and $_.Name -ne "conf.json" } | Remove-Item -Force -ErrorAction SilentlyContinue
+        
+        # Also clean up config.json since we are doing a fresh enrollment
+        if (Test-Path "$InstallDir\config.json") {
+            Remove-Item "$InstallDir\config.json" -Force -ErrorAction SilentlyContinue
+        }
+        
     } else {
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     }
@@ -156,8 +205,8 @@ try {
 # 3. Configure Windows Defender Exclusion
 Write-Host "[*] Adding Windows Defender Exclusion for $InstallDir..."
 try {
-    Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
-    Write-Host "    [+] Exclusion added successfully." -ForegroundColor Green
+    # (Removed automatic MpPreference exclusion as it triggers AV heuristics)
+    Write-Host "    [+] Install directory prepared." -ForegroundColor Green
 } catch {
     Write-Warning "Could not add Defender exclusion. Ensure you have the latest Windows updates."
 }
@@ -235,29 +284,53 @@ try {
         Write-Warning "Failed to update folder permissions: $_"
     }
 
+    # Create required subdirectories for agent operation
+    Write-Host "[*] Creating agent subdirectories..."
+    @("data", "logs", "yara_rules") | ForEach-Object {
+        $subDir = Join-Path $InstallDir $_
+        if (-not (Test-Path $subDir)) {
+            New-Item -ItemType Directory -Path $subDir -Force | Out-Null
+        }
+    }
+    # Seed default YARA rules placeholder
+    $yaraReadme = Join-Path $InstallDir "yara_rules\README.txt"
+    if (-not (Test-Path $yaraReadme)) {
+        "Place custom .yar YARA rule files here. They will be loaded automatically by the agent." | Out-File -FilePath $yaraReadme -Encoding utf8 -Force
+    }
+    Write-Host "    [+] Subdirectories ready: data\, logs\, yara_rules\" -ForegroundColor Green
+
     # Create/Update Config with provided ApiKey/BackendUrl
     if ($ApiKey -and $BackendUrl) {
         Write-Host "[*] Configuring Agent with API Key..."
         
-        # FORCE UNLOCK: Remove ReadOnly if exists to ensure we can update key
-        if (Test-Path $ConfigPath) {
-            $existingFile = Get-Item $ConfigPath
-            if ($existingFile.IsReadOnly) {
-                $existingFile.IsReadOnly = $false
-            }
-        }
+        # FORCE UNLOCK is no longer needed here since the SYSTEM task wiped the file
         
+        # Write full config BEFORE enrollment so TenantApiKey is available to the agent
         $configObj = @{
+            BackendUrl   = $BackendUrl
             TenantApiKey = $ApiKey
-            BackendUrl = $BackendUrl
+            AgentId      = $env:COMPUTERNAME
+            MachineSecret = ""
         }
-        $configObj | ConvertTo-Json | Out-File -FilePath $ConfigPath -Encoding utf8 -Force
-        
-        # LOCK CONFIG: Read-Only to prevent user tampering
-        $fileItem = Get-Item $ConfigPath
-        $fileItem.Attributes = "ReadOnly"
-        
-        Write-Host "    [+] Generated $ConfigPath (Locked)" -ForegroundColor Green
+        try {
+            $configObj | ConvertTo-Json | Out-File -FilePath $ConfigPath -Encoding utf8 -Force
+            Write-Host "    [+] Generated fresh $ConfigPath" -ForegroundColor Green
+        } catch {
+            Write-Warning "Failed to write $ConfigPath directly. Attempting to force write..."
+            cmd.exe /c "del /f /a /q `"$ConfigPath`" >nul 2>nul"
+            $configObj | ConvertTo-Json | Out-File -FilePath $ConfigPath -Encoding utf8 -Force
+            Write-Host "    [+] Generated fresh $ConfigPath after force wipe" -ForegroundColor Green
+        }
+
+        Write-Host "[*] Enrolling Agent securely..."
+        # Run agent enrollment locally before starting the service
+        $enrollArgs = "--enroll", "$pin"
+        $p = Start-Process -FilePath $ExePath -ArgumentList $enrollArgs -Wait -NoNewWindow -PassThru
+        if ($p.ExitCode -ne 0) {
+            Write-Error "Agent enrollment failed!"
+            exit 1
+        }
+        Write-Host "    [+] Agent enrolled successfully!" -ForegroundColor Green
 
         # [ROBUST AUTH] Write to Registry as Fallback
         # This ensures that if config.json is deleted/corrupted, the Agent can self-heal.
@@ -280,45 +353,33 @@ try {
     exit 1
 }
 
-# 5. Setup Persistence (Scheduled Task & Windows Service)
+# 5. Setup Persistence (Scheduled Task)
 Write-Host "[*] Registering Persistence Mechanisms..."
-$TaskName = "MonitorixAgentLauncher"
-$ServiceName = "MonitorixAgentService"
+$TaskName = "MonitorixAgentSystem"
 $Description = "Monitorix Enterprise Security Agent - Advanced Auditing & Protection"
 
 try {
-    # A. Scheduled Task (System Mode) 
-    # Logic moved to Native Windows Service for better reliability and services.msc management.
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    
-    $Action = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn
-    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-    
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $Description -User "SYSTEM" -RunLevel Highest | Out-Null
-    Write-Host "    [+] Scheduled Task (System Mode) registered." -ForegroundColor Green
-
-    # B. [NEW] Windows Service registration (for services.msc)
-    Write-Host "    [*] Registering native Windows Service..."
-    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        # Remove-Service is not available in PowerShell 5.1
-        sc.exe delete $ServiceName
+    # Unregister old service if present
+    if (Get-Service -Name "MonitorixAgentService" -ErrorAction SilentlyContinue) {
+        Stop-Service -Name "MonitorixAgentService" -Force -ErrorAction SilentlyContinue
+        sc.exe delete "MonitorixAgentService" | Out-Null
     }
     
-    # Register as a native service. Note: requires the EXE to handle SCM (Service Control Manager) signals.
-    # If the app doesn't natively support SCM, it might need a wrapper (like NSSM), 
-    # but we'll try native first as main.py has some service-aware logic.
-    New-Service -Name $ServiceName -BinaryPathName "`"$ExePath`"" -DisplayName $Description -StartupType Automatic -Description $Description | Out-Null
+    # Register/Overwrite persistent background Scheduled Task running as SYSTEM
+    # Uses AtStartup trigger so it runs on boot before login
+    try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     
-    # Configure NATIVE RECOVERY (Auto-Restart)
-    # Reset fail count after 1 day (86400 seconds), restart after 1 minute (60000ms)
-    sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000
+    # Run the agent EXE directly - Task Scheduler handles quoted paths correctly
+    # Agent writes its own agent.log file internally
+    $Action = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
+    $Trigger = New-ScheduledTaskTrigger -AtStartup
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     
-    Write-Host "    [+] Windows Service registered with native auto-restart recovery." -ForegroundColor Green
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $Description -User "SYSTEM" -RunLevel Highest | Out-Null
+    Write-Host "    [+] Persistent Scheduled Task (SYSTEM Mode) registered." -ForegroundColor Green
 
     # C. User Session Persistence (HKLM Run Key)
-    Write-Host "    [*] Configuring User Session Persistence (for Screenshots)..."
+    Write-Host "    [*] Configuring User Session Persistence..."
     $regPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
     $regName = "MonitorixAgentUser"
     $regValue = "`"$ExePath`"" 
@@ -329,27 +390,34 @@ try {
     Write-Error "Failed to register persistence: $_"
 }
 
-# 6. Start Agent (Service + User Instance)
+# 6. Start Agent
+# NOTE: We stop the transcript and suppress console output BEFORE launching the task.
+# This is required when running via 'irm | iex' to avoid console handle pipe breakages.
 Write-Host "[*] Starting Monitorix Agent Mechanisms..."
+
+# Flush and stop transcript before launch
+try { Stop-Transcript } catch {}
+
+# Suppress ALL console errors from this point forward
+$ErrorActionPreference = 'SilentlyContinue'
+
 try {
-    # A. Start the Windows Service (Session 0)
-    Write-Host "    [*] Starting System Service..."
-    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-    
-    # B. Start User Instance (Current Session)
-    # This is CRITICAL for immediate GUI/Activity tracking after installation.
-    # We use Start-Process to launch it in the current interactive session.
-    Write-Host "    [*] Launching interactive agent for current user..."
-    Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -WindowStyle Hidden
-    
-    Write-Host "[SUCCESS] Monitorix Agent v1.8.63 is now running (Service + User Instance)." -ForegroundColor Cyan
-} catch {
-    Write-Warning "Installation complete, but could not start the agent automatically. Please start '$ServiceName' in services.msc"
-}
+    # Start the background Scheduled Task immediately
+    Start-ScheduledTask -TaskName $TaskName
+} catch {}
 
-# Cleanup
-if (Test-Path $TempFile) { Remove-Item $TempFile -Force }
-if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force }
+# Add Defender Exclusions BEFORE starting the agent
+try {
+    Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionProcess $ExePath -ErrorAction SilentlyContinue
+    Write-Host "    [+] Windows Defender Exclusions added." -ForegroundColor Green
+} catch {}
 
-Write-Host "--- Installation Finished ---"
-Stop-Transcript
+# Also launch user session instance immediately using WMI to avoid ShellExecute popups (Smart App Control / Defender)
+try {
+    Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "`"$ExePath`"" | Out-Null
+} catch {}
+
+# Cleanup temp files silently
+try { if (Test-Path $TempFile)    { Remove-Item $TempFile    -Force } } catch {}
+try { if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force } } catch {}

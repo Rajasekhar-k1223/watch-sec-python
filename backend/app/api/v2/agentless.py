@@ -96,6 +96,52 @@ async def add_manual_endpoint(
     
     return {"status": "success"}
 
+class VaultCredentialDto(BaseModel):
+    os_type: str
+    username: str = "root"
+    password: str = ""
+
+@router.put("/credentials/{ip}")
+async def update_credentials(
+    ip: str,
+    dto: VaultCredentialDto,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    await verify_tenant_access(ip, db, current_user)
+    
+    # Get the endpoint
+    res = await db.execute(select(AgentlessEndpoint).where(AgentlessEndpoint.IpAddress == ip))
+    endpoint = res.scalars().first()
+    if not endpoint:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+
+    from ...db.models import AgentlessCredential
+    from ...services.credential_vault import credential_vault
+    
+    # Check if credential already exists
+    cred_res = await db.execute(select(AgentlessCredential).where(AgentlessCredential.EndpointId == endpoint.Id))
+    existing_cred = cred_res.scalars().first()
+    
+    encrypted_pw = credential_vault.encrypt_credential(dto.password)
+    
+    if existing_cred:
+        existing_cred.Username = dto.username
+        existing_cred.EncryptedPassword = encrypted_pw
+        existing_cred.AuthType = "PASSWORD"
+    else:
+        new_cred = AgentlessCredential(
+            TenantId=endpoint.TenantId,
+            EndpointId=endpoint.Id,
+            AuthType="PASSWORD",
+            Username=dto.username,
+            EncryptedPassword=encrypted_pw
+        )
+        db.add(new_cred)
+        
+    await db.commit()
+    return {"status": "success", "message": "Credentials securely vaulted"}
+
 @router.post("/scan")
 async def scan_subnet(
     subnet: str,

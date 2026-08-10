@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package telemetry;
+
+// The Monitorix v3.0 gRPC Telemetry Gateway
+service TelemetryGateway {
+    // Client-streaming RPC: Agent opens a stream and blasts events
+    rpc StreamEvents (stream AgentEvent) returns (StreamResponse) {}
+}
+
+// Strictly-typed telemetry event from the Rust Agent
+message AgentEvent {
+    string agent_id = 1;
+    string tenant_id = 2;
+    string event_type = 3;
+    string payload = 4; // JSON blob of the specific event (Process, Network, etc)
+    string timestamp = 5; // ISO8601 UTC timestamp
+}
+
+// Server response when the stream is closed
+message StreamResponse {
+    bool success = 1;
+    int32 events_processed = 2;
+    string message = 3;
+}

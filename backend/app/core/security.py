@@ -11,26 +11,19 @@ from dotenv import load_dotenv # type: ignore
 load_dotenv()
 
 def _get_or_create_secret():
-    """Self-provisioning root-of-trust: Ensures a high-entropy key is committed to the environment."""
+    """Root-of-trust: reads SECRET_KEY from environment (set via .env / docker env_file).
+    Falls back to generating an ephemeral key at runtime only when the env var is genuinely absent,
+    which should never happen in a correctly deployed container."""
     key = os.getenv("SECRET_KEY")
     if key and key != "default-secret-key":
         return key
-    
-    # [SECURITY v1.8.41] Root Entropy Generation
+
     import secrets # type: ignore
     new_secret = secrets.token_urlsafe(64)
-    
-    # Persist to .env if possible
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
-    if os.path.exists(env_path):
-        try:
-            with open(env_path, "a") as f:
-                f.write(f"\n# Auto-Generated Root of Trust [v1.8.41]\nSECRET_KEY=\"{new_secret}\"\n")
-            print(f"[SECURITY] Self-Provisioned High-Entropy Secret committed to {env_path}")
-        except: pass
-    
-    # Update current process environment
     os.environ["SECRET_KEY"] = new_secret
+    print("[SECURITY] WARNING: SECRET_KEY was not set in the environment. "
+          "Generated an ephemeral key — JWTs will be invalidated on restart. "
+          "Add SECRET_KEY to your .env file to make it persistent.")
     return new_secret
 
 # Config

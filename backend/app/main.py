@@ -230,8 +230,17 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(agentless_background_telemetry())
 
+    # [NEW] v3.0 Streaming Architecture Setup
+    from .core.kafka_producer import kafka_client
+    from .db.clickhouse import clickhouse_db
+    
+    await kafka_client.connect()
+    clickhouse_db.connect()
+
     yield
+
     # --- SHUTDOWN ---
+    await kafka_client.disconnect()
     await app.state.httpx_client.aclose()
     print("--- SHUTDOWN ---")
 
@@ -351,6 +360,10 @@ Instrumentator().instrument(app).expose(app)
 plugin_manager.app = app
 plugin_manager.load_api_plugins("app.api")
 plugin_manager.load_api_plugins("app.api.v2")
+
+# [FIX] Manually mount the secondary agent_router since PluginManager only mounts the first router per file
+from .api import agents
+app.include_router(agents.agent_router, prefix="/api/agent", tags=["Agent Communication"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

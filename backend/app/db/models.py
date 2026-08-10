@@ -87,10 +87,17 @@ class User(Base):
     PasswordHash = Column(String(255))
     Role = Column(String(50), default="Analyst")
     TenantId = Column(Integer, nullable=True)
+    DataLossCount = Column(Integer, default=0)
+    SsoBypassCount = Column(Integer, default=0)
+    InsiderThreatCount = Column(Integer, default=0)
+    LastEvaluationAt = Column(DateTime, nullable=True)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Agent(Base):
     __tablename__ = "Agents"
     ActiveStatus = Column(Boolean, default=True)
+    Status = Column(String(50), default="Online") # Online, Offline, Decommissioned
     CreatedDate = Column(DateTime, default=datetime.utcnow)
     UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -142,11 +149,11 @@ class Agent(Base):
     Latitude = Column(Float, nullable=True)
     Longitude = Column(Float, nullable=True)
     Country = Column(Text, nullable=True)
-    InstalledSoftwareJson = Column(LONGTEXT, nullable=True)
+    InstalledSoftwareJson = Column(Text, nullable=True)
     LocalIp = Column(String(50), default="0.0.0.0")
     Gateway = Column(String(50), default="Unknown")
     PowerStatusJson = Column(Text, nullable=True) # [NEW] Battery info
-    HardwareJson = Column(LONGTEXT, nullable=True) # [NEW] CPU/RAM/Disk details
+    HardwareJson = Column(Text, nullable=True) # [NEW] CPU/RAM/Disk details
     DiskEncrypted = Column(Boolean, default=False) # [NEW] MDM Disk Encryption
     NetworkInMbps = Column(Float, default=0.0) # [NEW]
     NetworkOutMbps = Column(Float, default=0.0) # [NEW]
@@ -158,6 +165,9 @@ class Agent(Base):
     AgentRole = Column(String(50), default="Standalone") # [v2.6.0] Standalone, Primary, Replica
     IsSharedSystem = Column(Boolean, default=False) # [v2.6.0] True for RDS/Shared Servers
     PolicyId = Column(Integer, ForeignKey("Policies.Id"), nullable=True)
+    
+    ActiveUser = Column(String(255), default="Unknown")
+    UserLoginTime = Column(String(255), default="Unknown")
     
     # Versioning [NEW]
     Version = Column(String(50), default="v1.2.2")
@@ -186,7 +196,7 @@ class Agent(Base):
     AutoPatchEnabled = Column(Boolean, default=False)
     ThreatScore = Column(Integer, default=0) # [v2.1.0] AI Risk Assessment
     RiskLevel = Column(String(50), default="Normal") # [v2.1.0] AI Risk Assessment
-    BehavioralMetadataJson = Column(LONGTEXT, nullable=True) # [v2.7.5] Human Intelligence Analytics
+    BehavioralMetadataJson = Column(Text, nullable=True) # [v2.7.5] Human Intelligence Analytics
     RequireMtls = Column(Boolean, default=False) # [Layer 1] Require mTLS authentication
     TpmHash = Column(String(255), nullable=True) # [Layer 1] TPM Attestation Hash
 
@@ -221,7 +231,7 @@ class AgentReportEntity(Base):
     SoftwareCount = Column(Integer, default=0) # [v1.8.37] Parity Sync
     NetworkInMbps = Column(Float, default=0.0) # [NEW] v1.8.26
     NetworkOutMbps = Column(Float, default=0.0) # [NEW] v1.8.26
-    TopProcessesJson = Column(LONGTEXT, nullable=True) # [NEW]
+    TopProcessesJson = Column(Text, nullable=True) # [NEW]
     Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Composite indexes for fast time-filtered queries (hottest table)
@@ -229,6 +239,22 @@ class AgentReportEntity(Base):
         Index('ix_agent_reports_agentid_ts', 'AgentId', 'Timestamp'),
         Index('ix_agent_reports_tenantid_ts', 'TenantId', 'Timestamp'),
     )
+
+class CloudIntegrationCredential(Base):
+    """[v3.0.0] Agentless CSPM Cloud Credentials"""
+    __tablename__ = "CloudIntegrationCredentials"
+    ActiveStatus = Column(Boolean, default=True)
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    Id = Column(Integer, primary_key=True, index=True)
+    TenantId = Column(Integer, index=True)
+    Provider = Column(String(50)) # aws, azure, gcp
+    AccountId = Column(String(255))
+    AccessKeyId = Column(String(255), nullable=True)
+    SecretAccessKey = Column(String(255), nullable=True) # Usually encrypted in prod
+    Region = Column(String(50), nullable=True)
+    IsActive = Column(Boolean, default=True)
 
 class AuditLog(Base):
     __tablename__ = "AuditLogs"
@@ -977,4 +1003,20 @@ class AgentlessCredential(Base):
     EncryptedPassword = Column(Text, nullable=True) # AES-256-GCM Vault Data
     EncryptedKey = Column(Text, nullable=True) # AES-256-GCM Vault Data
     CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class SupportTicket(Base):
+    __tablename__ = "SupportTickets"
+    
+    Id = Column(Integer, primary_key=True, index=True)
+    TicketId = Column(String(50), unique=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True)
+    Subject = Column(String(255))
+    Description = Column(Text)
+    Priority = Column(String(50), default="Medium")
+    Status = Column(String(50), default="Open")
+    CreatedBy = Column(String(255))
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    AttachmentsJson = Column(Text, default="[]") # Store list of dicts as JSON string
+
 

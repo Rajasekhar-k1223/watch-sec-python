@@ -24,7 +24,7 @@ def process_ocr_background(agent_id: str, screenshot_id: str, file_path: str):
     Enhanced with PII Regex detection and Risk Scoring.
     """
     import re # type: ignore
-    from app.db.models import Notification # type: ignore
+    from app.db.models import Notification, Agent # type: ignore
 
     if not os.path.exists(file_path):
         logger.error(f"OCR Task failed: File not found at {file_path}")

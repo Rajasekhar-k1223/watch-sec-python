@@ -1,7 +1,7 @@
 import socketio # type: ignore
 import os # type: ignore
 
-REDIS_URL = os.environ.get("CELERY_BROKER_URL", "redis://default:monitorix2025@172.18.0.8:6379/0")
+REDIS_URL = os.environ.get("CELERY_BROKER_URL", "redis://172.18.0.8:6379/0")
 
 # 1. Async Server (Used by FastAPI)
 sio = socketio.AsyncServer(

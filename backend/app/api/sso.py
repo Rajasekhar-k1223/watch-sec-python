@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from ..db.session import get_db  # type: ignore
 from ..db.models import User, Tenant  # type: ignore
 from .deps import get_current_user  # type: ignore
-from ..core.security import create_access_token  # type: ignore
+from ..core.security import create_access_token, get_password_hash  # type: ignore
 
 router = APIRouter()
 logger = logging.getLogger("SSORouter")
@@ -133,14 +133,24 @@ async def assertion_consumer_service(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid SAMLResponse encoding")
 
-    # TODO(security): In production, verify the XML signature using the tenant's
-    # stored IdP certificate (sso_config["certificate"]) via the `lxml` + `xmlsec1`
-    # library before trusting any attributes. Skipping signature verification is a
-    # critical security vulnerability. Current implementation trusts parsed
-    # attributes only after confirming SSO is enabled for the tenant.
+    cert = sso_config.get("certificate")
+    if not cert:
+        raise HTTPException(status_code=403, detail="Tenant IdP certificate not configured")
 
-    # Extract NameID (email) from SAML XML via simple string parsing
-    # Production: use a proper SAML library (python-saml / pysaml2)
+    from lxml import etree # type: ignore
+    from signxml import XMLVerifier # type: ignore
+
+    try:
+        root = etree.fromstring(saml_xml.encode('utf-8'))
+        # Enforce Cryptographic Signature Validation
+        verified_data = XMLVerifier().verify(root, x509_cert=cert)
+        # Convert verified ElementTree back to string for extraction
+        saml_xml = etree.tostring(verified_data.signed_xml).decode('utf-8')
+    except Exception as e:
+        logger.error(f"[SSO] SAML Signature Verification Failed: {e}")
+        raise HTTPException(status_code=403, detail="SAML signature verification failed")
+
+    # Extract NameID (email) from VERIFIED SAML XML
     username = _extract_saml_nameid(saml_xml)
     if not username:
         raise HTTPException(status_code=400, detail="Could not extract NameID from SAML response")
@@ -161,9 +171,8 @@ async def assertion_consumer_service(
             TenantId=tenant_id,
             Role="Analyst",  # Default role — can be overridden by IdP attributes
             IsActive=True,
-            # TODO(security): Password is not used for SSO users, but a random
-            # bcrypt hash is stored to satisfy DB constraints.
-            PasswordHash=secrets.token_hex(32),
+            # Resolving TODO: using a proper bcrypt hash for the random placeholder
+            PasswordHash=get_password_hash(secrets.token_urlsafe(32)),
         )
         db.add(user)
         await db.commit()

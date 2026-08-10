@@ -1,9 +1,8 @@
-
-
 services:
   backend:
     build: ./backend
     container_name: watch-sec-backend
+    restart: unless-stopped
     command: uvicorn app.main_dashboard:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
@@ -12,42 +11,89 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
-      - REDIS_URL=redis://172.18.0.8:6379/0
-      - CELERY_BROKER_URL=redis://172.18.0.8:6379/0
-      - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
+      - AGENT_BACKEND_URL=https://agent-api.monitorix.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
       - ./backend:/app
+      - ../agent-rust:/opt/apps/monitorix/agent-rust
     networks:
       - watch-sec-network
 
   agent-gateway:
     build: ./backend
-    container_name: watch-sec-agent-gateway
+    restart: unless-stopped
     command: uvicorn app.main_agent:app --host 0.0.0.0 --port 8005
-    ports:
-      - "8005:8005"
+    deploy:
+      replicas: 3
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
-      - REDIS_URL=redis://172.18.0.8:6379/0
-      - CELERY_BROKER_URL=redis://172.18.0.8:6379/0
-      - CELERY_RESULT_BACKEND=redis://172.18.0.8:6379/0
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
       - ./backend:/app
+      - ../agent-rust:/opt/apps/monitorix/agent-rust
+    networks:
+      - watch-sec-network
+
+  grpc-gateway:
+    build: ./backend
+    container_name: watch-sec-grpc-gateway
+    restart: unless-stopped
+    command: python -m app.grpc_gateway
+    ports:
+      - "50051:50051"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=kafka:29092
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+    volumes:
+      - ./backend:/app
+    networks:
+      - watch-sec-network
+
+  load-balancer:
+    image: nginx:alpine
+    container_name: watch-sec-load-balancer
+    restart: unless-stopped
+    ports:
+      - "8005:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent-gateway
     networks:
       - watch-sec-network
 
@@ -57,6 +103,7 @@ services:
       args:
         VITE_API_URL: /api
     container_name: watch-sec-frontend
+    restart: unless-stopped
     ports:
       - "8080:80"
     networks:
@@ -65,22 +112,92 @@ services:
   celery:
     build: ./backend
     container_name: watch-sec-celery
+    restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:${DB_PASSWORD}@watch-sec-sql:3306/monitorix_db
-      - MONGO_URL=mongodb://admin:${DB_PASSWORD}@watch-sec-mongo:27017/monitorix_db?authSource=admin
-      - REDIS_URL=redis://watch-sec-redis:6379/0
-      - CELERY_BROKER_URL=redis://watch-sec-redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://watch-sec-redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=kafka:29092
       - MONITORIX_BASE_URL=https://monitorix.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend:/app
       - ./backend/storage:/app/storage
+
+  kafka-consumer:
+    build: ./backend
+    container_name: watch-sec-kafka-consumer
+    restart: unless-stopped
+    command: python -m app.workers.kafka_consumer
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=kafka:29092
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+    volumes:
+      - ./backend:/app
+    networks:
+      - watch-sec-network
+
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2
+    container_name: watch-sec-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - watch-sec-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: watch-sec-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - watch-sec-network
+
+  mongo:
+    image: mongo:latest
+    container_name: watch-sec-mongo
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${DB_PASSWORD}
+      - MONGO_INITDB_DATABASE=monitorix_db
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
     networks:
       - watch-sec-network
 
@@ -88,3 +205,6 @@ networks:
   watch-sec-network:
     external: true
     name: watch-sec-network
+
+volumes:
+  mongo_data:

@@ -61,7 +61,8 @@ async def connect(sid: str, environ: Dict[str, Any], auth: Optional[Dict[str, An
                 'tenantId': tenant_id, # Normalize key to tenantId (camelCase-ish match)
                 'user': { 'id': 0, 'username': username, 'role': role, 'tenantId': tenant_id } # Compat
             })
-            print(f"[Socket.IO] User Connected: {username} ({role})")
+            await sio.enter_room(sid, f"tenant_{tenant_id}")
+            print(f"[Socket.IO] User Connected: {username} ({role}) - Room: tenant_{tenant_id}")
             return True
         except Exception as e:
             print(f"[Socket.IO] User Auth Failed: {e}")

@@ -91,6 +91,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    if "/api/events/activity" in request.url.path:
+        body = await request.body()
+        print(f"[DEBUG MIDDLEWARE] {request.method} {request.url.path} Body: {body}")
+    
+    response = await call_next(request)
+    return response
+
 # ======================================================
 # CORS — SINGLE SOURCE OF TRUTH
 # ======================================================

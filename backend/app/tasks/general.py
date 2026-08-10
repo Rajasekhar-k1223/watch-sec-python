@@ -9,7 +9,7 @@ from datetime import datetime # type: ignore
 
 # DB Config (Sync for Celery Worker)
 # Standardized to use .env passwords
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://admin:monitorix2025@watch-sec-mongo:27017/monitorix_db?authSource=admin")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://watch-sec-mongo:27017/monitorix_db")
 MYSQL_URL = os.getenv("DATABASE_URL", "").replace("aiomysql", "pymysql")
 
 def get_sync_mongo():

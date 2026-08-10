@@ -2,7 +2,7 @@ from app.core.celery_app import celery_app # type: ignore
 from sqlalchemy import create_engine, select, update # type: ignore
 from sqlalchemy.orm import sessionmaker # type: ignore
 from app.db.models import Agent, Vulnerability, AgentSoftware, EventLog, Tenant # type: ignore
-from datetime import datetime # type: ignore
+from datetime import datetime, timedelta # type: ignore
 from app.db.session import settings # type: ignore
 import json # type: ignore
 import logging # type: ignore
@@ -209,21 +209,90 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
 
 @celery_app.task
 def cleanup_agents():
-    """[v2.6.0] Auto-Decommission Zombies (Short-lived Replicas)."""
+    """[v2.6.0] Auto-Decommission Zombies & Generate Offline Alerts."""
+    from app.db.models import ActivityLog, DetectionAlert
+    from app.services.alert_service import alert_service
+    import asyncio
+    
     session = Session()
     try:
-        # If an agent is offline for > 24h, mark as 'Decommissioned'
         decommission_threshold = datetime.utcnow() - timedelta(hours=24)
-        
-        # Mark as Offline if no heartbeat for 2 mins
         offline_threshold = datetime.utcnow() - timedelta(minutes=2)
         
-        # 1. Update status to Offline
-        session.execute(
-            update(Agent)
-            .where(Agent.LastSeen < offline_threshold, Agent.Status == "Online")
-            .values(Status="Offline")
-        )
+        # 1. Fetch agents transitioning to Offline
+        going_offline = session.execute(
+            select(Agent).where(Agent.LastSeen < offline_threshold, Agent.Status == "Online")
+        ).scalars().all()
+        
+        if going_offline:
+            # Prefetch tenants to avoid N+1 queries
+            tenant_ids = {a.TenantId for a in going_offline if a.TenantId}
+            tenants = session.execute(
+                select(Tenant).where(Tenant.Id.in_(tenant_ids))
+            ).scalars().all()
+            tenant_map = {t.Id: t for t in tenants}
+            
+            async def dispatch_alerts():
+                for agent in going_offline:
+                    details = f"Agent {agent.Hostname or agent.AgentId} heartbeat lost (Last Seen: {agent.LastSeen})"
+                    
+                    # Create ActivityLog
+                    log = ActivityLog(
+                        AgentId=agent.AgentId,
+                        TenantId=agent.TenantId,
+                        Type="AgentOffline",
+                        Details=details,
+                        IsAlert=True,
+                        Timestamp=datetime.utcnow()
+                    )
+                    session.add(log)
+                    
+                    # Create DetectionAlert for Dashboard
+                    alert = DetectionAlert(
+                        AgentId=agent.AgentId,
+                        MatchedContent=details,
+                        Status="New",
+                        Severity="High",
+                        RuleContent="Agent Offline",
+                        Timestamp=datetime.utcnow()
+                    )
+                    session.add(alert)
+                    session.flush() # To get alert.Id
+                    
+                    # Dispatch to external integrations (Slack/Teams)
+                    tenant = tenant_map.get(agent.TenantId)
+                    if tenant and tenant.IntegrationConfigJson:
+                        try:
+                            config = json.loads(tenant.IntegrationConfigJson)
+                            if config:
+                                alert_data = {
+                                    "Id": alert.Id,
+                                    "AgentId": agent.AgentId,
+                                    "Type": "AgentOffline",
+                                    "Severity": "High",
+                                    "Details": details,
+                                    "Timestamp": alert.Timestamp.isoformat()
+                                }
+                                await alert_service.dispatch_alert(config, alert_data)
+                        except Exception as e:
+                            logger.error(f"Failed to dispatch offline alert: {e}")
+            
+            # Run the async dispatch block
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(dispatch_alerts())
+                else:
+                    loop.run_until_complete(dispatch_alerts())
+            except RuntimeError:
+                asyncio.run(dispatch_alerts())
+                
+            # Update status to Offline
+            session.execute(
+                update(Agent)
+                .where(Agent.LastSeen < offline_threshold, Agent.Status == "Online")
+                .values(Status="Offline")
+            )
         
         # 2. Decommission Zombies (Hidden from main list)
         session.execute(
@@ -233,8 +302,10 @@ def cleanup_agents():
         )
         
         session.commit()
-        logger.info("Agent status cleanup & decommissioning task completed.")
+        if going_offline:
+            logger.info(f"Agent status cleanup: Marked {len(going_offline)} agents offline.")
     except Exception as e:
         logger.error(f"Cleanup task failed: {e}")
+        session.rollback()
     finally:
         session.close()

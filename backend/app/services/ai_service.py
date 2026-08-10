@@ -938,5 +938,62 @@ class SecurityAIService:
                 "SuggestedActions": suggested
             }
 
+    def analyze_process_lineage(self, lineage_nodes: list):
+        """[v2.7.0] Heuristic/ML analysis of Process Lineage for threat detection."""
+        if not lineage_nodes:
+            return {"RiskScore": 0, "RiskLevel": "Normal", "Triggers": []}
+
+        risk_score = 0
+        triggers = []
+        
+        # known living-off-the-land binaries
+        lol_bins = [r"powershell", r"cmd", r"wmic", r"certutil", r"mshta", r"rundll32", r"regsvr32", r"cscript", r"wscript"]
+        suspicious_parents = [r"winword", r"excel", r"powerpnt", r"outlook", r"iexplore", r"chrome"]
+
+        import re
+        
+        # Create mapping of PID to Node for parent traversal
+        pid_map = {n.ProcessId: n for n in lineage_nodes}
+
+        for node in lineage_nodes:
+            pname = node.ProcessName.lower()
+            cmdline = (node.CommandLine or "").lower()
+            
+            # Check for lolbin
+            is_lol = any(re.search(pat, pname) for pat in lol_bins)
+            
+            # Check for suspicious command line arguments
+            suspicious_args = [r"-enc", r"-encodedcommand", r"bypass", r"hidden", r"downloadstring", r"invoke-webrequest"]
+            has_suspicious_args = any(re.search(pat, cmdline) for pat in suspicious_args)
+            
+            if is_lol and has_suspicious_args:
+                risk_score += 40
+                triggers.append(f"Suspicious Execution ({pname}): {cmdline[:50]}...")
+            elif is_lol:
+                risk_score += 10
+                
+            # Check Parent Relationship
+            if node.ParentProcessId and node.ParentProcessId in pid_map:
+                parent_node = pid_map[node.ParentProcessId]
+                parent_name = parent_node.ProcessName.lower()
+                
+                # e.g., Word spawns powershell
+                if any(re.search(pat, parent_name) for pat in suspicious_parents) and is_lol:
+                    risk_score += 80
+                    triggers.append(f"CRITICAL: Office/Browser {parent_name} spawned {pname}")
+                    
+        # Determine Risk Level
+        risk_level = "Normal"
+        if risk_score > 30: risk_level = "Medium"
+        if risk_score > 60: risk_level = "High"
+        if risk_score >= 100: risk_level = "Critical"
+        
+        return {
+            "RiskScore": min(risk_score, 100),
+            "RiskLevel": risk_level,
+            "Triggers": list(set(triggers)),
+            "Recommendation": "Isolate Host" if risk_level in ["High", "Critical"] else "Monitor"
+        }
+
 # Singleton Instance
 ai_service = SecurityAIService()

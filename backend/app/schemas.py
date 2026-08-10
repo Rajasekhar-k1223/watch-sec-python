@@ -8,7 +8,7 @@ class SecurityEventLog(BaseModel):
     AgentId: str
     Type: str
     Details: str
-    Timestamp: datetime
+    Timestamp: Optional[Any] = None
     Metadata: Optional[dict] = None
 
 class ActivityLog(BaseModel):
@@ -22,7 +22,7 @@ class ActivityLog(BaseModel):
     IdleSeconds: float = 0.0
     Category: Optional[str] = "Neutral"
     ProductivityScore: Optional[float] = 0.0
-    Timestamp: datetime
+    Timestamp: Optional[datetime] = None
     RiskScore: Optional[float] = 0.0
     RiskLevel: Optional[str] = "Normal"
     startTime: Optional[str] = None
@@ -56,15 +56,15 @@ class ActivityStats(BaseModel):
 class ActivityLogDto(BaseModel):
     AgentId: str
     TenantApiKey: Optional[str] = None
-    ActivityType: str
+    ActivityType: Optional[str] = None
     WindowTitle: Optional[str] = "Unknown"
     ProcessName: Optional[str] = "Unknown"
     Url: Optional[str] = None
-    DurationSeconds: float
+    DurationSeconds: Optional[float] = 0.0
     IdleSeconds: float = 0.0
     Category: Optional[str] = "Neutral"
     ProductivityScore: Optional[float] = 0.0
-    Timestamp: datetime
+    Timestamp: Optional[datetime] = None
 
     class Config:
         extra = "allow"
@@ -114,6 +114,8 @@ class AgentHeartbeat(BaseModel):
     CpuUsage: float = 0.0
     MemoryUsage: float = 0.0
     Timestamp: Optional[Any] = None
+    ActiveUser: str = "Unknown"
+    UserLoginTime: str = "Unknown"
     InstalledSoftwareJson: Optional[str] = "[]"
     LocalIp: Optional[str] = None
     Gateway: Optional[str] = None
@@ -143,8 +145,8 @@ class AgentUpdateLogRequest(BaseModel):
 class SecurityEventDto(BaseModel):
     AgentId: str
     TenantApiKey: Optional[str] = None
-    Type: str
-    Details: str
-    Timestamp: datetime
+    Type: Optional[str] = None
+    Details: Optional[str] = None
+    Timestamp: Optional[datetime] = None
 
 

@@ -26,7 +26,7 @@ def analyze_workforce_productivity():
     try:
         # 1. Fetch Active Agents (last 24 hours for daily summary)
         day_ago = datetime.utcnow() - timedelta(hours=24)
-        agents = session.query(Agent).filter(Agent.LastHeartbeat > day_ago).all()
+        agents = session.query(Agent).filter(Agent.LastSeen > day_ago).all()
         
         for agent in agents:
             # 2. Get Policy Mapping

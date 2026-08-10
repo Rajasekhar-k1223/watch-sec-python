@@ -38,5 +38,8 @@ def poll_all_agentless_endpoints():
             except Exception as e:
                 logger.error(f"[Agentless] Failed to poll {ep['ip']}: {e}")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(_run_poll())
+    # Use asyncio.run safely inside the Celery synchronous worker thread
+    try:
+        asyncio.run(_run_poll())
+    except Exception as e:
+        logger.error(f"[Agentless] Polling loop failed: {e}")

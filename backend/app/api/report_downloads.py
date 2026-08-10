@@ -15,29 +15,33 @@ import time # type: ignore
 
 router = APIRouter()
 
-# [SECURITY] Never use a hardcoded fallback secret. If SECRET_KEY is missing, crash at startup.
-REPORT_SECRET = os.getenv("SECRET_KEY")
-if not REPORT_SECRET:
-    raise RuntimeError("[FATAL] SECRET_KEY environment variable is not set. Report signing key unavailable. Server cannot start.")
+
+def _get_report_secret() -> str:
+    secret = os.getenv("SECRET_KEY")
+    if not secret:
+        raise RuntimeError("[FATAL] SECRET_KEY environment variable is not set. Report signing key unavailable.")
+    return secret
 
 
 def generate_download_token(filename: str, expires_in_seconds: int = 7 * 24 * 3600) -> str:
     """Generate a signed token for secure file download (valid 7 days by default)."""
+    secret = _get_report_secret()
     expiry = int(time.time()) + expires_in_seconds
     message = f"{filename}:{expiry}".encode()
-    sig = hmac_lib.new(REPORT_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    sig = hmac_lib.new(secret.encode(), message, hashlib.sha256).hexdigest()
     return f"{expiry}:{sig}"
 
 
 def verify_download_token(filename: str, token: str) -> bool:
     """Verify token is valid and not expired."""
     try:
+        secret = _get_report_secret()
         expiry_str, sig = token.split(":", 1)
         expiry = int(expiry_str)
         if time.time() > expiry:
             return False  # Token expired
         message = f"{filename}:{expiry}".encode()
-        expected_sig = hmac_lib.new(REPORT_SECRET.encode(), message, hashlib.sha256).hexdigest()
+        expected_sig = hmac_lib.new(secret.encode(), message, hashlib.sha256).hexdigest()
         return hmac_lib.compare_digest(sig, expected_sig)
     except Exception:
         return False

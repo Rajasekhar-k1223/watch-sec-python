@@ -9,12 +9,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/monitorix_db
-      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/monitorix_db?authSource=admin
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
       - HOST=0.0.0.0
-      - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
-      - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
-      - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
       - SECRET_KEY=${SECRET_KEY}
       - ACCESS_TOKEN_EXPIRE_MINUTES=30
       - PORT=8000
@@ -35,11 +36,36 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - DATABASE_URL=mysql+aiomysql://appuser:MySqlApp!2025#Secure@host.docker.internal:43306/monitorix_db
-      - MONGO_URL=mongodb://admin:Mongo!2025%23Secure@host.docker.internal:37017/monitorix_db?authSource=admin
-      - CELERY_BROKER_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
-      - CELERY_RESULT_BACKEND=redis://:Redis2025Secure@host.docker.internal:6379/0
-      - REDIS_URL=redis://:Redis2025Secure@host.docker.internal:6379/0
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      # DMARC-aligned SMTP: must use from/sender within monitorix.co.in domain
+      - SMTP_HOST=smtp.monitorix.co.in
+      - SMTP_PORT=465
+      - SMTP_USER=info@monitorix.co.in
+      - SMTP_PASS=${SMTP_PASSWORD}
+      - SMTP_FROM=info@monitorix.co.in
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+    volumes:
+      - ./backend/storage:/app/storage
+
+  monitorix-kafka-consumer:
+    build: ./backend
+    container_name: monitorix-kafka-consumer
+    command: python -m app.workers.kafka_consumer
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
+      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
+      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
+      - REDIS_URL=redis://db.monitorix.co.in:49103/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - KAFKA_BROKER_URL=db.monitorix.co.in:9092
       # DMARC-aligned SMTP: must use from/sender within monitorix.co.in domain
       - SMTP_HOST=smtp.monitorix.co.in
       - SMTP_PORT=465

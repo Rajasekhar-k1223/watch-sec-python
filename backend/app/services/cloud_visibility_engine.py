@@ -23,7 +23,7 @@ class CloudVisibilityEngine:
     # Internal Event Bus
     # ---------------------------------------------------------------------------
 
-    def _emit_security_signal(self, signal: str, severity: str, context: Dict[str, Any]):
+    async def _emit_security_signal(self, db: AsyncSession, agent_id: str, signal: str, severity: str, context: Dict[str, Any]):
         """Emits a structured security signal to the internal log + external webhook (if configured)."""
         event = {
             "source": "cloud_visibility",
@@ -33,7 +33,12 @@ class CloudVisibilityEngine:
             "timestamp": datetime.datetime.utcnow().isoformat()
         }
         logger.warning(f"[CloudSignal] {severity.upper()} — {signal}: {context}")
-        # TODO: forward to SIEM/webhook via dispatcher_service if configured
+        
+        from .dispatcher_service import dispatcher
+        import asyncio
+        # Run dispatch_siem_webhook without blocking the engine's main execution flow
+        asyncio.create_task(dispatcher.dispatch_siem_webhook(db, agent_id, event))
+        
         return event
 
     # ---------------------------------------------------------------------------
@@ -67,7 +72,9 @@ class CloudVisibilityEngine:
         # IAM Risk Signal: overly permissive roles
         iam = payload.get("iam_role", "") or ""
         if any(term in iam.lower() for term in ("admin", "root", "superuser", "*")):
-            self._emit_security_signal(
+            await self._emit_security_signal(
+                db=db,
+                agent_id=agent_id,
                 signal="OverlyPermissiveIAMRole",
                 severity="High",
                 context={"agent_id": agent_id, "iam_role": iam, "provider": meta.Provider}
@@ -75,7 +82,9 @@ class CloudVisibilityEngine:
 
         # Untagged instance signal
         if not payload.get("tags"):
-            self._emit_security_signal(
+            await self._emit_security_signal(
+                db=db,
+                agent_id=agent_id,
                 signal="UntaggedCloudInstance",
                 severity="Low",
                 context={"agent_id": agent_id, "instance_id": meta.InstanceId, "provider": meta.Provider}
@@ -121,7 +130,9 @@ class CloudVisibilityEngine:
 
             # Security signals
             if asset.IsPrivileged:
-                signals.append(self._emit_security_signal(
+                signals.append(await self._emit_security_signal(
+                    db=db,
+                    agent_id=agent_id,
                     signal="PrivilegedContainerDetected",
                     severity="High",
                     context={"agent_id": agent_id, "container_id": container_id, "image": asset.ImageName}
@@ -130,7 +141,9 @@ class CloudVisibilityEngine:
             # Detect containers using host network
             ports = c.get("ports", [])
             if any(p.get("host_port", 0) in (22, 2375, 2376) for p in ports if isinstance(p, dict)):
-                signals.append(self._emit_security_signal(
+                signals.append(await self._emit_security_signal(
+                    db=db,
+                    agent_id=agent_id,
                     signal="ContainerExposingDangerousPort",
                     severity="Critical",
                     context={"agent_id": agent_id, "container_id": container_id, "ports": ports}

@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends # type: ignore
 from fastapi.responses import JSONResponse # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
-from sqlalchemy import desc, func, case # type: ignore
+from sqlalchemy import desc, func, case, text # type: ignore
+import sqlalchemy as sa
 from typing import List, Optional # type: ignore
 from datetime import datetime, timedelta # type: ignore
 
@@ -78,14 +79,13 @@ async def get_dashboard_status(
                 cpu = report.CpuUsage
                 mem = report.MemoryUsage
                 ts = report.Timestamp
-                if (now - ts).total_seconds() < 120:
-                    status = "Online"
-            elif agent.LastSeen and (now - agent.LastSeen).total_seconds() < 120:
-                # Fallback to agent table metadata if no report in 24h but heartbeat is fresh
+                
+            if agent.LastSeen and (now - agent.LastSeen).total_seconds() < 120:
                 status = "Online"
-                cpu = agent.CpuUsage
-                mem = agent.MemoryUsage
-                ts = agent.LastSeen
+                if not report or agent.LastSeen > report.Timestamp:
+                    ts = agent.LastSeen
+            elif report and (now - report.Timestamp).total_seconds() < 120:
+                status = "Online"
 
             results.append({
                 "id": agent.Id,
@@ -233,18 +233,52 @@ async def get_dashboard_stats(
         avg_mem = float(avg_mem or 0)
 
         # 3. Resource Trend (Optimized: SQL-Level Bucketing)
+        # Use finer buckets for recent windows so the chart has smooth continuous flow
         group_by_day = total_hours > 48
+        group_by_15min = total_hours <= 6 and not group_by_day
+        group_by_5min = total_hours <= 2
         
         from ..db.session import settings # type: ignore
         is_sqlite = settings.DATABASE_URL.startswith("sqlite")
         
         if is_sqlite:
-            fmt = '%Y-%m-%d' if group_by_day else '%Y-%m-%d %H:00'
-            time_expr = func.strftime(fmt, AgentReportEntity.Timestamp)
+            if group_by_5min:
+                # SQLite: floor minutes to nearest 5 (e.g., 13 -> 10, 17 -> 15)
+                time_expr = func.strftime('%Y-%m-%d %H:', AgentReportEntity.Timestamp).op('||')(
+                    func.printf('%02d', sa.cast(func.strftime('%M', AgentReportEntity.Timestamp), sa.Integer) / 5 * 5)
+                )
+            elif group_by_15min:
+                time_expr = func.strftime('%Y-%m-%d %H:', AgentReportEntity.Timestamp).op('||')(
+                    func.printf('%02d', sa.cast(func.strftime('%M', AgentReportEntity.Timestamp), sa.Integer) / 15 * 15)
+                )
+            elif group_by_day:
+                time_expr = func.strftime('%Y-%m-%d', AgentReportEntity.Timestamp)
+            else:
+                time_expr = func.strftime('%Y-%m-%d %H:00', AgentReportEntity.Timestamp)
         else:
-            fmt = '%Y-%m-%d' if group_by_day else '%Y-%m-%d %H:00'
-            time_expr = func.date_format(AgentReportEntity.Timestamp, fmt)
-
+            if group_by_5min:
+                # PostgreSQL: use date_trunc to 5-minute buckets via epoch math
+                time_expr = func.to_char(
+                    func.date_trunc('hour', AgentReportEntity.Timestamp) +
+                    func.cast(
+                        func.floor(func.extract('minute', AgentReportEntity.Timestamp) / 5) * 5 * text("* interval '1 minute'"),
+                        sa.Interval
+                    ),
+                    'YYYY-MM-DD HH24:MI'
+                )
+            elif group_by_15min:
+                time_expr = func.to_char(
+                    func.date_trunc('hour', AgentReportEntity.Timestamp) +
+                    func.cast(
+                        func.floor(func.extract('minute', AgentReportEntity.Timestamp) / 15) * 15 * text("* interval '1 minute'"),
+                        sa.Interval
+                    ),
+                    'YYYY-MM-DD HH24:MI'
+                )
+            elif group_by_day:
+                time_expr = func.to_char(AgentReportEntity.Timestamp, 'YYYY-MM-DD')
+            else:
+                time_expr = func.to_char(AgentReportEntity.Timestamp, 'YYYY-MM-DD HH24:00')
         q_trend = select(
             time_expr.label("time_bucket"),
             func.avg(AgentReportEntity.CpuUsage).label("cpu"),
@@ -265,7 +299,7 @@ async def get_dashboard_stats(
                 # If group_by_day is true, bucket is 'YYYY-MM-DD'. Else 'YYYY-MM-DD HH:00'
                 dt_format = "%Y-%m-%d" if group_by_day else "%Y-%m-%d %H:00"
                 dt = datetime.strptime(str(bucket), dt_format)
-                label = dt.strftime("%b %d") if group_by_day else dt.strftime("%H:00")
+                label = dt.strftime("%b %d") if group_by_day else dt.strftime("%b %d, %H:00")
             except:
                 label = str(bucket)
                 
@@ -297,11 +331,14 @@ async def get_dashboard_stats(
             total_threats = sum(c for _, c in filtered_counts)
             by_type = [{"type": t, "count": c} for t, c in filtered_counts]
             
-            # Threat Trend (SQL-Level Bucketing)
+            # Threat Trend (SQL-Level Bucketing) — align format with resource trend
             if is_sqlite:
-                evt_time_expr = func.strftime(fmt, EventLog.Timestamp)
+                threat_fmt = '%Y-%m-%d' if group_by_day else ('%Y-%m-%d %H:%M' if (group_by_5min or group_by_15min) else '%Y-%m-%d %H:00')
+                evt_time_expr = func.strftime(threat_fmt, EventLog.Timestamp)
             else:
-                evt_time_expr = func.date_format(EventLog.Timestamp, fmt)
+                threat_pg_fmt = 'YYYY-MM-DD' if group_by_day else ('YYYY-MM-DD HH24:MI' if (group_by_5min or group_by_15min) else 'YYYY-MM-DD HH24:00')
+                evt_time_expr = func.to_char(EventLog.Timestamp, threat_pg_fmt)
+
                 
             q_evt_trend = select(evt_time_expr.label("time_bucket"), func.count(EventLog.Id).label("c"))
             if tenantId:
@@ -328,15 +365,15 @@ async def get_dashboard_stats(
         # 5. Recent Logs
         recent_logs = []
         try:
-            # Fetch recent EventLog rows
-            q_evts = select(EventLog).order_by(EventLog.Timestamp.desc()).limit(20)
+            # Fetch recent EventLog rows within time range
+            q_evts = select(EventLog).where((EventLog.Timestamp >= start_dt) & (EventLog.Timestamp <= end_dt)).order_by(EventLog.Timestamp.desc()).limit(100)
             if tenantId:
                 q_evts = q_evts.where(EventLog.AgentId.in_(tenant_agent_ids))
             res_evts = await db.execute(q_evts)
             evt_docs = res_evts.scalars().all()
             
-            # Fetch recent ActivityLog rows
-            q_acts = select(ActivityLogModel).order_by(ActivityLogModel.Timestamp.desc()).limit(20)
+            # Fetch recent ActivityLog rows within time range
+            q_acts = select(ActivityLogModel).where((ActivityLogModel.Timestamp >= start_dt) & (ActivityLogModel.Timestamp <= end_dt)).order_by(ActivityLogModel.Timestamp.desc()).limit(100)
             if tenantId:
                 q_acts = q_acts.where(ActivityLogModel.TenantId == tenantId)
             res_acts = await db.execute(q_acts)
@@ -364,7 +401,7 @@ async def get_dashboard_stats(
             # Sort by timestamp desc
             merged.sort(key=lambda x: x["timestamp"], reverse=True)
             
-            for item in merged[:15]:
+            for item in merged[:100]:
                 recent_logs.append({
                     "type": item["type"],
                     "details": item["details"],
@@ -437,9 +474,73 @@ async def get_dashboard_stats(
         except Exception as e:
             print(f"[Dashboard] Productivity Breakdown Error: {e}")
 
-        # 8. Network (Real Data Only)
+        # 9. Dynamic Metrics for Dashboard Cards
+        high_cpu_count = 0
+        try:
+            q_high_cpu = select(func.count(func.distinct(AgentReportEntity.AgentId)))\
+                .where(AgentReportEntity.Timestamp >= start_dt)\
+                .where(AgentReportEntity.Timestamp <= end_dt)\
+                .where(AgentReportEntity.CpuUsage > 85)
+            if tenantId:
+                q_high_cpu = q_high_cpu.where(AgentReportEntity.TenantId == tenantId)
+            res_high_cpu = await db.execute(q_high_cpu)
+            high_cpu_count = res_high_cpu.scalar() or 0
+        except Exception as e:
+            print(f"[Dashboard] High CPU Count Error: {e}")
+
+        violations_count = 0
+        try:
+            q_crit = select(func.count(EventLog.Id))\
+                .where(EventLog.Timestamp >= start_dt)\
+                .where(EventLog.Timestamp <= end_dt)\
+                .where((EventLog.Severity == 'Critical') | (EventLog.Severity == 'High'))
+            if tenantId:
+                q_crit = q_crit.where(EventLog.AgentId.in_(tenant_agent_ids))
+            res_crit = await db.execute(q_crit)
+            critical_threats_count = res_crit.scalar() or 0
+        except Exception:
+            critical_threats_count = 0
+            
+
+        try:
+            q_vio = select(func.count(EventLog.Id))\
+                .where(EventLog.Timestamp >= start_dt)\
+                .where(EventLog.Timestamp <= end_dt)\
+                .where((EventLog.Type.like('%Alert%')) | (EventLog.Type.like('%High%')))
+            if tenantId:
+                q_vio = q_vio.where(EventLog.AgentId.in_(tenant_agent_ids))
+            res_vio = await db.execute(q_vio)
+            violations_count = res_vio.scalar() or 0
+        except Exception as e:
+            print(f"[Dashboard] Violations Count Error: {e}")
+            
+        low_battery_count = 0
+        try:
+            q_batt = select(Agent.PowerStatusJson).where(Agent.PowerStatusJson.isnot(None))
+            if tenantId:
+                q_batt = q_batt.where(Agent.TenantId == tenantId)
+            res_batt = await db.execute(q_batt)
+            for (pjson,) in res_batt.all():
+                if pjson:
+                    import json
+                    try:
+                        b = json.loads(pjson)
+                        if b.get("BatteryStatus") == 1 and b.get("EstimatedChargeRemaining", 100) < 20:
+                            low_battery_count += 1
+                    except:
+                        pass
+        except Exception as e:
+            print(f"[Dashboard] Low Battery Count Error: {e}")
+
+        # 10. Network (Real Data Only)
         return {
             "agents": {"total": total_agents, "online": online_agents, "offline": offline_agents},
+            "metrics": {
+                "highResourceAgents": high_cpu_count,
+                "lowBatteryAgents": low_battery_count,
+                "recentViolations": violations_count,
+                "criticalThreats": critical_threats_count
+            },
             "resources": {
                 "avgCpu": round(avg_cpu, 1), 
                 "avgMem": round(avg_mem, 1), 

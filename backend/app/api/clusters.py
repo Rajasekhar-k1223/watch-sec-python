@@ -6,7 +6,7 @@ from sqlalchemy import select, and_
 
 from ..db.session import get_db
 from ..db.models import Agent, EventLog, User
-from ..core.auth import get_current_active_user
+from .deps import get_current_user as get_current_active_user
 
 router = APIRouter()
 logger = logging.getLogger("ClusterAPI")

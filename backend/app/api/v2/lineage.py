@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from app.db.session import get_db
 from app.db.models import ProcessLineageNode, User
 from app.api.deps import get_current_user, verify_agent_signature
@@ -21,7 +22,7 @@ class ProcessEvent(BaseModel):
     mitre_technique: str = None
 
 @router.post("/ingest")
-async def ingest_process(event: ProcessEvent, db: Session = Depends(get_db), agent_sig: str = Depends(verify_agent_signature)):
+async def ingest_process(event: ProcessEvent, db: AsyncSession = Depends(get_db), agent_sig: str = Depends(verify_agent_signature)):
     node = ProcessLineageNode(
         AgentId=event.agent_id,
         ProcessId=event.process_id,
@@ -35,22 +36,18 @@ async def ingest_process(event: ProcessEvent, db: Session = Depends(get_db), age
         MitreTechnique=event.mitre_technique
     )
     db.add(node)
-    db.commit()
+    await db.commit()
     return {"status": "success", "node_id": node.Id}
 
 @router.get("/tree/{agent_id}/{root_pid}")
-async def get_process_tree(agent_id: str, root_pid: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """
-    Recursively fetches the process execution tree.
-    In a true Graph DB, this is a single Cypher/AQL query.
-    Here we simulate tree building using SQL relationships.
-    """
-    all_agent_nodes = db.query(ProcessLineageNode).filter(ProcessLineageNode.AgentId == agent_id).all()
-    
-    # Build adjacency list in memory for fast tree reconstruction
+async def get_process_tree(agent_id: str, root_pid: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    all_agent_nodes = (await db.execute(
+        select(ProcessLineageNode).where(ProcessLineageNode.AgentId == agent_id)
+    )).scalars().all()
+
     nodes_by_pid = {}
     children_map = {}
-    
+
     for node in all_agent_nodes:
         node_dict = {
             "id": node.Id,
@@ -63,7 +60,7 @@ async def get_process_tree(agent_id: str, root_pid: int, db: Session = Depends(g
             "children": []
         }
         nodes_by_pid[node.ProcessId] = node_dict
-        
+
         ppid = node.ParentProcessId
         if ppid not in children_map:
             children_map[ppid] = []
@@ -73,18 +70,15 @@ async def get_process_tree(agent_id: str, root_pid: int, db: Session = Depends(g
         if current_pid not in nodes_by_pid:
             return None
         current_node = nodes_by_pid[current_pid]
-        
-        # Recursively attach children
         if current_pid in children_map:
             for child_pid in children_map[current_pid]:
                 child_tree = build_tree(child_pid)
                 if child_tree:
                     current_node["children"].append(child_tree)
-                    
         return current_node
 
     tree = build_tree(root_pid)
     if not tree:
         raise HTTPException(status_code=404, detail="Root process not found")
-        
+
     return {"status": "success", "agent_id": agent_id, "tree": tree}

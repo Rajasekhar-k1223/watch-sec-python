@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from sqlalchemy import desc
 from app.db.session import get_db
 from app.db.models import DlpRule, DlpPolicy, DlpPolicyRuleLink, DlpViolation, User
@@ -23,64 +24,61 @@ class PolicyRequest(BaseModel):
 
 class EvaluationPayload(BaseModel):
     agent_id: str
-    channel: str # e.g. "Clipboard", "USB", "Email"
-    content: str # The text payload to scan
+    channel: str
+    content: str
 
 @router.get("/rules")
-async def list_rules(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(DlpRule).all()
+async def list_rules(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return (await db.execute(select(DlpRule))).scalars().all()
 
 @router.post("/rules")
-async def create_rule(request: RuleRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def create_rule(request: RuleRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     rule = DlpRule(
         Name=request.name,
         Category=request.category,
         Pattern=request.pattern
     )
     db.add(rule)
-    db.commit()
-    dlp_engine.load_policies(db) # Hot reload
+    await db.commit()
+    await dlp_engine.load_policies(db)
     return {"status": "success", "rule_id": rule.Id}
 
 @router.get("/policies")
-async def list_policies(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(DlpPolicy).all()
+async def list_policies(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return (await db.execute(select(DlpPolicy))).scalars().all()
 
 @router.post("/policies")
-async def create_policy(request: PolicyRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def create_policy(request: PolicyRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     policy = DlpPolicy(
         Name=request.name,
         TargetChannelsJson=json.dumps(request.channels),
         Action=request.action
     )
     db.add(policy)
-    db.commit()
-    
+    await db.commit()
+
     for rid in request.rule_ids:
         link = DlpPolicyRuleLink(PolicyId=policy.Id, RuleId=rid)
         db.add(link)
-        
-    db.commit()
-    dlp_engine.load_policies(db) # Hot reload
+
+    await db.commit()
+    await dlp_engine.load_policies(db)
     return {"status": "success", "policy_id": policy.Id}
 
 @router.post("/evaluate")
-async def evaluate_payload(payload: EvaluationPayload, db: Session = Depends(get_db), agent_sig: str = Depends(verify_agent_signature)):
-    """
-    Endpoint called by the agent when it intercepts a clipboard copy or file transfer.
-    Returns the enforcement action (Block/Allow).
-    """
-    action, violation_ids = dlp_engine.evaluate_payload(
+async def evaluate_payload(payload: EvaluationPayload, db: AsyncSession = Depends(get_db), agent_sig: str = Depends(verify_agent_signature)):
+    action, violation_ids = await dlp_engine.evaluate_payload(
         db, payload.agent_id, payload.channel, payload.content
     )
-    
     return {
         "status": "evaluated",
-        "enforcement_action": action, # "Block", "Alert", "Allow"
+        "enforcement_action": action,
         "violations_logged": len(violation_ids)
     }
 
 @router.get("/violations")
-async def list_violations(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    violations = db.query(DlpViolation).order_by(desc(DlpViolation.Timestamp)).limit(100).all()
+async def list_violations(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    violations = (await db.execute(
+        select(DlpViolation).order_by(desc(DlpViolation.Timestamp)).limit(100)
+    )).scalars().all()
     return violations

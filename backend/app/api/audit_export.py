@@ -69,7 +69,7 @@ async def export_regulatory_audit_trail(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-from ..services.compliance_service import compliance_narrative # [v2.6.0]
+from ..services.compliance_service import compliance_engine as compliance_narrative # [v2.6.0]
 
 @router.get("/narrative")
 async def get_compliance_narrative(

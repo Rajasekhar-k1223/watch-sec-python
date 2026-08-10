@@ -112,19 +112,19 @@ async def get_agents(
         
         # [ROBUSTNESS] Handle missing IsPendingUninstall column if migration hasn't run yet
         try:
-            query = query.where(Agent.IsPendingUninstall == False)
+            query = query.where(Agent.IsPendingUninstall.is_not(True))
         except Exception:
             print("[Agents] WARNING: IsPendingUninstall column missing. Skipping filter.")
 
         # Filter by Tenant for non-SuperAdmin or if tenantId provided
-        effective_tenant_id = current_user.TenantId
-        if current_user.Role == "SuperAdmin" and tenantId is not None:
-            effective_tenant_id = tenantId
-
-        if effective_tenant_id:
-            query = query.where(Agent.TenantId == effective_tenant_id)
-        elif current_user.Role != "SuperAdmin":
-            return [] # Non-SuperAdmin with no tenant access
+        if current_user.Role == "SuperAdmin":
+            if tenantId is not None:
+                query = query.where(Agent.TenantId == tenantId)
+            # If tenantId is None, SuperAdmin sees all agents
+        else:
+            if not current_user.TenantId:
+                return [] # Non-SuperAdmin with no tenant access
+            query = query.where(Agent.TenantId == current_user.TenantId)
         
         query = query.order_by(Agent.LastSeen.desc())
         query = query.limit(limit).offset(offset)
@@ -550,6 +550,109 @@ async def trigger_sovereign_unlock(
     
     return {"status": "success", "message": "Sovereign Unlock command dispatched."}
 
+async def _dispatch_signed_command(agent_id: str, action: str, params: dict, current_user: User, db: AsyncSession):
+    # Find agent
+    query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        query = query.where(Agent.TenantId == current_user.TenantId)
+        
+    result = await db.execute(query)
+    agent = result.scalars().first()
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    # We need the tenant to get the api_key for signing
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    
+    if not tenant or not agent.MachineId:
+        raise HTTPException(status_code=500, detail="Keys not synchronized for this agent")
+        
+    timestamp = datetime.utcnow().isoformat()
+    
+    # Derive HMAC Key (Same logic as agent)
+    import json
+    import hashlib
+    import hmac
+    
+    msg_parts = [action, json.dumps(params, sort_keys=True), timestamp]
+    message = "|".join(msg_parts).encode('utf-8')
+    
+    machine_id = agent.MachineId if isinstance(agent.MachineId, bytes) else agent.MachineId.encode()
+    key = hashlib.sha256(tenant.ApiKey.encode() + machine_id).digest()
+    signature = hmac.new(key, message, hashlib.sha256).hexdigest()
+    
+    command_data = {
+        "action": action,
+        "params": params,
+        "policy_name": f"Administrative {action}",
+        "timestamp": timestamp,
+        "signature": signature
+    }
+    
+    # Push to Agent via Remediation channel
+    await sio.emit('Remediation', command_data, room=agent.AgentId)
+    
+    # [AUDIT]
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action=action,
+        Target=agent.Hostname,
+        Details=f"Command {action} dispatched remotely.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return {"status": "success", "message": f"{action} command dispatched."}
+
+
+@router.post("/{agent_id}/isolate")
+async def trigger_isolate(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    return await _dispatch_signed_command(agent_id, "IsolateNetwork", {}, current_user, db)
+
+
+@router.post("/{agent_id}/unisolate")
+async def trigger_unisolate(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    return await _dispatch_signed_command(agent_id, "UnisolateNetwork", {}, current_user, db)
+
+
+@router.post("/{agent_id}/forensics")
+async def trigger_forensics(
+    agent_id: str,
+    payload: dict, # { "OutputDirectory": "/tmp/dump" }
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    params = {}
+    if "OutputDirectory" in payload:
+        params["OutputDirectory"] = payload["OutputDirectory"]
+    return await _dispatch_signed_command(agent_id, "TriggerForensicCollection", params, current_user, db)
+
+
+@router.post("/{agent_id}/update-policy")
+async def trigger_update_policy(
+    agent_id: str,
+    payload: dict, # { "Policy": { ... } }
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if "Policy" not in payload:
+        raise HTTPException(status_code=400, detail="Missing 'Policy' object in payload")
+    
+    params = {"Policy": payload["Policy"]}
+    return await _dispatch_signed_command(agent_id, "UpdatePolicy", params, current_user, db)
+
 @router.get("/{agent_id}/software")
 async def get_agent_software(
     agent_id: str,
@@ -848,6 +951,46 @@ def is_in_maintenance_window(tenant_obj) -> bool:
         print(f"[Maintenance] ERROR: {e}")
         return True # Fail-open to avoid blocking critical updates if logic bugs out
 
+class ValidatePinRequest(BaseModel):
+    tenantApiKey: str
+    pin: str
+
+@agent_router.post("/validate-pin", dependencies=[Depends(RateLimiter(times=20, seconds=60))])
+async def validate_pin(
+    payload: ValidatePinRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Interactive Installation validation of 6-digit PIN."""
+    result_tenant = await db.execute(select(Tenant).where(Tenant.ApiKey == payload.tenantApiKey))
+    tenant = result_tenant.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+    import hashlib
+    pin_hash = hashlib.sha256(payload.pin.encode()).hexdigest()
+    
+    result_token = await db.execute(
+        select(AgentRegistrationToken)
+        .where(
+            AgentRegistrationToken.TokenHash == pin_hash,
+            AgentRegistrationToken.TenantId == tenant.Id
+        )
+    )
+    token = result_token.scalars().first()
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid or expired Installation PIN")
+        
+    if token.ExpiresAt < datetime.utcnow():
+        await db.delete(token)
+        await db.commit()
+        raise HTTPException(status_code=401, detail="Installation PIN has expired")
+
+    # DO NOT invalidate the OTP here! 
+    # It must survive until the agent calls /register to actually enroll.
+    
+    return {"status": "valid"}
+
 @agent_router.post("/register", dependencies=[Depends(RateLimiter(times=500, seconds=60))])
 async def register_agent(
     payload: AgentHeartbeat,
@@ -919,7 +1062,11 @@ async def agent_heartbeat(
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
     x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
 ):
-    print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted})")
+    try:
+        pass
+    except:
+        pass
+    print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted}, NetworkInMbps={payload.NetworkInMbps}, NetworkOutMbps={payload.NetworkOutMbps})")
     """
     Agent Heartbeat endpoint. 
     Handles both new agent registration and periodic status updates.
@@ -927,7 +1074,8 @@ async def agent_heartbeat(
     """
     try:
         # 1. Find Agent
-        result_agent = await db.execute(select(Agent).where(Agent.AgentId == payload.AgentId))
+        from sqlalchemy import func
+        result_agent = await db.execute(select(Agent).where(func.lower(Agent.AgentId) == func.lower(payload.AgentId)))
         agent = result_agent.scalars().first()
         print(f"[DEBUG] Heartbeat lookup for {payload.AgentId}: {'FOUND' if agent else 'NOT FOUND'}")
 
@@ -945,32 +1093,68 @@ async def agent_heartbeat(
             raise HTTPException(status_code=401, detail="Invalid Tenant")
 
         # [SEC] Enforce True Dynamic Registration: Refuse plaintext TenantApiKey on Heartbeat
-        if not x_signature or not x_timestamp:
-            raise HTTPException(status_code=403, detail="Signature missing. Please update agent.")
-            
-        # [SEC] Enforce HMAC Signature
         import hmac, hashlib
-        if agent and agent.MachineId:
-            key_seed = agent.MachineId.encode()
-        else:
-            key_seed = tenant.ApiKey.encode()
-        signing_key = hashlib.sha256(key_seed).digest()
-        
         body_bytes = await request.body()
-        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-        
-        if not hmac.compare_digest(expected, x_signature):
-            raise HTTPException(status_code=403, detail="Invalid signature")
+        _legacy_unsigned = False
 
-        # [SEC] E2EE Payload Decryption
-        from ..core.security import decrypt_e2e_payload
-        decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if (agent and agent.MachineSecret) else key_seed.decode())
-        if decrypted_bytes != body_bytes:
-            import json
-            decrypted_dict = json.loads(decrypted_bytes)
-            # Reconstruct the payload object with the decrypted telemetry
-            payload = AgentHeartbeat(**decrypted_dict)
+        if not x_signature or not x_timestamp:
+            # [COMPAT] Allow unsigned heartbeats from pre-v1.8.x agents.
+            # Accept if the payload TenantApiKey matches the tenant (already-registered agents OR
+            # new legacy agents connecting for the first time via valid API key).
+            unsigned_ok = payload.TenantApiKey and payload.TenantApiKey == tenant.ApiKey
+            if not unsigned_ok:
+                # [COMPAT-HEARTBEAT] Legacy EXE (pre-v1.8.64): signing fails on SYSTEM account
+                # when config.json regenerates (losing TenantApiKey). Accept unsigned heartbeats
+                # from registered agents with a recent payload timestamp (replay protection).
+                compat_heartbeat_ok = False
+                if payload.AgentId and payload.Timestamp:
+                    try:
+                        ts_str = str(payload.Timestamp).replace('Z', '').split('+')[0]
+                        ts_dt = datetime.fromisoformat(ts_str)
+                        age_seconds = abs((datetime.utcnow() - ts_dt).total_seconds())
+                        if age_seconds < 300:
+                            compat_heartbeat_ok = True
+                            print(f"[COMPAT-HEARTBEAT] Accepting unsigned heartbeat from legacy agent {payload.AgentId} (age={age_seconds:.1f}s)")
+                    except Exception as ts_err:
+                        print(f"[COMPAT-HEARTBEAT] Timestamp parse failed: {ts_err}")
+                if not compat_heartbeat_ok:
+                    raise HTTPException(status_code=403, detail="Signature missing. Please update agent.")
+            else:
+                print(f"[COMPAT] Accepting unsigned heartbeat from legacy agent {payload.AgentId} (API key matched, no signature)")
+            _legacy_unsigned = True
+        else:
+            # [SEC] Enforce HMAC Signature
+            if agent and agent.MachineId:
+                key_seed = agent.MachineId.encode()
+            else:
+                key_seed = tenant.ApiKey.encode()
+            signing_key = hashlib.sha256(key_seed).digest()
+
+            msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+            expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+
+            if not hmac.compare_digest(expected, x_signature):
+                # Fallback: if agent signed with API key (keyring unavailable on SYSTEM account),
+                # accept it and clear the stale MachineId so future re-registration succeeds cleanly.
+                if agent and agent.MachineId and x_tenant_api_key:
+                    fallback_key = hashlib.sha256(tenant.ApiKey.encode()).digest()
+                    fallback_expected = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+                    if hmac.compare_digest(fallback_expected, x_signature):
+                        agent.MachineId = None
+                        key_seed = tenant.ApiKey.encode()
+                        print(f"[RECOVERY] Agent {payload.AgentId} signed with API key (keyring fallback). Clearing MachineId for re-registration.")
+                    else:
+                        raise HTTPException(status_code=403, detail="Invalid signature")
+                else:
+                    raise HTTPException(status_code=403, detail="Invalid signature")
+
+            # [SEC] E2EE Payload Decryption (only for signed payloads)
+            from ..core.security import decrypt_e2e_payload
+            decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineId if (agent and agent.MachineId) else key_seed.decode())
+            if decrypted_bytes != body_bytes:
+                import json
+                decrypted_dict = json.loads(decrypted_bytes)
+                payload = AgentHeartbeat(**decrypted_dict)
 
         # [SECURITY FIX] v1.8.28 - Verify Agent belongs to this Tenant
         if agent and agent.TenantId != tenant.Id:
@@ -1107,7 +1291,7 @@ async def agent_heartbeat(
                     data_mw = json.loads(tenant.MaintenanceWindowJson or "{}")
                 except: pass
                 
-                auto_patch = data_mw.get("mode", "automatic") == "automatic"
+                auto_patch = data_mw.get("mode", "manual") == "automatic"
                 print(f"[DEBUG] Auto-patch mode: {auto_patch}")
                 
                 if agent.Version != LATEST_AGENT_VERSION:
@@ -1128,7 +1312,8 @@ async def agent_heartbeat(
                 try:
                     await db.commit()
                     await db.refresh(agent)
-                except:
+                except Exception as e:
+                    print(f"[HEARTBEAT] MachineId commit failed: {e}")
                     await db.rollback()
 
             # [v1.8.38] Inventory Stats:
@@ -1181,7 +1366,9 @@ async def agent_heartbeat(
                 
             agent.CpuUsage = payload.CpuUsage
             agent.MemoryUsage = payload.MemoryUsage
-            agent.NetworkInMbps = payload.NetworkInMbps
+            agent.ActiveUser = payload.ActiveUser
+            agent.UserLoginTime = payload.UserLoginTime
+            agent.NetworkInMbps = getattr(payload, 'NetworkInMbps', 0.0)
             agent.NetworkOutMbps = payload.NetworkOutMbps
             # NOTE: No commit here — merged with AgentReportEntity insert below for 1 round-trip
 
@@ -1257,7 +1444,9 @@ async def agent_heartbeat(
                         arch = "arm64"
                 
                 update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
-                update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}"
+                # Use format=exe for Windows so agent receives a raw EXE it can move+run directly
+                fmt_param = "&format=exe" if os_type == "windows" else ""
+                update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}{fmt_param}"
                 
                 # --- v1.8.41: HMAC Update Handshake ---
                 update_hash = ""
@@ -1273,20 +1462,35 @@ async def agent_heartbeat(
                     file_dir = os.path.dirname(os.path.abspath(__file__))
                     base_path = os.path.normpath(os.path.join(file_dir, "..", "..", "storage", "AgentTemplate", folder))
                     
-                    # Target correct filename (Consistent with downloads.py)
-                    fname = "monitorix.zip"
-                    if "linux" in update_os_type: fname = "monitorix-agent-linux"
-                    elif "mac" in update_os_type: fname = "monitorix-agent-mac"
+                    # Target correct filename — Windows uses raw EXE for self-update (agent moves it in place)
+                    if "linux" in update_os_type:
+                        fname = "monitorix-agent-linux"
+                    elif "mac" in update_os_type:
+                        fname = "monitorix-agent-mac"
+                    elif os_type == "windows":
+                        # Prefer the raw EXE so the hash matches what format=exe serves
+                        for candidate in ("monitorixagent.exe", "monitorix-agent.exe"):
+                            if os.path.exists(os.path.join(base_path, candidate)):
+                                fname = candidate
+                                break
+                        else:
+                            fname = "monitorix.zip"
+                    else:
+                        fname = "monitorix.zip"
                     
                     bin_path = os.path.join(base_path, fname)
                     if os.path.exists(bin_path):
-                        # 2. Calculate Binary SHA256
+                        # 2. Calculate Binary SHA256 (kept for v1.8.64+ agents; omitted in payload
+                        # for v1.8.63 legacy compat — verify_file_hash didn't exist in that EXE)
                         sha_calc = hashlib.sha256()
                         with open(bin_path, "rb") as f:
-                            for chunk in iter(lambda: f.read(8192), b""): 
+                            for chunk in iter(lambda: f.read(8192), b""):
                                 sha_calc.update(chunk)
-                        update_hash = sha_calc.hexdigest()
-                        
+                        # Send null (not "") so that both `if target_hash:` and
+                        # `if target_hash is not None:` guards skip the hash check in
+                        # legacy v1.8.63 EXE. Ed25519 signature still covers "v1.8.64|".
+                        update_hash = None
+
                         # 3. Generate Ed25519 Asymmetric Signature [v2.0.0]
                         try:
                             from app.core.security import sign_payload_asymmetric
@@ -1306,20 +1510,6 @@ async def agent_heartbeat(
         # 5. Create Periodic Status Report (for Resource History)
         from ..db.models import AgentReportEntity # type: ignore
         report_ts = datetime.utcnow()
-        if payload.Timestamp:
-            try:
-                if isinstance(payload.Timestamp, datetime):
-                    report_ts = payload.Timestamp
-                else:
-                    # Clean timestamp string and parse
-                    ts_str = str(payload.Timestamp).replace("Z", "+00:00")
-                    report_ts = datetime.fromisoformat(ts_str)
-            except Exception as e:
-                print(f"[HEARTBEAT] Timestamp parse error: {e}")
-        
-        # Ensure naive UTC for database
-        if report_ts.tzinfo is not None:
-            report_ts = report_ts.astimezone(None).replace(tzinfo=None)
 
         # [EXTRACT] Telemetry from Payload
         disk_usage = 0.0
@@ -1348,7 +1538,38 @@ async def agent_heartbeat(
             TopProcessesJson=top_proc,
             Timestamp=report_ts
         )
-        db.add(new_report)
+        reports_to_insert = [new_report]
+
+        # [NEW] Retrieve cached telemetry data from Redis
+        try:
+            from ..core.rate_limit import get_redis_client
+            r = get_redis_client()
+            cache_key = f"telemetry_cache:{agent.AgentId}"
+            cached_points = await r.lrange(cache_key, 0, -1)
+            await r.delete(cache_key)
+
+            for point_str in cached_points:
+                try:
+                    point = json.loads(point_str)
+                    pt_ts = datetime.strptime(point['full_date'], "%Y-%m-%dT%H:%M:%S")
+                    cached_report = AgentReportEntity(
+                        AgentId=agent.AgentId,
+                        TenantId=tenant.Id,
+                        Status="Online",
+                        CpuUsage=point.get('cpu', 0),
+                        MemoryUsage=point.get('mem', 0),
+                        DiskUsage=disk_usage,
+                        NetworkInMbps=point.get('net_in', 0),
+                        NetworkOutMbps=point.get('net_out', 0),
+                        Timestamp=pt_ts
+                    )
+                    reports_to_insert.append(cached_report)
+                except Exception as ex:
+                    print(f"[CACHE PARSE ERROR] {ex}")
+        except Exception as redis_e:
+            print(f"[CACHE FETCH ERROR] {redis_e}")
+
+        db.add_all(reports_to_insert)
         # SINGLE COMMIT: agent update + report insert + IsPendingUninstall clear in one round-trip
         try:
             print(f"[DEBUG] Attempting final commit for {agent.AgentId}...")
@@ -1368,23 +1589,53 @@ async def agent_heartbeat(
         
         # 6. Real-time Dashboard Updates (Socket.IO)
         try:
+            # Use HH:MM label for live points so frontend can distinguish them from hourly API buckets.
+            # Using HH:MM instead of HH:00 so live points appear as separate fine-grained entries.
             ts_str = report_ts.strftime("%H:%M")
-            await sio.emit('dashboard_stats_update', {
+            # Use the date in a sortable format so the frontend can sort correctly
+            full_date_str = report_ts.strftime("%Y-%m-%dT%H:%M:%S")
+            stats_data = {
                 'type': 'resource',
-                'data': {'time': ts_str, 'cpu': payload.CpuUsage, 'mem': payload.MemoryUsage, 'full_date': report_ts.isoformat()}
-            }, room=f"tenant_{tenant.Id}")
+                'data': {
+                    'time': ts_str,
+                    'cpu': round(payload.CpuUsage, 1),
+                    'mem': round(payload.MemoryUsage, 1),
+                    'full_date': full_date_str
+                }
+            }
+            await sio.emit('dashboard_stats_update', stats_data, room=f"tenant_{tenant.Id}")
+            await sio.emit('dashboard_stats_update', stats_data, room="superadmin")
 
-            await sio.emit('agent_list_update', {
+
+            update_data = {
                 'agentId': agent.AgentId, 'hostname': agent.Hostname, 'status': 'Online',
                 'version': agent.Version, 'targetVersion': agent.TargetVersion,
                 'cpuUsage': payload.CpuUsage, 'memoryUsage': payload.MemoryUsage,
                 'powerStatusJson': agent.PowerStatusJson,
                 'latitude': agent.Latitude, 'longitude': agent.Longitude, 'country': agent.Country,
                 'timestamp': report_ts.isoformat()
-            }, room=f"tenant_{tenant.Id}")
+            }
+            await sio.emit('agent_list_update', update_data, room=f"tenant_{tenant.Id}")
+            await sio.emit('agent_list_update', update_data, room="superadmin")
         except: pass
         
         if agent.IsPendingUninstall:
+            print(f"[HEARTBEAT] Hard deleting agent {agent.AgentId} from DB before uninstall.")
+            
+            # Dynamically delete from all child tables referencing Agents.AgentId
+            from app.db.models import Base
+            for table in reversed(Base.metadata.sorted_tables):
+                for fk in table.foreign_keys:
+                    if fk.target_fullname == "Agents.AgentId":
+                        # The column in this table that points to Agents.AgentId
+                        col_name = fk.parent.name
+                        try:
+                            await db.execute(table.delete().where(getattr(table.c, col_name) == agent.AgentId))
+                        except Exception as e:
+                            print(f"[HEARTBEAT] Failed to cleanup child table {table.name}: {e}")
+                            
+            await db.delete(agent)
+            await db.commit()
             return {"status": "uninstall", "Uninstall": True}
 
         # 7. Prepare Response with updated Configuration
@@ -1488,7 +1739,103 @@ async def agent_heartbeat(
             raise e
         raise HTTPException(status_code=500, detail="Internal Server Error during heartbeat processing")
 
+@agent_router.post("/telemetry")
+async def agent_telemetry(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp"),
+):
+    """
+    [v2.2.4] Lightweight real-time telemetry endpoint.
+    Called every 5 seconds by the agent. Only emits Socket.IO updates — does NOT
+    write to the AgentReports table, keeping the database lean.
+    """
+    try:
+        body_bytes = await request.body()
+        body_str = body_bytes.decode("utf-8")
+        payload = json.loads(body_str)
+
+        agent_id = payload.get("AgentId") or payload.get("agent_id")
+        machine_secret = payload.get("MachineSecret") or payload.get("machine_secret", "")
+        cpu = float(payload.get("CpuUsage", 0))
+        mem = float(payload.get("MemoryUsage", 0))
+        net_in = float(payload.get("NetworkInMbps", 0))
+        net_out = float(payload.get("NetworkOutMbps", 0))
+
+        if not agent_id:
+            return {"status": "ignored", "reason": "no agent_id"}
+
+        # Signature verification
+        if x_signature and x_timestamp and machine_secret:
+            import hashlib as _hl
+            signing_key_bytes = _hl.sha256(machine_secret.encode()).digest()
+            expected_msg = f"{body_str}|{x_timestamp}"
+            import hmac as _hmac
+            expected_sig = _hmac.new(signing_key_bytes, expected_msg.encode(), _hl.sha256).hexdigest()
+            if not _hmac.compare_digest(expected_sig, x_signature):
+                raise HTTPException(status_code=403, detail="Invalid telemetry signature")
+
+        # Look up tenant for this agent (cached by agent lookup)
+        agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = agent_res.scalars().first()
+        if not agent:
+            return {"status": "ignored", "reason": "agent not found"}
+
+        now = datetime.utcnow()
+        ts_str = now.strftime("%H:%M")
+        full_date_str = now.strftime("%Y-%m-%dT%H:%M:%S")
+
+        # Emit Socket.IO real-time update only — no DB write
+        stats_data = {
+            'type': 'resource',
+            'data': {
+                'time': ts_str,
+                'cpu': round(cpu, 1),
+                'mem': round(mem, 1),
+                'net_in': round(net_in, 3),
+                'net_out': round(net_out, 3),
+                'full_date': full_date_str
+            }
+        }
+        await sio.emit('dashboard_stats_update', stats_data, room=f"tenant_{agent.TenantId}")
+        await sio.emit('dashboard_stats_update', stats_data, room="superadmin")
+
+        # [NEW] Buffer data in Redis for Postgres batch insert
+        try:
+            from ..core.rate_limit import get_redis_client
+            r = get_redis_client()
+            cache_key = f"telemetry_cache:{agent.AgentId}"
+            # Store point as JSON
+            await r.rpush(cache_key, json.dumps(stats_data['data']))
+            # Ensure it expires if the agent dies
+            await r.expire(cache_key, 300)
+        except Exception as redis_e:
+            print(f"[TELEMETRY CACHE ERROR] {redis_e}")
+
+        # Also update the agent list card in real-time
+        update_data = {
+            'agentId': agent.AgentId,
+            'hostname': agent.Hostname,
+            'status': 'Online',
+            'cpuUsage': round(cpu, 1),
+            'memoryUsage': round(mem, 1),
+            'timestamp': full_date_str
+        }
+        await sio.emit('agent_list_update', update_data, room=f"tenant_{agent.TenantId}")
+        await sio.emit('agent_list_update', update_data, room="superadmin")
+
+        return {"status": "ok"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Telemetry errors are non-fatal — never crash the agent cycle
+        print(f"[TELEMETRY ERROR] {e}")
+        return {"status": "error", "detail": str(e)}
+
 @router.post("/{agent_id}/events")
+
 async def report_agent_event(
     agent_id: str,
     payload: AgentEvent,
@@ -1558,6 +1905,31 @@ async def report_agent_event(
         db=db
     )
 
+    # [Integration] Go Agent Ransomware Alerts
+    if payload.EventType in ("RansomwareAlert", "ShadowCopyDeletion"):
+        from ..services.ransomware_engine import ransomware_engine # type: ignore
+        # Construct payload matching what the updated ransomware_engine expects
+        # Request.body() might be needed to get full JSON, but AgentEvent doesn't have Entropy.
+        # Let's parse the raw request body to get all extra JSON fields like Entropy, OldCount, etc.
+        raw_payload = json.loads(body_bytes.decode('utf-8'))
+        raw_payload["agent_id"] = agent.AgentId
+        await ransomware_engine.process_signal(db, raw_payload)
+
+    # [Integration] UEBA Engine
+    from ..services.ueba_engine import ueba_engine
+    try:
+        raw_payload_ueba = json.loads(body_bytes.decode('utf-8'))
+        ueba_result = await ueba_engine.evaluate_event(db, agent.AgentId, raw_payload_ueba)
+        if ueba_result and ueba_result.get("score", 0) >= 80:
+            from ..db.models import DetectionAlert
+            alert = DetectionAlert(
+                AgentId=agent.AgentId,
+                MatchedContent=f"UEBA Anomaly: {', '.join(ueba_result.get('anomalies', []))}"
+            )
+            db.add(alert)
+    except Exception as e:
+        print(f"[UEBA ERROR] {e}")
+
     # [FIX] Revival Logic
     if payload.EventType == "System" and "Started" in payload.Message:
         if agent.IsPendingUninstall:
@@ -1567,9 +1939,38 @@ async def report_agent_event(
 
     return {"status": "received"}
 
+from fastapi import BackgroundTasks
+import asyncio
+
+async def force_cleanup_offline_agent(agent_id_str: str):
+    await asyncio.sleep(65)
+    print(f"[BACKGROUND] Checking if agent {agent_id_str} is still pending uninstall (offline)...")
+    from app.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        from sqlalchemy import select
+        from app.db.models import Agent, Base
+        
+        result = await session.execute(select(Agent).where(Agent.AgentId == agent_id_str))
+        agent = result.scalars().first()
+        
+        if agent and getattr(agent, "IsPendingUninstall", False):
+            print(f"[BACKGROUND] Agent {agent_id_str} is offline. Force deleting from DB.")
+            for table in reversed(Base.metadata.sorted_tables):
+                for fk in table.foreign_keys:
+                    if fk.target_fullname in ["Agents.AgentId", "Agents.Id"]:
+                        col_name = fk.parent.name
+                        try:
+                            await session.execute(table.delete().where(getattr(table.c, col_name) == agent_id_str))
+                        except Exception:
+                            pass
+            from sqlalchemy import delete
+            await session.execute(delete(Agent).where(Agent.AgentId == agent_id_str))
+            await session.commit()
+
 @router.delete("/{agent_identifier}")
 async def delete_agent(
     agent_identifier: str, # Accepts Database ID (int) OR Agent ID (string)
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db)
 ):
@@ -1599,6 +2000,9 @@ async def delete_agent(
     # [FIX] Soft Delete to trigger remote uninstall
     # await db.delete(agent)
     agent.IsPendingUninstall = True
+    
+    # [NEW] Schedule background task to hard delete if agent is offline
+    background_tasks.add_task(force_cleanup_offline_agent, str(agent.AgentId))
     
     # [AUDIT] Log Deletion
     from ..db.models import AuditLog # type: ignore
@@ -2308,7 +2712,8 @@ async def patch_now(
     if current_user.Role not in ["SuperAdmin", "TenantAdmin"]:
          raise HTTPException(status_code=403, detail="Not authorized")
          
-    result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
+    from sqlalchemy import func
+    result = await db.execute(select(Agent).where(func.lower(Agent.AgentId) == func.lower(agent_string_id)))
     agent = result.scalars().first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -2375,3 +2780,109 @@ async def patch_agents_batch(
         "message": f"Staggered rolling update for {len(agent_ids)} agents dispatched to background worker.",
         "parameters": {"batch_size": batch_size, "delay_seconds": delay}
     }
+
+class AgentEventsPayload(BaseModel):
+    agent_id: str
+    tenant_api_key: str
+    events: List[Any]
+
+@agent_router.post("/events")
+async def receive_agent_events(
+    payload: AgentEventsPayload,
+    request: fastapi.Request,
+    db: AsyncSession = Depends(get_db),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
+):
+    if not x_signature or not x_timestamp:
+        raise HTTPException(status_code=401, detail="Missing signature headers")
+
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == payload.agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    tenant_res = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+    tenant = tenant_res.scalars().first()
+    if not tenant or tenant.ApiKey != payload.tenant_api_key:
+        raise HTTPException(status_code=403, detail="Invalid Tenant API Key")
+
+    body_bytes = await request.body()
+    key_seed = tenant.ApiKey.encode()
+    msg = f"{body_bytes.decode('utf-8')}{x_timestamp}".encode('utf-8')
+    expected_sig = hmac.new(key_seed, msg, hashlib.sha256).hexdigest()
+    
+    if not hmac.compare_digest(expected_sig, x_signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        from ..core.kafka_producer import kafka_client
+        
+        ingest_time = datetime.utcnow().isoformat()
+        enriched_events = []
+        for ev in payload.events:
+            # We don't want to mutate original just in case, but dict is safe here
+            ev["_ingest_time"] = ingest_time
+            ev["AgentId"] = payload.agent_id
+            ev["TenantId"] = tenant.Id
+            enriched_events.append(ev)
+            
+        if enriched_events:
+            # [v3.0] Publish telemetry to Kafka Event Bus instead of Mongo
+            for ev in enriched_events:
+                await kafka_client.publish_event(ev)
+            
+            # Trigger detection engine for alerting (Temporarily kept for backwards compatibility)
+            from ..services.detection_engine import detection_engine
+            for ev in enriched_events:
+                await detection_engine.process_telemetry_event(db, ev, payload.agent_id)
+                if ev.get("EventType") == "ProcessSnapshot":
+                    from ..socket_instance import sio
+                    await sio.emit('agent_processes', {
+                        'agent_id': payload.agent_id,
+                        'processes': ev.get("Processes", [])
+                    }, room=f"tenant_{tenant.Id}")
+            
+    except Exception as e:
+        print(f"[EVENTS] Kafka ingestion error: {e}")
+        
+    return {"status": "success", "processed": len(payload.events)}
+
+@router.get("/{agent_id}/telemetry")
+async def get_agent_telemetry(
+    agent_id: str,
+    limit: int = 100,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch advanced telemetry events for a specific agent from MongoDB."""
+    agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = agent_res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    if current_user.Role != "SuperAdmin" and current_user.TenantId != agent.TenantId:
+        raise HTTPException(status_code=403, detail="Not authorized to view this agent's telemetry")
+        
+    try:
+        from ..db.session import mongo_client
+        db_name = "monitorix_events"
+        mongo_db = mongo_client[db_name]
+        
+        # Query Mongo, sort by ingest time descending
+        cursor = mongo_db["agent_telemetry_events"].find(
+            {"AgentId": agent_id}
+        ).sort("_ingest_time", -1).limit(limit)
+        
+        events = await cursor.to_list(length=limit)
+        
+        # Convert ObjectId to string for JSON serialization
+        for ev in events:
+            if "_id" in ev:
+                ev["_id"] = str(ev["_id"])
+                
+        return {"status": "success", "agent_id": agent_id, "events": events}
+        
+    except Exception as e:
+        print(f"[TELEMETRY] Mongo read error: {e}")
+        return {"status": "error", "message": "Failed to fetch telemetry data"}
