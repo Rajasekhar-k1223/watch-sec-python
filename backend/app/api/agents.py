@@ -208,6 +208,8 @@ async def get_agents(
                 "updateFailureReason": get_safe(a, "UpdateFailureReason"),
                 "lastUpdateAttempt": a.LastUpdateAttempt.isoformat() if get_safe(a, "LastUpdateAttempt") else None,
                 "policyId": get_safe(a, "PolicyId"),
+                "activeUser": get_safe(a, "ActiveUser", "Unknown"),
+                "userLoginTime": get_safe(a, "UserLoginTime", "Unknown"),
                 "behavioralMetadataJson": get_safe(a, "BehavioralMetadataJson"),
                 "screenshotInterval": get_safe(a, "ScreenshotInterval", 60),
             })

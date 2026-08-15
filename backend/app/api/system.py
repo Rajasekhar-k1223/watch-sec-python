@@ -124,20 +124,21 @@ async def get_system_health(
         "timestamp": now.isoformat() + "Z",
         "uptime_check": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "services": {
-            "mysql":   {"status": "Checking...", "latency_ms": 0},
+            "postgres":   {"status": "Checking...", "latency_ms": 0},
             "mongodb": {"status": "Checking...", "latency_ms": 0},
             "redis":   {"status": "Checking...", "latency_ms": 0},
+            "clickhouse": {"status": "Checking...", "latency_ms": 0},
         },
         "database": {},
         "disk": {},
     }
 
-    # ── 1. MySQL ──────────────────────────────────────────────────────────────
+    # ── 1. Postgres ──────────────────────────────────────────────────────────────
     try:
         t0 = time.time()
         await db.execute(select(1))
-        status["services"]["mysql"]["latency_ms"] = round((time.time() - t0) * 1000, 2)
-        status["services"]["mysql"]["status"] = "Connected"
+        status["services"]["postgres"]["latency_ms"] = round((time.time() - t0) * 1000, 2)
+        status["services"]["postgres"]["status"] = "Connected"
 
         # Row counts for key tables
         from app.db.models import Agent, Tenant, EventLog, ActivityLog, User as UserModel # type: ignore
@@ -164,11 +165,10 @@ async def get_system_health(
         except Exception:
             counts["agents_online"] = -1
 
-        # DB size (MySQL information_schema)
+        # DB size (Postgres)
         try:
             size_q = await db.execute(text(
-                "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) "
-                "FROM information_schema.tables WHERE table_schema = DATABASE()"
+                "SELECT ROUND(pg_database_size(current_database()) / 1024 / 1024, 2)"
             ))
             db_size_mb = size_q.scalar()
             status["database"] = {
@@ -179,7 +179,7 @@ async def get_system_health(
             status["database"] = {"row_counts": counts}
 
     except Exception as e:
-        status["services"]["mysql"]["status"] = f"Error: {str(e)}"
+        status["services"]["postgres"]["status"] = f"Error: {str(e)}"
         status["overall"] = "Degraded"
 
     # ── 2. MongoDB ────────────────────────────────────────────────────────────
@@ -266,6 +266,20 @@ async def get_system_health(
 
     except Exception as e:
         status["services"]["redis"]["status"] = f"Error: {str(e)}"
+        status["overall"] = "Degraded"
+
+    # ── 3.5 ClickHouse ────────────────────────────────────────────────────────
+    try:
+        from app.db.clickhouse import clickhouse_db # type: ignore
+        t0 = time.time()
+        if clickhouse_db.client:
+            clickhouse_db.client.execute("SELECT 1")
+            status["services"]["clickhouse"]["latency_ms"] = round((time.time() - t0) * 1000, 2)
+            status["services"]["clickhouse"]["status"] = "Connected"
+        else:
+            status["services"]["clickhouse"]["status"] = "Disconnected"
+    except Exception as e:
+        status["services"]["clickhouse"]["status"] = f"Error: {str(e)}"
         status["overall"] = "Degraded"
 
 

@@ -384,19 +384,7 @@ async def get_activity_logs(
         else:
             delta = timedelta(days=30)
 
-        # Get latest log timestamp in database
-        from sqlalchemy import func
-        ts_res = await db_sql.execute(select(func.max(ActivityLogModel.Timestamp)).where(func.lower(ActivityLogModel.AgentId) == func.lower(agent_id)))
-        latest_ts = ts_res.scalar()
-
-        if not latest_ts:
-            query = query.where(ActivityLogModel.Timestamp >= now - delta)
-        elif latest_ts < now - delta:
-            # Pivot window to the last active range ending at latest_ts
-            query = query.where(ActivityLogModel.Timestamp >= latest_ts - delta).where(ActivityLogModel.Timestamp <= latest_ts)
-        else:
-            # We have recent activity in the window, query normally
-            query = query.where(ActivityLogModel.Timestamp >= now - delta)
+        query = query.where(ActivityLogModel.Timestamp >= now - delta)
 
     query = query.order_by(ActivityLogModel.Timestamp.desc())
     query = query.limit(limit).offset(offset)
@@ -451,18 +439,7 @@ async def get_activity_stats(
         else:
             delta = timedelta(days=30)
 
-        # Get latest log timestamp in database
-        ts_res = await db_sql.execute(select(func.max(ActivityLogModel.Timestamp)).where(func.lower(ActivityLogModel.AgentId) == func.lower(agent_id)))
-        latest_ts = ts_res.scalar()
-
-        if not latest_ts:
-            stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
-        elif latest_ts < now - delta:
-            # Pivot window to the last active range ending at latest_ts
-            stats_query = stats_query.where(ActivityLogModel.Timestamp >= latest_ts - delta).where(ActivityLogModel.Timestamp <= latest_ts)
-        else:
-            # We have recent activity in the window, query normally
-            stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
+        stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
 
     stats_res = await db_sql.execute(stats_query)
     stats_row = stats_res.first()

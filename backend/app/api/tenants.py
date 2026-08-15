@@ -41,7 +41,20 @@ async def get_tenants(
         
     result = await db.execute(query)
     tenants = result.scalars().all()
-    return tenants
+    
+    # Manually serialize the Tenant objects to prevent FastAPI 500 errors
+    serialized_tenants = []
+    for t in tenants:
+        serialized_tenants.append({
+            "Id": t.Id,
+            "Name": t.Name,
+            "ApiKey": t.ApiKey,
+            "Plan": t.Plan,
+            "AgentLimit": t.AgentLimit,
+            "ActiveStatus": t.ActiveStatus,
+            "NextBillingDate": t.NextBillingDate.isoformat() if t.NextBillingDate else None,
+        })
+    return serialized_tenants
 
 @router.get("/api-key")
 async def get_my_api_key(
