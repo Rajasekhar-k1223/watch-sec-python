@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException # type: ignore
 from pydantic import BaseModel # type: ignore
 from ..services.ai_service import ai_service # type: ignore
+from ..services.ai_copilot import ai_engine # type: ignore
 from .deps import get_current_user # type: ignore
 from ..db.models import User, Agent, EventLog, Vulnerability, ActivityLog # type: ignore
 from ..db.session import get_db # type: ignore
@@ -116,22 +117,43 @@ async def summarize_incident(
             ]
         }
         
-    summary = ai_service.generate_incident_summary(events)
-    threat_assessment = ai_service.calculate_threat_score(req.agent_id, events)
+    import json
+    prompt = f"""
+    You are the Monitorix AI Security Brain.
+    Analyze the following recent security events for Agent {req.agent_id} and generate an Incident Response Report.
+    Your response MUST be valid JSON conforming EXACTLY to this schema:
+    {{
+        "Summary": "A highly technical 2-3 paragraph executive summary of the agent's recent activity",
+        "ThreatAssessment": {{
+            "Score": 0,
+            "Level": "Normal",
+            "TopRisks": ["Risk 1", "Risk 2"]
+        }},
+        "RemediationSteps": ["Step 1", "Step 2"]
+    }}
+    Do not output any markdown formatting around the JSON, just the raw JSON object.
+
+    Events:
+    {json.dumps(events)}
+    """
+
+    fallback_response = {
+        "Summary": "Could not connect to Generative AI engine to summarize events.",
+        "ThreatAssessment": {
+            "Score": 0,
+            "Level": "Unknown",
+            "TopRisks": ["LLM Offline"]
+        },
+        "RemediationSteps": ["Please verify OpenAI keys or Ollama container."]
+    }
+
+    ai_response = await ai_engine._run_llm_inference(prompt, fallback_response=fallback_response)
     
-    # Calculate smart remediation suggestions dynamically based on active categories!
-    remediation_steps = ["Establish baseline behavior and continue standard monitoring"]
-    has_auth = any("auth" in e["Type"].lower() or "login" in e["Details"].lower() for e in events)
-    has_dlp = any("dlp" in e["Type"].lower() or "usb" in e["Type"].lower() for e in events)
-    has_network = any("network" in e["Type"].lower() or "c2" in e["Details"].lower() for e in events)
-    
-    if has_auth:
-        remediation_steps.append("Enforce multi-factor authentication (MFA) and lock accounts on ssh SSH failure bursts")
-    if has_dlp:
-        remediation_steps.append("Block unauthorized USB read/write operations via EDR storage policy control")
-    if has_network:
-        remediation_steps.append("Isolate agent system from the local area network (LAN) immediately to prevent lateral spread")
-        
+    # Extract keys safely
+    summary = ai_response.get("Summary", fallback_response["Summary"])
+    threat_assessment = ai_response.get("ThreatAssessment", fallback_response["ThreatAssessment"])
+    remediation_steps = ai_response.get("RemediationSteps", fallback_response["RemediationSteps"])
+
     return {
         "AgentId": req.agent_id,
         "Summary": summary,

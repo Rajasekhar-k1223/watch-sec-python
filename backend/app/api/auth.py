@@ -350,13 +350,10 @@ async def register_tenant(
     email_domain = form_data.email.split("@")[-1].lower()
     
     # Block common freemail providers for organization registration
+    # [MOD] We temporarily disable this check so users can test the platform with personal emails.
     freemail_providers = ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "icloud.com"]
     if email_domain in freemail_providers:
-        # [MOD] Optional: Only allow company domains. Let's keep it strict for production vibe.
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Registration requires a company email address. {email_domain} is not allowed."
-        )
+        pass # Registration allowed for freemail domains during testing phase
 
     import json # type: ignore
     new_tenant = Tenant(

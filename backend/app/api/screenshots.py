@@ -190,7 +190,7 @@ async def upload_screenshot(
 
     # 3. E2EE Decryption
     from ..core.security import decrypt_e2e_payload
-    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if agent.MachineSecret else key_seed.decode())
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineId if agent.MachineId else key_seed.decode())
     if decrypted_bytes != body_bytes:
         req_data = json.loads(decrypted_bytes)
 
@@ -213,33 +213,68 @@ async def upload_screenshot(
         target_dir = os.path.join(STORAGE_BASE, agent_id, date_folder)
         os.makedirs(target_dir, exist_ok=True)
         
-        # [SECURITY] Sanitize filename and validate extension to prevent Arbitrary File Write
+        # [SECURITY] Sanitize filename
         req_filename = req_data.get("filename", "screen.webp")
         safe_filename = os.path.basename(req_filename)
-        if not safe_filename.lower().endswith(('.png', '.webp')):
-             raise HTTPException(status_code=400, detail="Invalid file type. Only PNG and WEBP allowed.")
+        
+        # Force the output to be .webp regardless of input
+        base_name = os.path.splitext(safe_filename)[0]
+        safe_filename = base_name + ".webp"
              
         # Filename: HHmmss_uuid.webp
         time_part = dt.strftime("%H%M%S")
         filename = f"{time_part}_{safe_filename}"
         file_path = os.path.join(target_dir, filename)
         
-        # Save to Disk
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_bytes)
-            
-        # [NEW] Generate and Save Thumbnail
-        thumbnail_path = None
         try:
-            thumb_dir = os.path.join(THUMBNAIL_BASE, agent_id, date_folder)
-            os.makedirs(thumb_dir, exist_ok=True)
-            thumbnail_path = os.path.join(thumb_dir, filename)
-            
             with Image.open(BytesIO(file_bytes)) as img:
-                img.thumbnail((200, 200)) # Standard 200px thumbnail
-                img.save(thumbnail_path, format="WEBP", quality=80)
-        except Exception as te:
-            print(f"Thumbnail generation failed: {te}")
+                # 1. Detect if the image is completely blank (solid color, e.g. all black)
+                # getextrema() on grayscale returns (min_val, max_val)
+                extrema = img.convert("L").getextrema()
+                
+                if extrema[0] == extrema[1]:
+                    # Image is a single solid color (RDP locked/disconnected).
+                    # We will generate a synthetic image instead of ignoring it.
+                    from PIL import ImageDraw, ImageFont
+                    # Create a standard 1920x1080 background
+                    synth_img = Image.new('RGB', (1920, 1080), color=(15, 23, 42)) # Slate 900
+                    draw = ImageDraw.Draw(synth_img)
+                    
+                    text = "System Locked / RDP Disconnected\nBackground processes are running."
+                    # Simple drawing without custom fonts to ensure it works cross-platform
+                    # Draw a border and text
+                    draw.rectangle([(50, 50), (1870, 1030)], outline=(56, 189, 248), width=5) # Sky blue border
+                    
+                    # Try to load a default font, fallback to basic
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 60)
+                    except IOError:
+                        font = ImageFont.load_default()
+                        
+                    # Center the text manually (approximate for default font)
+                    draw.text((960, 540), text, fill=(255, 255, 255), anchor="mm", align="center", font=font)
+                    
+                    # Override the incoming img with the synthetic one
+                    img = synth_img
+                
+                # 2. Save full size as WEBP for lightweight loading
+                img.save(file_path, format="WEBP", quality=75)
+                # Size after compression
+                final_size = os.path.getsize(file_path)
+                
+                # 3. Generate and Save Thumbnail
+                thumbnail_path = None
+                try:
+                    thumb_dir = os.path.join(THUMBNAIL_BASE, agent_id, date_folder)
+                    os.makedirs(thumb_dir, exist_ok=True)
+                    thumbnail_path = os.path.join(thumb_dir, filename)
+                    
+                    img.thumbnail((200, 200))
+                    img.save(thumbnail_path, format="WEBP", quality=70)
+                except Exception as te:
+                    print(f"Thumbnail generation failed: {te}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image format: {e}")
 
         # [NEW] Save to Database Index
         new_screenshot = Screenshot(
@@ -248,7 +283,7 @@ async def upload_screenshot(
             Filename=filename,
             DateFolder=date_folder,
             Timestamp=dt,
-            Size=len(file_bytes),
+            Size=final_size,
             IsAlert="_ALERT" in filename,
             Url=f"/api/screenshots/view/{agent_id}/{date_folder}/{filename}",
             ThumbnailUrl=f"/api/screenshots/thumbnail/{agent_id}/{date_folder}/{filename}"

@@ -68,17 +68,18 @@ class AiCopilotEngine:
 
         return report.Id, "Report generated successfully"
 
-    async def _run_llm_inference(self, prompt: str) -> dict:
+    async def _run_llm_inference(self, prompt: str, fallback_response: dict = None) -> dict:
         print(f"[AI COPILOT] Processing Copilot Inference...")
         
         api_key = os.environ.get("OPENAI_API_KEY")
         ollama_host = os.environ.get("OLLAMA_HOST", "http://watch-sec-ollama:11434")
         
-        fallback_response = {
-            "executive_summary": "Could not connect to Generative AI engine.",
-            "technical_details": "Inference failed or timed out.",
-            "remediation_steps": "Please verify OpenAI keys or Ollama container."
-        }
+        if fallback_response is None:
+            fallback_response = {
+                "executive_summary": "Could not connect to Generative AI engine.",
+                "technical_details": "Inference failed or timed out.",
+                "remediation_steps": "Please verify OpenAI keys or Ollama container."
+            }
 
         # ── TIER A: CLOUD LLM (OPENAI) ──
         if api_key:

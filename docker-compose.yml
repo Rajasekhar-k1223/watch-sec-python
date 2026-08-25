@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     command: uvicorn app.main_dashboard:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "8010:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
@@ -19,8 +19,8 @@ services:
       - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
-      - MONITORIX_BASE_URL=https://monitorix.co.in
-      - AGENT_BACKEND_URL=https://agent-api.monitorix.co.in
+      - MONITORIX_BASE_URL=https://monitorix.elsea.co.in
+      - AGENT_BACKEND_URL=https://agent-apis.elsea.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
@@ -48,7 +48,8 @@ services:
       - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
-      - MONITORIX_BASE_URL=https://monitorix.co.in
+      - MONITORIX_BASE_URL=https://monitorix.elsea.co.in
+      - AGENT_BACKEND_URL=https://agent-apis.elsea.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
     volumes:
       - ./backend/storage:/app/storage
@@ -101,11 +102,11 @@ services:
     build:
       context: ../watch-sec-frontend
       args:
-        VITE_API_URL: /api
+        VITE_API_URL: https://monitorix-apis.elsea.co.in/api
     container_name: watch-sec-frontend
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "8085:80"
     networks:
       - watch-sec-network
 

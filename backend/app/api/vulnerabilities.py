@@ -109,6 +109,76 @@ async def patch_agent_system(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to relay command: {e}")
 
+@router.get("")
+@router.get("/")
+async def get_agent_cves(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [RedRainbow SDK Integration] Returns a list of active CVE IDs, affected software, and CVSS scores mapped to the agent_id.
+    Computes matches dynamically based on installed AgentSoftware and Vulnerability intelligence.
+    """
+    from packaging import version
+    
+    # 1. Verify Access
+    agent_query = select(Agent).where(Agent.AgentId == agent_id)
+    if current_user.Role != "SuperAdmin":
+        agent_query = agent_query.where(Agent.TenantId == current_user.TenantId)
+    
+    res = await db.execute(agent_query)
+    agent = res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 2. Fetch Software & Vulnerability Data
+    sw_res = await db.execute(select(AgentSoftware).where(AgentSoftware.AgentId == agent_id))
+    software_list = sw_res.scalars().all()
+    
+    vuln_res = await db.execute(select(Vulnerability))
+    all_vulns = vuln_res.scalars().all()
+
+    # 3. Compute active CVEs
+    active_cves = []
+    
+    for sw in software_list:
+        if not sw.Version or sw.Version == "Unknown":
+            continue
+            
+        for v in all_vulns:
+            if v.AffectedProduct.lower() in sw.Name.lower():
+                is_vulnerable = False
+                try:
+                    sv = version.parse(sw.Version)
+                    v_min = version.parse(v.MinVersion) if v.MinVersion else None
+                    v_max = version.parse(v.MaxVersion) if v.MaxVersion else None
+                    
+                    if v_min and v_max:
+                        if v_min <= sv <= v_max: is_vulnerable = True
+                    elif v_min:
+                        if sv >= v_min: is_vulnerable = True
+                    elif v_max:
+                        if sv <= v_max: is_vulnerable = True
+                    else:
+                        is_vulnerable = True
+                except Exception:
+                    is_vulnerable = True # Fallback if version parse fails
+                    
+                if is_vulnerable:
+                    # Map Severity to a dummy CVSS score since we don't have CVSS column
+                    cvss_map = {"Critical": 9.8, "High": 8.1, "Medium": 5.5, "Low": 3.0, "None": 0.0}
+                    active_cves.append({
+                        "cveId": v.CVE,
+                        "software": sw.Name,
+                        "softwareVersion": sw.Version,
+                        "severity": v.Severity,
+                        "cvssScore": cvss_map.get(v.Severity, 5.0)
+                    })
+                    
+    return active_cves
+
+
 @router.get("/alerts")
 async def get_vulnerability_alerts(
     agent_id: Optional[str] = None,

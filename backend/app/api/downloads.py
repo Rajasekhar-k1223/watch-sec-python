@@ -111,7 +111,11 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
     
     template_path = os.path.join(base_path, folder_name)
     
-    if not os.path.exists(template_path):
+    # We only REQUIRE the template folder if we are serving Windows, or if we are serving the payload zip.
+    # For Linux/Mac script generation, we don't strictly need it to exist (it will fallback to checking /public/payload).
+    is_script_gen = os_type.lower().split("-")[0] in ["linux", "mac"] and not serve_payload
+    
+    if not os.path.exists(template_path) and not is_script_gen:
         raise HTTPException(status_code=404, detail=f"Agent Template for {os_type} not found at {template_path}")
 
     # 2.2 Handle Static Zip OR Generate Source Zip (Windows)
@@ -303,6 +307,23 @@ if [ "$IS_BINARY" = "false" ]; then
 fi
 
 echo "[4/5] Installing Dependencies..."
+
+# System Dependencies for both Binary and Source modes
+if [ "$(uname)" = "Linux" ]; then
+    if ! ldconfig -p | grep -q libxdo.so >/dev/null 2>&1; then
+        echo "Installing required system library (libxdo3)..."
+        {{
+            if command -v apt-get &> /dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update && apt-get install -yq libxdo3 || apt-get install -yq xdotool
+            elif command -v yum &> /dev/null; then
+                yum install -y xdotool
+            elif command -v pacman &> /dev/null; then
+                pacman -Sy --noconfirm xdotool
+            fi
+        }}
+    fi
+fi
 if [ "$IS_BINARY" = "false" ]; then
     if ! command -v python3 &> /dev/null; then
         if [ "$(uname)" = "Darwin" ]; then
@@ -323,7 +344,7 @@ if [ "$IS_BINARY" = "false" ]; then
         else
             {{
                 apt-get update && apt-get install -y python3-pip || yum install -y python3-pip
-            }} > /dev/null 2>&1
+            }}
         fi
     fi
 
@@ -348,10 +369,10 @@ fi
 
 echo "[5/5] Configuring..."
 cat > "$dir_name/config.json" <<EOF
-{
+{{
   "TenantApiKey": "$API_KEY",
   "BackendUrl": "{backend_url}"
-}
+}}
 EOF
 
 if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
@@ -637,25 +658,48 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     }
     
     os_key = os_type.lower()
+    binary_found = False
+    
     if os_key in rust_target_map:
         binary_path, binary_name = rust_target_map[os_key]
         # Linux x64 can also be the native build (fallback)
         if not os.path.exists(binary_path) and "linux" in os_key and "arm" not in os_key:
             binary_path = f"{RUST_AGENT_ROOT}/release/agent-rust"
-    else:
+            
+        if os.path.exists(binary_path):
+            binary_found = True
+
+    if not binary_found:
         # Legacy fallback to AgentTemplate storage
         file_dir = os.path.dirname(os.path.abspath(__file__))
         backend_root = os.path.join(file_dir, "..", "..")
         base_path = os.path.join(backend_root, "storage", "AgentTemplate")
         template_folder_map = {
-            "windows": "win-x64", "linux": "linux-x64", "mac": "osx-x64",
+            "windows": "win-x64", "windows-x64": "win-x64", 
+            "linux": "linux-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64", 
+            "mac": "osx-x64", "mac-x64": "osx-x64", "mac-arm64": "osx-arm64"
         }
         folder_name = template_folder_map.get(os_key, "win-x64")
         template_dir = os.path.join(base_path, folder_name)
-        binary_path = os.path.join(template_dir, "monitorix.zip")
+        
+        # Check for expected binaries based on OS
+        expected_names = []
+        if "linux" in os_key:
+            expected_names = ["monitorix-agent-rust-linux", "monitorix-agent-linux", "monitorix.zip"]
+        elif "mac" in os_key or "osx" in os_key:
+            expected_names = ["monitorix-agent-rust-mac", "monitorix-agent-mac", "monitorix.zip"]
+        else:
+            expected_names = ["monitorix-agent.exe", "monitorixagent.exe", "monitorix-setup-v3.exe", "monitorix.zip"]
+            
+        binary_path = os.path.join(template_dir, "monitorix.zip") # Default fallback
         binary_name = "monitorix.zip"
-
-    
+        
+        for name in expected_names:
+            p = os.path.join(template_dir, name)
+            if os.path.exists(p):
+                binary_path = p
+                binary_name = name
+                break
     # 1.5 Check for Part Request
     if part is not None:
          part_name = f"{binary_name}.part{part}"

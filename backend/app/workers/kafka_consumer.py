@@ -11,6 +11,7 @@ from app.services.threat_intel_pipeline import ti_pipeline
 from app.services.detection_engine import detection_engine
 from app.services.dlp_engine import dlp_engine
 from app.socket_instance import sio
+from sqlalchemy import select
 
 class KafkaConsumerWorker:
     def __init__(self):
@@ -108,6 +109,48 @@ class KafkaConsumerWorker:
                     'agent_id': agent_id,
                     'processes': event.get("Processes", [])
                 }, room=f"tenant_{event.get('TenantId')}")
+
+            # 5. [FIM] Persist FileIntegrityAlert as an EventLog for federation API & dashboard
+            if event.get("EventType") == "FileIntegrityAlert":
+                try:
+                    from app.db.models import EventLog, Agent  # type: ignore
+                    async with AsyncSessionLocal() as fim_db:
+                        # Resolve TenantId from Agent if not present in event
+                        tenant_id = event.get("TenantId")
+                        if not tenant_id:
+                            res = await fim_db.execute(select(Agent).where(Agent.AgentId == agent_id))
+                            agent_obj = res.scalars().first()
+                            tenant_id = agent_obj.TenantId if agent_obj else None
+
+                        fim_log = EventLog(
+                            AgentId=agent_id,
+                            TenantId=tenant_id,
+                            Type="FIM Alert",
+                            Details=(
+                                f"[{event.get('Operation', 'Modified')}] {event.get('FilePath', 'Unknown')} "
+                                f"| SHA256: {event.get('SHA256', 'N/A')} "
+                                f"| Entropy: {event.get('Entropy', 0.0):.2f}"
+                            ),
+                            Severity=event.get("Severity", "High"),
+                            IsAlert=True,
+                            Timestamp=datetime.utcnow()
+                        )
+                        fim_db.add(fim_log)
+                        await fim_db.commit()
+                        print(f"[FIM] Saved FileIntegrityAlert for Agent {agent_id}: {event.get('FilePath')}")
+
+                        # Real-time push to dashboard
+                        await sio.emit('fim_alert', {
+                            'agent_id': agent_id,
+                            'file_path': event.get('FilePath'),
+                            'operation': event.get('Operation'),
+                            'sha256': event.get('SHA256'),
+                            'entropy': event.get('Entropy'),
+                            'severity': event.get('Severity', 'High'),
+                            'timestamp': datetime.utcnow().isoformat()
+                        }, room=f"tenant_{tenant_id}")
+                except Exception as fim_err:
+                    print(f"[FIM] Error saving FIM event: {fim_err}")
 
             # 3. Buffer for ClickHouse Data Lake
             # tuple: (event_id, agent_id, tenant_id, event_type, timestamp, payload)

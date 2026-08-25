@@ -45,6 +45,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
             raise credentials_exception
     except JWTError:
         raise credentials_exception
+
+    if username.startswith("sdk_"):
+        tenant_id = payload.get("tenantId")
+        if not tenant_id:
+            raise credentials_exception
+        return User(
+            Id=None,
+            Username=username,
+            Role=payload.get("role", "TenantAdmin"),
+            TenantId=tenant_id
+        )
     
     result = await db.execute(select(User).where(User.Username == username))
     user = result.scalars().first()
@@ -72,8 +83,10 @@ async def get_current_user_flexible(
 from fastapi.security import APIKeyHeader # type: ignore
 header_scheme = APIKeyHeader(name="Authorization", auto_error=False)
 
+from fastapi import Query # type: ignore
+
 async def get_current_user_flexible(
-    token: Optional[str] = None, 
+    token: Optional[str] = Query(None), 
     auth_header: Optional[str] = Depends(header_scheme),
     db: AsyncSession = Depends(get_db)
 ):
@@ -101,6 +114,17 @@ async def get_current_user_flexible(
             raise HTTPException(status_code=401, detail="Invalid token payload")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    if username.startswith("sdk_"):
+        tenant_id = payload.get("tenantId")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid SDK token payload (missing tenant)")
+        return User(
+            Id=None,
+            Username=username,
+            Role=payload.get("role", "TenantAdmin"),
+            TenantId=tenant_id
+        )
 
     result = await db.execute(select(User).where(User.Username == username))
     user = result.scalars().first()

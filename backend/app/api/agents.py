@@ -20,6 +20,7 @@ from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, Aud
 from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible, check_role, get_current_active_user # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate # type: ignore
+from ..core.security import generate_agent_command_signature # type: ignore
 
 router = APIRouter()
 
@@ -212,6 +213,14 @@ async def get_agents(
                 "userLoginTime": get_safe(a, "UserLoginTime", "Unknown"),
                 "behavioralMetadataJson": get_safe(a, "BehavioralMetadataJson"),
                 "screenshotInterval": get_safe(a, "ScreenshotInterval", 60),
+                # [SDK] Risk & Telemetry fields required by RedRainbow
+                "threatScore": get_safe(a, "ThreatScore", 0),
+                "riskLevel": get_safe(a, "RiskLevel", "Normal"),
+                "networkInMbps": get_safe(a, "NetworkInMbps", 0.0),
+                "networkOutMbps": get_safe(a, "NetworkOutMbps", 0.0),
+                "os": get_safe(a, "OS", "Unknown"),
+                "diskEncrypted": get_safe(a, "DiskEncrypted", False),
+                "softwareCount": get_safe(a, "SoftwareCount", 0),
             })
             
         return response
@@ -709,7 +718,7 @@ async def get_agent_software(
 
         result_list.append({
             "Name": s.Name,
-            "InstalledVersion": installed_ver,
+            "Version": installed_ver,
             "LatestVersion": latest_ver,
             "Type": s.Type,
             "UpdateStatus": update_status,           # "Up to Date" | "Update Available" | "Unknown"
@@ -1068,7 +1077,7 @@ async def agent_heartbeat(
         pass
     except:
         pass
-    print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted}, NetworkInMbps={payload.NetworkInMbps}, NetworkOutMbps={payload.NetworkOutMbps})")
+    print(f"[HEARTBEAT] Payload Dict: {payload.dict()}"); print(f"[HEARTBEAT] Received from {payload.AgentId} (JustStarted={payload.JustStarted}, NetworkInMbps={payload.NetworkInMbps}, NetworkOutMbps={payload.NetworkOutMbps})")
     """
     Agent Heartbeat endpoint. 
     Handles both new agent registration and periodic status updates.
@@ -1466,17 +1475,23 @@ async def agent_heartbeat(
                     
                     # Target correct filename — Windows uses raw EXE for self-update (agent moves it in place)
                     if "linux" in update_os_type:
-                        fname = "monitorix-agent-linux"
-                    elif "mac" in update_os_type:
-                        fname = "monitorix-agent-mac"
-                    elif os_type == "windows":
-                        # Prefer the raw EXE so the hash matches what format=exe serves
-                        for candidate in ("monitorixagent.exe", "monitorix-agent.exe"):
+                        # Try both naming conventions
+                        for candidate in ("monitorix-agent-rust-linux", "monitorix-agent-linux"):
                             if os.path.exists(os.path.join(base_path, candidate)):
                                 fname = candidate
                                 break
                         else:
-                            fname = "monitorix.zip"
+                            fname = "monitorix-agent-rust-linux"
+                    elif "mac" in update_os_type:
+                        fname = "monitorix-agent-mac"
+                    elif os_type == "windows":
+                        # Prefer the raw EXE so the hash matches what format=exe serves
+                        for candidate in ("monitorix-agent.exe", "monitorixagent.exe", "agent-rust.exe"):
+                            if os.path.exists(os.path.join(base_path, candidate)):
+                                fname = candidate
+                                break
+                        else:
+                            fname = "monitorix-agent.exe"
                     else:
                         fname = "monitorix.zip"
                     
@@ -2553,6 +2568,7 @@ async def update_settings(
     current_user: User = Depends(check_role(["SuperAdmin", "TenantAdmin"])),
     db: AsyncSession = Depends(get_db)
 ):
+    import json # type: ignore
     result = await db.execute(select(Agent).where(Agent.AgentId == agent_string_id))
     agent = result.scalars().first()
     
@@ -2888,3 +2904,181 @@ async def get_agent_telemetry(
     except Exception as e:
         print(f"[TELEMETRY] Mongo read error: {e}")
         return {"status": "error", "message": "Failed to fetch telemetry data"}
+
+class SoarRemediateRequest(BaseModel):
+    Action: str # "KillProcess" or "IsolateNetwork"
+    TargetPID: Optional[str] = None
+
+@router.post("/{agent_id}/soar-remediate")
+async def soar_remediate_agent(
+    agent_id: str,
+    req: SoarRemediateRequest,
+    tenant: Tenant = Depends(get_tenant_by_key),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [SOAR Integration] Webhook receiver for RedRainbow or external SIEMs.
+    Allows high-privileged API Keys to trigger instant agent isolation/remediation 
+    without maintaining a WebSocket connection.
+    """
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == tenant.Id))
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found or does not belong to this Tenant")
+
+    if req.Action not in ["KillProcess", "IsolateNetwork"]:
+        raise HTTPException(status_code=400, detail="Invalid Remediation Action")
+
+    timestamp = datetime.utcnow().isoformat()
+    params = {"Action": req.Action}
+    if req.Action == "KillProcess" and req.TargetPID:
+        params["TargetPID"] = str(req.TargetPID)
+
+    signature = generate_agent_command_signature(
+        api_key=tenant.ApiKey,
+        machine_id=agent.MachineId or "",
+        action="Remediation",
+        params=params,
+        timestamp=timestamp
+    )
+
+    payload = {
+        'Action': req.Action,
+        'timestamp': timestamp,
+        'signature': signature
+    }
+    if req.TargetPID:
+        payload['TargetPID'] = str(req.TargetPID)
+
+    # Fire via Socket.IO directly to the agent's active room
+    await sio.emit('Remediation', payload, room=agent_id)
+
+    # Log action
+    audit = AuditLog(
+        TenantId=tenant.Id,
+        UserId=None,
+        Action="SOAR_REMEDIATION",
+        Resource="Agent",
+        ResourceId=agent_id,
+        Details=f"SOAR triggered {req.Action} via API Key. Payload: {payload}"
+    )
+    db.add(audit)
+    await db.commit()
+
+    return {"status": "success", "message": f"Remediation command {req.Action} dispatched to agent {agent_id}"}
+
+
+# ─── [SDK] Unified Action Endpoints for RedRainbow / External Integrations ──────
+
+class KillActionRequest(BaseModel):
+    pid: int
+
+@router.post("/{agent_id}/actions/kill")
+async def action_kill_process(
+    agent_id: str,
+    req: KillActionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [SDK] Fixation: Terminates a running process by PID on the target agent.
+    Used by RedRainbow SOAR during the Fixation phase.
+    """
+    params = {"TargetPID": str(req.pid)}
+    return await _dispatch_signed_command(agent_id, "KillProcess", params, current_user, db)
+
+
+@router.post("/{agent_id}/actions/scan")
+async def action_trigger_scan(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [SDK] Verification: Triggers a full vulnerability + malware scan on the target agent.
+    Used by RedRainbow SOAR during the Verification phase.
+    """
+    # Verify access
+    result = await db.execute(
+        select(Agent).where(Agent.AgentId == agent_id)
+    )
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Trigger background vulnerability scan
+    from ..tasks.security import scan_vulnerabilities_background  # type: ignore
+    scan_vulnerabilities_background.delay(agent_id, None)
+
+    # Also dispatch a YARA/IOC scan command to the agent in real-time
+    return await _dispatch_signed_command(
+        agent_id, "TriggerIOCScan",
+        {"TargetDirectory": "/", "Hashes": []},
+        current_user, db
+    )
+
+
+class TerminalSessionResponse(BaseModel):
+    session_token: str
+    websocket_url: str
+    agent_id: str
+    expires_in: int
+
+@router.post("/{agent_id}/actions/terminal")
+async def action_start_terminal(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [SDK] Fixation: Creates a remote shell session token for the target agent.
+    RedRainbow can use the returned session_token to connect to the WebSocket
+    shell at the provided websocket_url.
+    """
+    import secrets
+    from datetime import timedelta
+
+    # Verify agent access
+    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+    agent = result.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if not agent.RemoteShellEnabled:
+        raise HTTPException(status_code=403, detail="Remote shell is not enabled for this agent")
+
+    # Generate a short-lived session token (TTL 300s)
+    session_token = secrets.token_urlsafe(32)
+    expires_in = 300
+
+    # Store session token in a lightweight in-memory cache (reuse existing sio approach)
+    # The WebSocket shell handler at /api/remote/shell/{agent_id} will validate this token
+    from ..socket_instance import sio_sync
+    sio_sync.emit("terminal_session_created", {
+        "agent_id": agent_id,
+        "session_token": session_token,
+        "expires_in": expires_in,
+        "requester": current_user.Username
+    })
+
+    # Log the action
+    audit = AuditLog(
+        TenantId=current_user.TenantId,
+        UserId=current_user.Id,
+        Action="TERMINAL_SESSION_CREATED",
+        Resource="Agent",
+        ResourceId=agent_id,
+        Details=f"Terminal session created by {current_user.Username} for agent {agent_id}"
+    )
+    db.add(audit)
+    await db.commit()
+
+    return {
+        "session_token": session_token,
+        "websocket_url": f"/api/remote/shell/{agent_id}?token={session_token}",
+        "agent_id": agent_id,
+        "expires_in": expires_in
+    }

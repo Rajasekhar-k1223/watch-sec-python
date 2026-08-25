@@ -200,6 +200,21 @@ class Agent(Base):
     RequireMtls = Column(Boolean, default=False) # [Layer 1] Require mTLS authentication
     TpmHash = Column(String(255), nullable=True) # [Layer 1] TPM Attestation Hash
 
+class Incident(Base):
+    """[v3.1.0] SOAR Incident Tracking"""
+    __tablename__ = "Incidents"
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(255), index=True)          # Primary triggering agent
+    AffectedAgentIdsJson = Column(Text, nullable=True) # [v3.2.0] JSON list of all affected agent IDs
+    TenantId = Column(Integer, index=True)
+    Title = Column(String(255))
+    Description = Column(Text, nullable=True)
+    Severity = Column(String(50), default="Medium")
+    Status = Column(String(50), default="Open")
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+    UpdateDate = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    ResolutionNotes = Column(Text, nullable=True)
+
 class RefreshToken(Base):
     """Store hashed refresh tokens for session rotation [v2.0.0]"""
     __tablename__ = "RefreshTokens"

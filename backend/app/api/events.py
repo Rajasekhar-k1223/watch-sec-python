@@ -207,8 +207,49 @@ async def report_event(
                 await db.commit()
     except: pass
 
+    # [NEW] Item 2: Live Activity & Input Auditing DLP Scan
+    if dto.Type in ["KeystrokeLog", "ClipboardAuditReport"]:
+        lower_details = dto.Details.lower()
+        keywords = ["password", "confidential", "secret", "ssn", "credit card", "api_key"]
+        has_sensitive = any(kw in lower_details for kw in keywords)
+        
+        if has_sensitive:
+            # Elevate severity of the logged event
+            event.Severity = "High"
+            event.Status = "Open"
+            await db.commit()
+            
+            # Fire an alert
+            import asyncio
+            asyncio.create_task(dispatcher.dispatch_critical_alert(
+                title=f"DLP Alert: Sensitive data found in {dto.Type}",
+                message=f"Keywords matched in {dto.Type}.",
+                severity="High",
+                agent_id=dto.AgentId,
+                cluster_name=agent.ClusterName if agent else None,
+                webhook_url=tenant.WebhookUrl
+            ))
+            
+        # Stream live to the new Input Auditing UI panel
+        payload = {
+            'AgentId': dto.AgentId,
+            'Type': dto.Type,
+            'Details': dto.Details,
+            'Timestamp': ts_naive.isoformat(),
+            'Severity': event.Severity if event.Severity else "Normal"
+        }
+        await sio.emit('new_audit_event', payload, room=str(dto.AgentId))
+        await sio.emit('new_audit_event', payload, room=f"tenant_{tenant.Id}")
+
+    # [NEW] Item 3: Deception Engine Escalation
+    deception_events = ["DeceptionAlert", "DeceptionTriggered", "RansomwareDecoyTouched"]
+    if dto.Type in deception_events:
+        event.Severity = "Critical"
+        event.Status = "Open"
+        await db.commit()
+
     # [v2.6.0] External Dispatch for Critical Events
-    if dto.Type in ["THREAT_DETECTED", "MALWARE_ACTIVITY", "SERVICE_DOWN", "UNAUTHORIZED_ACCESS"]:
+    if dto.Type in ["THREAT_DETECTED", "MALWARE_ACTIVITY", "SERVICE_DOWN", "UNAUTHORIZED_ACCESS"] + deception_events:
         import asyncio
         asyncio.create_task(dispatcher.dispatch_critical_alert(
             title=f"Critical Security Event: {dto.Type}",
@@ -218,6 +259,16 @@ async def report_event(
             cluster_name=agent.ClusterName,
             webhook_url=tenant.WebhookUrl
         ))
+        
+        # [SOAR Integration] Push telemetry directly to RedRainbow/SIEM
+        payload = {
+            'agentId': dto.AgentId,
+            'type': dto.Type,
+            'details': dto.Details,
+            'timestamp': ts_naive.isoformat(),
+            'severity': event.Severity
+        }
+        asyncio.create_task(dispatcher.dispatch_siem_webhook(db, dto.AgentId, payload))
 
     # Broadcast
     target_room = str(dto.AgentId)
@@ -492,7 +543,8 @@ async def simulate_agent_event(
         ("Process Started", "Suspicious Process execution: nmap -sS -O 192.168.1.1. PID: 8871"),
         ("USB insertion", "Blocked unauthorized USB Mass Storage Device (Vendor ID: 0930, Product ID: 6545)"),
         ("Policy Violation", "Unauthorized terminal access attempted by user 'developer'."),
-        ("Data Loss Prevention", "Blocked exfiltration of credit card numbers in chrome.exe upload payload.")
+        ("Data Loss Prevention", "Blocked exfiltration of credit card numbers in chrome.exe upload payload."),
+        ("DeceptionTriggered", "Honeypot Triggered: Unauthorized read access to C:\\ProgramData\\passwords.txt")
     ]
     t_type, t_details = random.choice(threats)
     now = datetime.utcnow()

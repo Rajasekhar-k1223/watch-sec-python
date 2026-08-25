@@ -154,6 +154,17 @@ def scan_vulnerabilities_background(agent_id: str, software_json: str):
             session.commit()
             logger.info(f"Alert recorded for Agent {agent_id}")
 
+            # [NEW] Push down Vulnerability Report to Agent SDK
+            vuln_payload = {
+                "action": "VulnerabilityReport",
+                "params": {"CVEs": list(set(found_cves))},
+                "timestamp": datetime.utcnow().isoformat(),
+                "signature": "",
+                "policy_name": "Vulnerability Push"
+            }
+            sio_sync.emit('Remediation', vuln_payload, room=agent_id)
+            logger.info(f"Pushed VulnerabilityReport to Agent {agent_id}")
+
             # [AUTO-PATCH] If enabled, dispatch background update command
             agent_record = session.query(Agent).filter(Agent.AgentId == agent_id).first()
             if agent_record and agent_record.AutoPatchEnabled:

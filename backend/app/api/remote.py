@@ -431,6 +431,80 @@ async def on_delete_file(sid, data):
     if agent_id in rooms or user['role'] == "SuperAdmin":
         await _sign_and_emit_file_command(sid, agent_id, "DeleteFile", path, "path")
 
+@sio.on('KillProcess')
+async def on_kill_process(sid, data):
+    agent_id = data.get('agentId')
+    pid = data.get('pid')
+    if not agent_id or not pid: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+            
+        timestamp = datetime.utcnow().isoformat()
+        params = {"Action": "KillProcess", "TargetPID": str(pid)}
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="Remediation",
+            params=params,
+            timestamp=timestamp
+        )
+        
+        payload = {
+            'Action': 'KillProcess',
+            'TargetPID': str(pid),
+            'timestamp': timestamp,
+            'signature': signature
+        }
+        await sio.emit('Remediation', payload, room=agent_id)
+
+@sio.on('IsolateAgent')
+async def on_isolate_agent(sid, data):
+    agent_id = data.get('agentId')
+    if not agent_id: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    rooms = sio.rooms(sid)
+    if agent_id in rooms or user['role'] == "SuperAdmin":
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+            
+        timestamp = datetime.utcnow().isoformat()
+        params = {"Action": "IsolateNetwork"}
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="Remediation",
+            params=params,
+            timestamp=timestamp
+        )
+        
+        payload = {
+            'Action': 'IsolateNetwork',
+            'timestamp': timestamp,
+            'signature': signature
+        }
+        await sio.emit('Remediation', payload, room=agent_id)
+
 # --- WebRTC Signaling Handlers ---
 
 @sio.on('webrtc_offer')
@@ -537,7 +611,7 @@ async def upload_session_recording(
 
     # E2EE Decryption
     from ..core.security import decrypt_e2e_payload
-    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if agent.MachineSecret else key_seed.decode())
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineId if agent.MachineId else key_seed.decode())
     if decrypted_bytes != body_bytes:
         req_data = json.loads(decrypted_bytes)
 

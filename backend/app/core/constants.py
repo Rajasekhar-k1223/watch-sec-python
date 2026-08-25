@@ -8,7 +8,7 @@ import os # type: ignore
 # [v1.7.0] UX & Reliability Hardening
 # The exact version string to match. When agents check in, if they report a lower version
 # and auto_patch is enabled, they will be given an update package.
-LATEST_AGENT_VERSION = "v2.2.10"
+LATEST_AGENT_VERSION = "v2.2.12"
 
 FEATURE_TIERS = {
     "ActivityMonitorEnabled": 1,

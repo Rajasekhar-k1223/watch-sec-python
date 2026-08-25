@@ -97,14 +97,14 @@ class AgentSettingsUpdate(BaseModel):
     MonitoringConsentRequired: Optional[bool] = None
 
     # Legacy Compatibility & Quality Settings
-    ScreenshotQuality: Optional[int] = 80
-    ScreenshotResolution: Optional[str] = "Original"
-    MaxScreenshotSize: Optional[int] = 0
+    ScreenshotQuality: Optional[int] = None
+    ScreenshotResolution: Optional[str] = None
+    MaxScreenshotSize: Optional[int] = None
     BlockedApps: Optional[List[str]] = None
     ShadowPaths: Optional[List[str]] = None
-    ScreenshotInterval: Optional[int] = 60
+    ScreenshotInterval: Optional[int] = None
     GeolocationEnabled: Optional[bool] = None
-    MaxOfflineBufferMb: Optional[int] = 2000
+    MaxOfflineBufferMb: Optional[int] = None
 
 class AgentHeartbeat(BaseModel):
     AgentId: str

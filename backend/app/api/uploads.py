@@ -68,7 +68,7 @@ async def upload_shadow(
 
     # E2EE Decryption
     from ..core.security import decrypt_e2e_payload
-    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineSecret if agent.MachineSecret else key_seed.decode())
+    decrypted_bytes = decrypt_e2e_payload(body_bytes, agent.MachineId if agent.MachineId else key_seed.decode())
     if decrypted_bytes != body_bytes:
         req_data = json.loads(decrypted_bytes)
 
