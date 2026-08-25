@@ -310,18 +310,21 @@ echo "[4/5] Installing Dependencies..."
 
 # System Dependencies for both Binary and Source modes
 if [ "$(uname)" = "Linux" ]; then
-    if ! ldconfig -p | grep -q libxdo.so >/dev/null 2>&1; then
-        echo "Installing required system library (libxdo3)..."
+    # Check if the system has a graphical desktop environment installed
+    if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
+        echo "Graphical Desktop detected. Installing required GUI dependencies (xdotool, scrot)..."
         {{
             if command -v apt-get &> /dev/null; then
                 export DEBIAN_FRONTEND=noninteractive
-                apt-get update && apt-get install -yq libxdo3 || apt-get install -yq xdotool
+                apt-get update && apt-get install -yq xdotool scrot
             elif command -v yum &> /dev/null; then
-                yum install -y xdotool
+                yum install -y xdotool scrot
             elif command -v pacman &> /dev/null; then
-                pacman -Sy --noconfirm xdotool
+                pacman -Sy --noconfirm xdotool scrot
             fi
         }}
+    else
+        echo "Headless Server detected. Skipping GUI dependencies (xdotool, scrot)."
     fi
 fi
 if [ "$IS_BINARY" = "false" ]; then
@@ -436,7 +439,7 @@ EOF
     $SUDO systemctl daemon-reload 2>/dev/null
     $SUDO systemctl enable monitorix-agent 2>/dev/null
     $SUDO systemctl restart monitorix-agent 2>/dev/null
-    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v1.8.60 (Linux) is now running.\033[0m"
+    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.2.12 (Linux) is now running.\033[0m"
 
 # Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
@@ -513,7 +516,7 @@ EOF
              echo "  cd $dir_name && sudo python3 $(basename $MAIN_SCRIPT)"
         fi
     else
-        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v1.8.60 (macOS) is now running.\033[0m"
+        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.2.12 (macOS) is now running.\033[0m"
     fi
 fi
 """
