@@ -50,3 +50,9 @@ class PrivacyManager:
 
 # Global singleton
 privacy_manager = PrivacyManager()
+
+class BackendPrivacyRedactor:
+    @staticmethod
+    def redact_text(text: str) -> str:
+        # Dummy implementation that could be expanded
+        return text

@@ -123,11 +123,4 @@ def process_ocr_background(agent_id: str, screenshot_id: str, file_path: str):
         logger.error(f"OCR Error for Agent {agent_id}: {e}")
         session.rollback()
     finally:
-        # [v1.8.37] Forensic Cleanup: Purge raw unredacted screenshots from disk
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"Purged raw screenshot: {file_path}")
-            except Exception as pe:
-                logger.error(f"Failed to purge raw screenshot: {pe}")
         session.close()
