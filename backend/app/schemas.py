@@ -130,6 +130,9 @@ class AgentHeartbeat(BaseModel):
     TopProcessesJson: Optional[str] = "[]"
     NetworkInMbps: Optional[float] = 0.0
     NetworkOutMbps: Optional[float] = 0.0
+    TotalNetworkInGB: Optional[float] = 0.0
+    TotalNetworkOutGB: Optional[float] = 0.0
+    ActiveNicName: Optional[str] = ""
     PublicIp: Optional[str] = None
     GeolocationEnabled: Optional[bool] = True # [NEW] v1.8.27
     MachineSecret: Optional[str] = None # [NEW] v1.8.37
@@ -142,11 +145,17 @@ class AgentUpdateLogRequest(BaseModel):
     AgentId: str
     Log: str
 
+class AgentFimUpdateRequest(BaseModel):
+    FileIntegrityMonitoringEnabled: bool
+    FimPaths: List[str]
+
 class SecurityEventDto(BaseModel):
     AgentId: str
     TenantApiKey: Optional[str] = None
     Type: Optional[str] = None
     Details: Optional[str] = None
     Timestamp: Optional[datetime] = None
+    Severity: Optional[str] = "Medium"
+    IsAlert: Optional[bool] = False
 
 

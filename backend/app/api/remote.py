@@ -146,7 +146,7 @@ async def on_remote_input(sid, data):
     # 3. RemoteInput -> We verify User is in room 'agent_id'
     
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         # [v1.8.37] Remote Input Sovereignty: Sign Input Relay
         async with AsyncSessionLocal() as db:
             res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
@@ -280,7 +280,7 @@ async def on_shell_input(sid, data):
 
         # [SECURITY] Verify user is in the Agent Room or is SuperAdmin
         rooms = sio.rooms(sid)
-        if agent_id in rooms or user['role'] == "SuperAdmin":
+        if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
             # [v1.8.37] Shell Sovereignty: Sign Input
             async with AsyncSessionLocal() as db:
                 res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
@@ -320,7 +320,7 @@ async def on_shell_resize(sid, data):
         if not user: return
 
         rooms = sio.rooms(sid)
-        if agent_id in rooms or user['role'] == "SuperAdmin":
+        if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
             await sio.emit('ShellResize', data, room=agent_id)
 
 @sio.on('ShellOutput')
@@ -377,7 +377,7 @@ async def on_list_files(sid, data):
         if not user: return
 
         rooms = sio.rooms(sid)
-        if agent_id in rooms or user['role'] == "SuperAdmin":
+        if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
             print(f"[FileManager] ListFiles for {agent_id}: {path}")
             await _sign_and_emit_file_command(sid, agent_id, "ListFiles", path, "path")
 
@@ -404,7 +404,7 @@ async def on_download_file(sid, data):
     
     # Re-verify room membership (set by on_join)
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         await _sign_and_emit_file_command(sid, agent_id, "DownloadFile", path, "path")
 
 @sio.on('FileContent')
@@ -428,7 +428,7 @@ async def on_delete_file(sid, data):
     if not user: return
     
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         await _sign_and_emit_file_command(sid, agent_id, "DeleteFile", path, "path")
 
 @sio.on('KillProcess')
@@ -442,7 +442,7 @@ async def on_kill_process(sid, data):
     if not user: return
     
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         async with AsyncSessionLocal() as db:
             res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
             agent = res_a.scalars().first()
@@ -479,7 +479,7 @@ async def on_isolate_agent(sid, data):
     if not user: return
     
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         async with AsyncSessionLocal() as db:
             res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
             agent = res_a.scalars().first()
@@ -500,6 +500,78 @@ async def on_isolate_agent(sid, data):
         
         payload = {
             'Action': 'IsolateNetwork',
+            'timestamp': timestamp,
+            'signature': signature
+        }
+        await sio.emit('Remediation', payload, room=agent_id)
+
+@sio.on('StartPcap')
+async def on_start_pcap(sid, data):
+    agent_id = data.get('agentId')
+    if not agent_id: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    rooms = sio.rooms(sid)
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+            
+        timestamp = datetime.utcnow().isoformat()
+        params = {"Action": "StartPcap"}
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="Remediation",
+            params=params,
+            timestamp=timestamp
+        )
+        
+        payload = {
+            'Action': 'StartPcap',
+            'timestamp': timestamp,
+            'signature': signature
+        }
+        await sio.emit('Remediation', payload, room=agent_id)
+
+@sio.on('StopPcap')
+async def on_stop_pcap(sid, data):
+    agent_id = data.get('agentId')
+    if not agent_id: return
+    
+    session = await sio.get_session(sid)
+    user = session.get("user")
+    if not user: return
+    
+    rooms = sio.rooms(sid)
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent: return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant: return
+            
+        timestamp = datetime.utcnow().isoformat()
+        params = {"Action": "StopPcap"}
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="Remediation",
+            params=params,
+            timestamp=timestamp
+        )
+        
+        payload = {
+            'Action': 'StopPcap',
             'timestamp': timestamp,
             'signature': signature
         }
@@ -530,7 +602,7 @@ async def on_webrtc_answer(sid, data):
     if not user: return
 
     rooms = sio.rooms(sid)
-    if agent_id in rooms or user['role'] == "SuperAdmin":
+    if (agent_id in rooms and user.get('role') in ("Admin", "SuperAdmin")) or user.get('role') == "SuperAdmin":
         await sio.emit('webrtc_answer', data, room=agent_id, skip_sid=sid)
 
 @sio.on('webrtc_ice_candidate')

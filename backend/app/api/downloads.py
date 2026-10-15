@@ -189,16 +189,17 @@ def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_p
         # [Updated] Check if Binary Exists for Linux
         # If so, serve Binary Payload instead of Source Zip
         use_binary = False
-        binary_name = "monitorix-agent-rust-linux" if "linux" in os_type.lower() else "monitorix-agent-rust-mac"
+        binary_name = "monitorix-agent-linux" if "linux" in os_type.lower() else "monitorix-agent-mac"
         
         # Check if parts or file exist in template
         check_path_part = os.path.join(template_path, f"{binary_name}.part0")
         check_path_full = os.path.join(template_path, binary_name)
+        check_path_legacy = os.path.join(template_path, f"monitorix-{binary_name}")
         
         # [DEBUG]
         print(f"[DEBUG] Linux Binary Check in {template_path}: {check_path_full} ({os.path.exists(check_path_full)})")
 
-        if os.path.exists(check_path_part) or os.path.exists(check_path_full):
+        if os.path.exists(check_path_part) or os.path.exists(check_path_full) or os.path.exists(check_path_legacy):
              # Binary Available!
              use_binary = True
         
@@ -241,7 +242,12 @@ fi
 TARGET_PLATFORM="${{OS_NAME}}-${{AGENT_ARCH}}"
 echo "Detected Platform: ${{TARGET_PLATFORM}}"
 
-# 1. Attempt Binary Download
+# 1. Stop existing service if any to prevent file locking
+if [ "$(uname)" = "Linux" ] && command -v systemctl &> /dev/null; then
+    systemctl stop monitorix-agent 2>/dev/null || true
+fi
+
+# 2. Attempt Binary Download
 PAYLOAD_URL="{backend_url}/api/downloads/public/payload?key=$API_KEY&os_type=${{TARGET_PLATFORM}}"
 echo "[1/5] Downloading Agent Binary package..."
 
@@ -310,9 +316,9 @@ echo "[4/5] Installing Dependencies..."
 
 # System Dependencies for both Binary and Source modes
 if [ "$(uname)" = "Linux" ]; then
-    # Check if the system has a graphical desktop environment installed
-    if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
-        echo "Graphical Desktop detected. Installing required GUI dependencies (xdotool, scrot)..."
+    # Check if the system has a graphical desktop environment active
+    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+        echo "Graphical Desktop detected ($DISPLAY$WAYLAND_DISPLAY). Installing required GUI dependencies (xdotool, scrot)..."
         {{
             if command -v apt-get &> /dev/null; then
                 export DEBIAN_FRONTEND=noninteractive
@@ -324,7 +330,17 @@ if [ "$(uname)" = "Linux" ]; then
             fi
         }}
     else
-        echo "Headless Server detected. Skipping GUI dependencies (xdotool, scrot)."
+        echo "Headless Server detected (No DISPLAY). Installing minimal shared library (libxdo3) to satisfy binary loader..."
+        {{
+            if command -v apt-get &> /dev/null; then
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update && apt-get install -yq libxdo3 || apt-get install -yq xdotool
+            elif command -v yum &> /dev/null; then
+                yum install -y libxdo || yum install -y xdotool
+            elif command -v pacman &> /dev/null; then
+                pacman -Sy --noconfirm xdotool
+            fi
+        }}
     fi
 fi
 if [ "$IS_BINARY" = "false" ]; then
@@ -371,6 +387,11 @@ if [ "$IS_BINARY" = "true" ] && [ -f "$dir_name/$BINARY_NAME" ]; then
 fi
 
 echo "[5/5] Configuring..."
+if [ -e "$dir_name/config.json" ]; then
+    chattr -i "$dir_name/config.json" 2>/dev/null || true
+    rm -rf "$dir_name/config.json" 2>/dev/null || true
+fi
+
 cat > "$dir_name/config.json" <<EOF
 {{
   "TenantApiKey": "$API_KEY",
@@ -439,7 +460,7 @@ EOF
     $SUDO systemctl daemon-reload 2>/dev/null
     $SUDO systemctl enable monitorix-agent 2>/dev/null
     $SUDO systemctl restart monitorix-agent 2>/dev/null
-    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.2.12 (Linux) is now running.\033[0m"
+    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.3.0 (Linux) is now running.\033[0m"
 
 # Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
@@ -516,7 +537,7 @@ EOF
              echo "  cd $dir_name && sudo python3 $(basename $MAIN_SCRIPT)"
         fi
     else
-        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.2.12 (macOS) is now running.\033[0m"
+        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.3.0 (macOS) is now running.\033[0m"
     fi
 fi
 """
@@ -650,14 +671,14 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     RUST_AGENT_ROOT = "/opt/apps/monitorix/agent-rust/target"
     
     rust_target_map = {
-        "windows":     (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/agent-rust.exe",   "monitorix-agent.exe"),
-        "windows-x64": (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/agent-rust.exe",   "monitorix-agent.exe"),
-        "linux":       (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/agent-rust",     "monitorix-agent-linux"),
-        "linux-x64":   (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/agent-rust",     "monitorix-agent-linux"),
-        "linux-arm64": (f"{RUST_AGENT_ROOT}/aarch64-unknown-linux-gnu/release/agent-rust",    "monitorix-agent-linux-arm64"),
-        "mac":         (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/agent-rust",          "monitorix-agent-mac"),
-        "mac-x64":     (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/agent-rust",          "monitorix-agent-mac"),
-        "mac-arm64":   (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/agent-rust",         "monitorix-agent-mac-arm64"),
+        "windows":     (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
+        "windows-x64": (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
+        "linux":       (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "linux-x64":   (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "linux-arm64": (f"{RUST_AGENT_ROOT}/aarch64-unknown-linux-gnu/release/monitorix-agent",    "monitorix-agent-linux-arm64"),
+        "mac":         (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/monitorix-agent",          "monitorix-agent-mac"),
+        "mac-x64":     (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/monitorix-agent",          "monitorix-agent-mac"),
+        "mac-arm64":   (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/monitorix-agent",         "monitorix-agent-mac-arm64"),
     }
     
     os_key = os_type.lower()
@@ -667,7 +688,7 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
         binary_path, binary_name = rust_target_map[os_key]
         # Linux x64 can also be the native build (fallback)
         if not os.path.exists(binary_path) and "linux" in os_key and "arm" not in os_key:
-            binary_path = f"{RUST_AGENT_ROOT}/release/agent-rust"
+            binary_path = f"{RUST_AGENT_ROOT}/release/monitorix-agent"
             
         if os.path.exists(binary_path):
             binary_found = True
@@ -688,9 +709,9 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
         # Check for expected binaries based on OS
         expected_names = []
         if "linux" in os_key:
-            expected_names = ["monitorix-agent-rust-linux", "monitorix-agent-linux", "monitorix.zip"]
+            expected_names = ["monitorix-monitorix-agent-linux", "monitorix-agent-linux", "monitorix.zip"]
         elif "mac" in os_key or "osx" in os_key:
-            expected_names = ["monitorix-agent-rust-mac", "monitorix-agent-mac", "monitorix.zip"]
+            expected_names = ["monitorix-monitorix-agent-mac", "monitorix-agent-mac", "monitorix.zip"]
         else:
             expected_names = ["monitorix-agent.exe", "monitorixagent.exe", "monitorix-setup-v3.exe", "monitorix.zip"]
             
@@ -900,7 +921,7 @@ $ApiKey = "{api_key_val}"
 $BackendUrl = "{backend_url}"
 $DownloadUrl = "$BackendUrl/api/downloads/exe/windows?key=$ApiKey&t=$(Get-Date -UFormat %s)"
 $InstallDir = "C:\\Program Files\\Monitorix"
-$ExeName = "monitorix-agent-rust.exe"
+$ExeName = "monitorix-monitorix-agent.exe"
 $VersionCheckUrl = ""
 """
     
@@ -956,11 +977,11 @@ async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     # Serve the new Rust Agent executable for Windows
-    exe_path = "/opt/apps/monitorix/agent-rust/target/x86_64-pc-windows-gnu/release/agent-rust.exe"
+    exe_path = "/opt/apps/monitorix/agent-rust/target/x86_64-pc-windows-gnu/release/monitorix-agent.exe"
     
     # Check if a specific Windows build exists (cross-compiled), otherwise fallback to the linux release build we just made
     if not os.path.exists(exe_path):
-        exe_path = "/opt/apps/monitorix/agent-rust/target/release/agent-rust"
+        exe_path = "/opt/apps/monitorix/agent-rust/target/release/monitorix-agent"
 
     if not os.path.exists(exe_path):
         file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -973,7 +994,7 @@ async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         exe_path,
         media_type="application/vnd.microsoft.portable-executable",
-        filename="monitorix-agent-rust.exe",
+        filename="monitorix-monitorix-agent.exe",
         headers={"Cache-Control": "no-cache"}
     )
 

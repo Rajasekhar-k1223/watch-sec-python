@@ -32,11 +32,15 @@ class ComplianceService:
     async def generate_executive_summary(self, tenant_id: int, db: AsyncSession) -> Dict[str, Any]:
         """Synthesizes technical security data into a human-readable executive story."""
         
-        # 1. Threat Neutralization Stats (24h)
-        threat_query = select(EventLog).where(
-            EventLog.TenantId == tenant_id,
-            EventLog.Timestamp >= datetime.utcnow() - timedelta(days=30),
-            EventLog.Severity.in_(["High", "Critical"])
+        # 1. Threat Neutralization Stats (24h/30d)
+        threat_query = (
+            select(EventLog)
+            .join(Agent, EventLog.AgentId == Agent.AgentId)
+            .where(
+                Agent.TenantId == tenant_id,
+                EventLog.Timestamp >= datetime.utcnow() - timedelta(days=30),
+                EventLog.Severity.in_(["High", "Critical"])
+            )
         )
         result = await db.execute(threat_query)
         threats = result.scalars().all()
@@ -90,9 +94,13 @@ class ComplianceService:
         results = []
         
         # Check 1: PII Retention (Article 5) - Are we storing events > 90 days?
-        old_events_query = select(func.count(EventLog.Id)).where(
-            EventLog.TenantId == tenant_id,
-            EventLog.Timestamp < datetime.utcnow() - timedelta(days=90)
+        old_events_query = (
+            select(func.count(EventLog.Id))
+            .join(Agent, EventLog.AgentId == Agent.AgentId)
+            .where(
+                Agent.TenantId == tenant_id,
+                EventLog.Timestamp < datetime.utcnow() - timedelta(days=90)
+            )
         )
         res = await db.execute(old_events_query)
         old_count = res.scalar() or 0
@@ -110,13 +118,18 @@ class ComplianceService:
             ))
             
         # Check 2: Screenshot/Visual Privacy Consent
-        policy_res = await db.execute(select(Policy).where(Policy.TenantId == tenant_id, Policy.ScreenshotEnabled == True))
-        active_screenshot_policies = len(policy_res.scalars().all())
-        if active_screenshot_policies > 0:
+        agent_res = await db.execute(select(Agent).where(Agent.TenantId == tenant_id, Agent.VisualActivityEnabled == True))
+        active_screenshot_agents = len(agent_res.scalars().all())
+        if active_screenshot_agents > 0:
             results.append(ComplianceCheckResult(
                 "GDPR", "Visual Privacy (Art 6)", "Warning",
-                f"{active_screenshot_policies} policies have screenshot monitoring enabled.",
+                f"{active_screenshot_agents} agents have visual monitoring enabled.",
                 "Ensure explicit employee consent is collected if deploying in the EU."
+            ))
+        else:
+            results.append(ComplianceCheckResult(
+                "GDPR", "Visual Privacy (Art 6)", "Pass",
+                "No visual monitoring active without consent.", ""
             ))
             
         return results
@@ -141,12 +154,17 @@ class ComplianceService:
             ))
             
         # Check 2: EPHI Access Control (Screenshots)
-        policy_res = await db.execute(select(Policy).where(Policy.TenantId == tenant_id, Policy.ScreenshotEnabled == True))
-        if len(policy_res.scalars().all()) > 0:
+        agent_res = await db.execute(select(Agent).where(Agent.TenantId == tenant_id, Agent.VisualActivityEnabled == True))
+        if len(agent_res.scalars().all()) > 0:
             results.append(ComplianceCheckResult(
                 "HIPAA", "EPHI Access (164.312a1)", "Warning",
-                "Screenshot monitoring is active and may capture EPHI on screen.",
+                "Visual activity monitoring is active and may capture EPHI on screen.",
                 "Configure application blocking or specific exclusions for EHR software."
+            ))
+        else:
+            results.append(ComplianceCheckResult(
+                "HIPAA", "EPHI Access (164.312a1)", "Pass",
+                "No unencrypted EPHI screen captures detected.", ""
             ))
             
         return results
@@ -157,8 +175,10 @@ class ComplianceService:
         
         # Check 1: Logical Access (CC6.1) - Unresolved Criticals
         crit_res = await db.execute(
-            select(func.count(EventLog.Id)).where(
-                EventLog.TenantId == tenant_id,
+            select(func.count(EventLog.Id))
+            .join(Agent, EventLog.AgentId == Agent.AgentId)
+            .where(
+                Agent.TenantId == tenant_id,
                 EventLog.Severity == "Critical",
                 EventLog.Status != "Resolved"
             )

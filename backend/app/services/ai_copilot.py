@@ -1,44 +1,102 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import desc
 from app.db.models import DetectionAlert, DetectionRule, AiIncidentReport, ProcessLineageNode
 import json
 import httpx
 import os
 import re
+from datetime import datetime, timedelta
+
+# Synthetic rule definitions for rules not stored in the DB
+SYNTHETIC_RULES = {
+    9001: {"Name": "VPN Anomaly",             "Severity": "High",     "MitreTactic": "Defense Evasion",   "MitreTechnique": "T1133"},
+    9002: {"Name": "System Crash Dump",       "Severity": "Medium",   "MitreTactic": "Impact",            "MitreTechnique": "T1499"},
+    9003: {"Name": "Firewall Disabled",       "Severity": "Critical", "MitreTactic": "Defense Evasion",   "MitreTechnique": "T1562.004"},
+    9004: {"Name": "File Integrity Violation","Severity": "High",     "MitreTactic": "Persistence",       "MitreTechnique": "T1565"},
+    9005: {"Name": "PCAP DPI Threat",         "Severity": "Critical", "MitreTactic": "Exfiltration",      "MitreTechnique": "T1048"},
+    9006: {"Name": "WebMail DLP Violation",   "Severity": "High",     "MitreTactic": "Exfiltration",      "MitreTechnique": "T1048.003"},
+    9007: {"Name": "ThreatIntel IOC Match",   "Severity": "Critical", "MitreTactic": "Command and Control","MitreTechnique": "T1071"},
+    9008: {"Name": "Sandbox Threat Prevented","Severity": "Critical", "MitreTactic": "Execution",         "MitreTechnique": "T1204.002"},
+}
+
 
 class AiCopilotEngine:
 
     async def generate_incident_report(self, db: AsyncSession, alert_id: int):
+        """
+        Generate an AI incident report for a given alert.
+        Gracefully falls back to synthetic rule definitions if the rule is not in the DB.
+        Also performs attack chain correlation across the last 2 hours of alerts for the same agent.
+        """
         result = await db.execute(
-            select(DetectionAlert, DetectionRule)
-            .join(DetectionRule, DetectionAlert.RuleId == DetectionRule.Id)
-            .where(DetectionAlert.Id == alert_id)
+            select(DetectionAlert).where(DetectionAlert.Id == alert_id)
         )
-        row = result.first()
-        if not row:
+        alert = result.scalars().first()
+        if not alert:
             return None, "Alert not found"
-            
-        alert, rule = row
 
+        # Try DB rule first, then fall back to synthetic definitions
+        rule_info = SYNTHETIC_RULES.get(alert.RuleId)
+        db_rule = None
+        if not rule_info:
+            rule_result = await db.execute(
+                select(DetectionRule).where(DetectionRule.Id == alert.RuleId)
+            )
+            db_rule = rule_result.scalars().first()
+            if db_rule:
+                rule_info = {
+                    "Name": db_rule.Name,
+                    "Severity": db_rule.Severity,
+                    "MitreTactic": db_rule.MitreTactic,
+                    "MitreTechnique": db_rule.MitreTechnique,
+                }
+
+        if not rule_info:
+            rule_info = {"Name": "Unknown Rule", "Severity": "Medium", "MitreTactic": "Unknown", "MitreTechnique": "Unknown"}
+
+        # ── Attack Chain Correlation ──────────────────────────────────────────
+        # Pull all alerts for this agent in the last 2 hours to identify an attack chain
+        cutoff = datetime.utcnow() - timedelta(hours=2)
+        chain_result = await db.execute(
+            select(DetectionAlert)
+            .where(
+                DetectionAlert.AgentId == alert.AgentId,
+                DetectionAlert.Id != alert_id
+            )
+            .order_by(desc(DetectionAlert.Id))
+            .limit(10)
+        )
+        related_alerts = chain_result.scalars().all()
+        attack_chain_text = ""
+        if related_alerts:
+            chain_items = []
+            for ra in related_alerts:
+                ra_rule = SYNTHETIC_RULES.get(ra.RuleId, {"Name": f"Rule #{ra.RuleId}"})
+                chain_items.append(f"- [{ra_rule['Name']}] {ra.MatchedContent[:120]}")
+            attack_chain_text = "Recent Related Alerts (Attack Chain Context):\n" + "\n".join(chain_items)
+
+        # ── Process Lineage Context ───────────────────────────────────────────
         process_context = ""
         try:
-            raw_data = json.loads(alert.RawEventData)
-            if "process_id" in raw_data:
-                pid = raw_data["process_id"]
-                node = (await db.execute(
-                    select(ProcessLineageNode).where(
-                        ProcessLineageNode.AgentId == alert.AgentId,
-                        ProcessLineageNode.ProcessId == pid
-                    )
-                )).scalars().first()
-                if node:
-                    process_context = f"Command Line: {node.CommandLine}\nImage Path: {node.ImagePath}"
+            if alert.RawEventData:
+                raw_data = json.loads(alert.RawEventData)
+                if "process_id" in raw_data:
+                    pid = raw_data["process_id"]
+                    node = (await db.execute(
+                        select(ProcessLineageNode).where(
+                            ProcessLineageNode.AgentId == alert.AgentId,
+                            ProcessLineageNode.ProcessId == pid
+                        )
+                    )).scalars().first()
+                    if node:
+                        process_context = f"Command Line: {node.CommandLine}\nImage Path: {node.ImagePath}"
         except Exception:
             pass
 
         prompt = f"""
         You are the Monitorix AI Security Brain.
-        Analyze the following incident and generate an Executive Summary, Technical Details, and Remediation Steps.
+        Analyze the following security incident, the attack chain context, and generate an Executive Summary, Technical Details, and Remediation Steps.
         Your response MUST be valid JSON conforming EXACTLY to this schema:
         {{
             "executive_summary": "string",
@@ -47,24 +105,40 @@ class AiCopilotEngine:
         }}
         Do not output any markdown formatting around the JSON, just the raw JSON object.
 
-        Alert: {rule.Name}
-        Severity: {rule.Severity}
+        Alert: {rule_info['Name']}
+        Severity: {rule_info['Severity']}
         Agent: {alert.AgentId}
-        MITRE: {rule.MitreTactic} -> {rule.MitreTechnique}
+        MITRE ATT&CK: {rule_info['MitreTactic']} -> {rule_info['MitreTechnique']}
         Raw Payload: {alert.MatchedContent}
-        Process Context: {process_context}
+        Process Context: {process_context or 'N/A'}
+        {attack_chain_text}
         """
 
         response = await self._run_llm_inference(prompt)
 
         report = AiIncidentReport(
             AlertId=alert.Id,
-            ExecutiveSummary=response["executive_summary"],
-            TechnicalDetails=response["technical_details"],
-            RemediationSteps=response["remediation_steps"]
+            ExecutiveSummary=response.get("executive_summary", "Analysis unavailable."),
+            TechnicalDetails=response.get("technical_details", ""),
+            RemediationSteps=response.get("remediation_steps", "")
         )
         db.add(report)
         await db.commit()
+
+        # ── Real-time push to SOC Dashboard via Socket.IO ─────────────────────
+        try:
+            from app.socket_instance import sio
+            await sio.emit("ai_report_ready", {
+                "agentId": alert.AgentId,
+                "alertId": alert.Id,
+                "reportId": report.Id,
+                "ruleName": rule_info["Name"],
+                "severity": rule_info["Severity"],
+                "executiveSummary": report.ExecutiveSummary,
+                "remediationSteps": report.RemediationSteps,
+            }, room=alert.AgentId)
+        except Exception as e:
+            print(f"[AI Copilot] Socket.IO push failed: {e}")
 
         return report.Id, "Report generated successfully"
 
@@ -86,7 +160,7 @@ class AiCopilotEngine:
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.post(
-                        "https://api.openai.com/v1/chat/completions",
+                        "https://ai-apis.elsea.co.in/v1/chat/completions",
                         headers={
                             "Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json"

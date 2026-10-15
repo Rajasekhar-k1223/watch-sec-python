@@ -171,7 +171,6 @@ async def assertion_consumer_service(
             TenantId=tenant_id,
             Role="Analyst",  # Default role — can be overridden by IdP attributes
             IsActive=True,
-            # Resolving TODO: using a proper bcrypt hash for the random placeholder
             PasswordHash=get_password_hash(secrets.token_urlsafe(32)),
         )
         db.add(user)

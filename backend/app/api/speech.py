@@ -98,25 +98,41 @@ async def upload_speech_log(
     with open(file_path, "wb") as buffer:
         buffer.write(file_bytes)
 
-    # 3. Transcription (v2.6.0: Intelligent Keyword Mock)
-    # In a full deployment, this would call OpenAI Whisper or Azure Speech
-    # For now, we simulate detection based on filename or random triggers for the demo
-    possible_transcripts = [
-        "Discussion about internal project 'Phoenix' and the new encryption keys.",
-        "User mentioned password reset for the main production database.",
-        "Conversation regarding the upcoming legal contract and its restricted clauses.",
-        "Routine check of the server room access logs.",
-        "Meeting regarding the security override for the sovereign lockdown system."
-    ]
-    import random
-    transcribed_text = random.choice(possible_transcripts)
+    # 3. Real Transcription using SpeechRecognition
+    import speech_recognition as sr
+    transcribed_text = ""
+    try:
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(file_path) as source:
+            audio_data = recognizer.record(source)
+            transcribed_text = recognizer.recognize_google(audio_data)
+    except Exception as e:
+        print(f"[Speech] Transcription failed: {e}")
+        transcribed_text = "[Transcription Failed or Unintelligible]"
     
+    # 4. AI Keyword Analysis using Elsea AI (if available) or basic matching
     keywords_found = []
-    # 4. Keyword Detection (Deeper Audit)
-    risk_words = ["password", "encryption", "secret", "restricted", "override", "lockdown", "legal", "contract"] 
+    risk_words = ["password", "confidential", "secret", "ssn", "credit card", "api_key"]
     for word in risk_words:
         if word in transcribed_text.lower():
             keywords_found.append(word)
+    
+    # Try Elsea AI for deeper intent (non-blocking)
+    import httpx
+    try:
+        if transcribed_text != "[Transcription Failed or Unintelligible]":
+            # Using configured elsea ai
+            async with httpx.AsyncClient() as client:
+                resp = await client.post("https://ai-apis.elsea.co.in/v1/chat/completions", json={
+                    "messages": [{"role": "user", "content": f"Extract severe security threats or sensitive keywords from this transcript as a comma separated list. If none, say 'None'. Transcript: {transcribed_text}"}],
+                    "model": "gpt-4"
+                }, timeout=3.0)
+                if resp.status_code == 200:
+                    ai_reply = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if ai_reply and ai_reply.lower() != "none":
+                        keywords_found.extend([k.strip() for k in ai_reply.split(",")])
+    except Exception as e:
+        pass
 
     # 5. Save DB Record
     log = SpeechLog(
@@ -136,6 +152,61 @@ async def upload_speech_log(
     await log_system_event(db, "Agent", agent_id, "SPEECH_CAPTURE", f"Acoustic forensic data captured ({duration}s). Keywords: {', '.join(keywords_found) or 'None'}")
     
     await db.commit()
+    
+    # [NEW] Generate Critical Alert if keywords found
+    from ..socket_instance import sio
+    if keywords_found:
+        from ..db.models import Event, SoarPlaybook
+        from ..services.soar_engine import soar_engine
+        import asyncio
+        
+        event_type = "AcousticThreatDetected"
+        alert_event = Event(
+            AgentId=agent_id,
+            Type=event_type,
+            Severity="Critical",
+            Status="Open",
+            IsAlert=True,
+            Details=f"Acoustic forensic engine detected sensitive keywords: {', '.join(keywords_found)}.",
+            Timestamp=datetime.utcnow()
+        )
+        db.add(alert_event)
+        await db.commit()
+        
+        # Dispatch to dashboard
+        await sio.emit('new_event', {
+            'Id': alert_event.Id,
+            'AgentId': agent_id,
+            'Type': event_type,
+            'Severity': "Critical",
+            'Status': "Open",
+            'IsAlert': True,
+            'Details': alert_event.Details,
+            'Timestamp': alert_event.Timestamp.isoformat()
+        }, room=agent_id)
+        
+        # Trigger SOAR
+        playbooks = (await db.execute(select(SoarPlaybook))).scalars().all()
+        for pb in playbooks:
+            if event_type.lower() in pb.TriggerCondition.lower() or pb.TriggerCondition.lower() in event_type.lower() or "critical" in pb.TriggerCondition.lower():
+                await soar_engine.trigger_playbook(db, pb.Id, agent_id)
+
+    # Broadcast Live Speech Transcription to UI
+    await sio.emit('new_speech_transcription', {
+        'agent_id': agent_id,
+        'text': transcribed_text,
+        'keywords': keywords_found,
+        'timestamp': datetime.utcnow().isoformat(),
+        'audio_url': f"/api/speech/download/{save_filename}"
+    }, room=f"tenant_{tenant.Id}")
+    await sio.emit('new_speech_transcription', {
+        'agent_id': agent_id,
+        'text': transcribed_text,
+        'keywords': keywords_found,
+        'timestamp': datetime.utcnow().isoformat(),
+        'audio_url': f"/api/speech/download/{save_filename}"
+    }, room="superadmin")
+
     return {"status": "Uploaded", "id": log.Id, "text": transcribed_text}
 
 @router.get("/download/{filename}")

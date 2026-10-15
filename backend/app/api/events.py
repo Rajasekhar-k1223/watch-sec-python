@@ -30,6 +30,53 @@ from ..socket_instance import sio # type: ignore
 async def log_activity_get():
     return {"status": "ignored", "message": "Received GET. Please update agent to use HTTPS."}
 
+@router.get("/security/all")
+async def get_all_security_logs(
+    agent_id: Optional[str] = None,
+    type: Optional[str] = None,
+    severity: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Central log ingestion query endpoint for SIEM & Windows/Linux EventLog search."""
+    from ..db.models import Agent, EventLog
+    from sqlalchemy import or_, desc
+
+    stmt = select(EventLog)
+    if current_user.Role != "SuperAdmin":
+        stmt = stmt.join(Agent, EventLog.AgentId == Agent.AgentId).where(Agent.TenantId == current_user.TenantId)
+
+    if agent_id and agent_id != "All":
+        stmt = stmt.where(EventLog.AgentId == agent_id)
+    if type and type != "All":
+        stmt = stmt.where(EventLog.Type == type)
+    if severity and severity != "All":
+        stmt = stmt.where(EventLog.Severity == severity)
+    if search:
+        search_fmt = f"%{search}%"
+        stmt = stmt.where(or_(EventLog.Details.ilike(search_fmt), EventLog.Type.ilike(search_fmt), EventLog.AgentId.ilike(search_fmt)))
+
+    stmt = stmt.order_by(desc(EventLog.Timestamp)).offset(offset).limit(limit)
+    rows = (await db.execute(stmt)).scalars().all()
+
+    return [
+        {
+            "Id": log.Id,
+            "AgentId": log.AgentId,
+            "Type": log.Type,
+            "Details": log.Details,
+            "Timestamp": log.Timestamp.isoformat() if log.Timestamp else "",
+            "Status": log.Status or "Open",
+            "Severity": log.Severity or "Medium",
+            "IsAlert": log.IsAlert or False,
+            "RawData": log.RawData
+        }
+        for log in rows
+    ]
+
 @router.get("/{agent_id}", response_model=List[SecurityEventLog])
 async def get_security_events(
     agent_id: str,
@@ -52,8 +99,9 @@ async def get_security_events(
     if current_user.Role != "SuperAdmin" and agent.TenantId != current_user.TenantId:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    query = select(EventLog).where(func.lower(EventLog.AgentId) == func.lower(agent_id))
-    
+    from ..db.pg_pagination import paginate_event_logs
+
+    # Handle legacy date_range logic
     if date_range:
         now = datetime.utcnow()
         if date_range == "24h":
@@ -62,35 +110,40 @@ async def get_security_events(
             start_date = (now - timedelta(days=7)).isoformat()
         elif date_range == "30d":
             start_date = (now - timedelta(days=30)).isoformat()
-    
-    if start_date or end_date:
-        if start_date:
-            try:
-                dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            except ValueError:
-                dt_start = start_date
-            query = query.where(EventLog.Timestamp >= dt_start)
-        if end_date:
-            try:
-                dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            except ValueError:
-                dt_end = end_date
-            query = query.where(EventLog.Timestamp <= dt_end)
-            
-    query = query.order_by(EventLog.Timestamp.desc())
-    query = query.limit(limit).offset(offset)
-        
-    result = await db.execute(query)
-    events = result.scalars().all()
-    
+
+    dt_start = None
+    dt_end = None
+
+    if start_date:
+        try:
+            dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        except ValueError:
+            pass
+
+    page = await paginate_event_logs(
+        db, agent_id,
+        limit=limit,
+        offset=offset,
+        start_ts=dt_start,
+        end_ts=dt_end,
+        as_dict=True
+    )
+
+    # Maintain backwards compatibility with frontend expecting an array
+    # If frontend is updated later to send `cursor`, this same endpoint will be 100x faster.
     return [
         {
-            "AgentId": e.AgentId,
-            "Type": e.Type,
-            "Details": e.Details,
-            "Timestamp": e.Timestamp
+            "AgentId": e["AgentId"],
+            "Type": e["Type"],
+            "Details": e["Details"],
+            "Timestamp": e["Timestamp"]
         }
-        for e in events
+        for e in page.items
     ]
 
 @router.post("/report")
@@ -190,7 +243,23 @@ async def report_event(
 
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
     
-    event = EventLog(AgentId=dto.AgentId, Type=dto.Type, Details=dto.Details, Timestamp=ts_naive)
+    # Prevent duplicate events from being stored multiple times for the same agent and date/time
+    existing = await db.execute(select(EventLog).where(
+        EventLog.AgentId == dto.AgentId,
+        EventLog.Type == dto.Type,
+        EventLog.Timestamp == ts_naive
+    ))
+    if existing.scalars().first():
+        return {"status": "success", "message": "Duplicate event ignored"}
+    
+    event = EventLog(
+        AgentId=dto.AgentId,
+        Type=dto.Type,
+        Details=dto.Details,
+        Timestamp=ts_naive,
+        Severity=dto.Severity,
+        IsAlert=dto.IsAlert
+    )
     db.add(event)
     await db.commit()
 
@@ -215,7 +284,7 @@ async def report_event(
         
         if has_sensitive:
             # Elevate severity of the logged event
-            event.Severity = "High"
+            event.Severity = "Critical"
             event.Status = "Open"
             await db.commit()
             
@@ -224,7 +293,7 @@ async def report_event(
             asyncio.create_task(dispatcher.dispatch_critical_alert(
                 title=f"DLP Alert: Sensitive data found in {dto.Type}",
                 message=f"Keywords matched in {dto.Type}.",
-                severity="High",
+                severity="Critical",
                 agent_id=dto.AgentId,
                 cluster_name=agent.ClusterName if agent else None,
                 webhook_url=tenant.WebhookUrl
@@ -241,15 +310,63 @@ async def report_event(
         await sio.emit('new_audit_event', payload, room=str(dto.AgentId))
         await sio.emit('new_audit_event', payload, room=f"tenant_{tenant.Id}")
 
-    # [NEW] Item 3: Deception Engine Escalation
-    deception_events = ["DeceptionAlert", "DeceptionTriggered", "RansomwareDecoyTouched"]
-    if dto.Type in deception_events:
+    # [NEW] Item 3: Location Tracking Map Ingestion
+    if dto.Type == "LocationTrackingReport":
+        try:
+            loc_data = json.loads(dto.Details)
+            if "loc" in loc_data:
+                lat_str, lng_str = loc_data["loc"].split(",")
+                lat = float(lat_str.strip())
+                lng = float(lng_str.strip())
+                source = loc_data.get("source", "Unknown")
+                
+                from ..db.models import LocationReport # type: ignore
+                loc_report = LocationReport(
+                    AgentId=dto.AgentId,
+                    TenantId=tenant.Id,
+                    Latitude=lat,
+                    Longitude=lng,
+                    Source=source,
+                    Timestamp=ts_naive
+                )
+                db.add(loc_report)
+                await db.commit()
+        except Exception as e:
+            print(f"[LocationTracking] Failed to parse location report: {e}")
+
+    # [NEW] Item 4: Deception Engine Escalation
+    if dto.Type == "FileIntegrityAlert":
         event.Severity = "Critical"
         event.Status = "Open"
         await db.commit()
+        import asyncio
+        asyncio.create_task(dispatcher.dispatch_critical_alert(
+            title=f"File Integrity Violation",
+            message=dto.Details,
+            severity="Critical",
+            agent_id=dto.AgentId,
+            cluster_name=agent.ClusterName if agent else None,
+            webhook_url=tenant.WebhookUrl
+        ))
+        
+        payload = {
+            'AgentId': dto.AgentId,
+            'Type': dto.Type,
+            'Details': dto.Details,
+            'Timestamp': ts_naive.isoformat(),
+            'Severity': "Critical"
+        }
+        await sio.emit('new_event', payload, room=str(dto.AgentId))
+        await sio.emit('new_event', payload, room=f"tenant_{tenant.Id}")
+    deception_events = ["DeceptionAlert", "DeceptionTriggered", "RansomwareDecoyTouched"]
+    if dto.Type in deception_events or dto.Type in ["AppControlViolation", "UsbBlocked"]:
+        event.Severity = "Critical"
+        event.Status = "Open"
+        event.IsAlert = True
+        await db.commit()
 
     # [v2.6.0] External Dispatch for Critical Events
-    if dto.Type in ["THREAT_DETECTED", "MALWARE_ACTIVITY", "SERVICE_DOWN", "UNAUTHORIZED_ACCESS"] + deception_events:
+    if dto.Type in ["THREAT_DETECTED", "MALWARE_ACTIVITY", "SERVICE_DOWN", "UNAUTHORIZED_ACCESS", "AppControlViolation", "UsbBlocked"] + deception_events:
         import asyncio
         asyncio.create_task(dispatcher.dispatch_critical_alert(
             title=f"Critical Security Event: {dto.Type}",
@@ -269,6 +386,20 @@ async def report_event(
             'severity': event.Severity
         }
         asyncio.create_task(dispatcher.dispatch_siem_webhook(db, dto.AgentId, payload))
+
+    # [NEW] Dynamic SOAR Playbook Evaluator
+    if event.IsAlert and event.Severity == "Critical":
+        from app.db.models import SoarPlaybook
+        from app.services.soar_engine import soar_engine
+        import asyncio
+
+        # Fetch active playbooks
+        playbooks = (await db.execute(select(SoarPlaybook))).scalars().all()
+        for pb in playbooks:
+            # Simple string matching for trigger condition
+            if dto.Type.lower() in pb.TriggerCondition.lower() or pb.TriggerCondition.lower() in dto.Type.lower() or "critical" in pb.TriggerCondition.lower():
+                # Trigger the SOAR engine with the matched playbook
+                await soar_engine.trigger_playbook(db, pb.Id, agent.AgentId)
 
     # Broadcast
     target_room = str(dto.AgentId)
@@ -349,7 +480,9 @@ async def log_activity(
     is_valid = False
 
     if agent_obj.MachineId:
-        key_seed = auth_api_key.encode() + agent_obj.MachineId.encode()
+        res_t = await db.execute(select(Tenant).where(Tenant.Id == agent_obj.TenantId))
+        tenant = res_t.scalars().first()
+        key_seed = tenant.ApiKey.encode()
         signing_key = hashlib.sha256(key_seed).digest()
         expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
         if hmac.compare_digest(expected, x_signature):
@@ -399,7 +532,7 @@ async def log_activity(
     return {"status": "Logged"}
 
 # --- Activity Analytics (mongo) ---
-@router.get("/activity/{agent_id}", response_model=List[ActivityLog])
+@router.get("/activity/{agent_id}")
 async def get_activity_logs(
     agent_id: str,
     start_date: Optional[str] = None,
@@ -408,7 +541,8 @@ async def get_activity_logs(
     current_user: User = Depends(get_current_user),
     db_sql: AsyncSession = Depends(get_db),
     limit: int = Query(100, ge=1, le=2000),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    cursor: Optional[int] = Query(None)
 ):
     from ..db.models import Agent # type: ignore
     from sqlalchemy import func
@@ -417,48 +551,59 @@ async def get_activity_logs(
     if not agent_obj or (current_user.Role != "SuperAdmin" and agent_obj.TenantId != current_user.TenantId):
         raise HTTPException(status_code=403)
 
-    query = select(ActivityLogModel).where(func.lower(ActivityLogModel.AgentId) == func.lower(agent_id))
-    
-    if start_date:
-        dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-        query = query.where(ActivityLogModel.Timestamp >= dt_start)
-    if end_date:
-        dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-        query = query.where(ActivityLogModel.Timestamp <= dt_end)
-        
+    from ..db.pg_pagination import paginate_activity_logs
+
     if date_range and not start_date and not end_date:
         now = datetime.utcnow()
         if date_range == "24h":
-            delta = timedelta(hours=24)
+            start_date = (now - timedelta(hours=24)).isoformat()
         elif date_range == "7d":
-            delta = timedelta(days=7)
+            start_date = (now - timedelta(days=7)).isoformat()
         else:
-            delta = timedelta(days=30)
+            start_date = (now - timedelta(days=30)).isoformat()
 
-        query = query.where(ActivityLogModel.Timestamp >= now - delta)
+    dt_start = None
+    dt_end = None
+    if start_date:
+        try:
+            dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        except:
+            pass
+    if end_date:
+        try:
+            dt_end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        except:
+            pass
 
-    query = query.order_by(ActivityLogModel.Timestamp.desc())
-    query = query.limit(limit).offset(offset)
-    
-    result = await db_sql.execute(query)
-    logs = result.scalars().all()
-    
-    # Map to schema if needed, but returning models usually works if JSON encodable
+    page = await paginate_activity_logs(
+        db_sql, agent_id,
+        tenant_id=agent_obj.TenantId,
+        limit=limit,
+        offset=offset,
+        cursor=cursor,
+        start_ts=dt_start,
+        end_ts=dt_end,
+        as_dict=True
+    )
+
     return [
         {
-            "AgentId": l.AgentId,
-            "ActivityType": l.ActivityType,
-            "WindowTitle": l.WindowTitle,
-            "ProcessName": l.ProcessName,
-            "Url": l.Url,
-            "DurationSeconds": l.DurationSeconds or 0.0,
-            "IdleSeconds": l.IdleSeconds or 0.0,
-            "Category": l.Category,
-            "ProductivityScore": l.ProductivityScore,
-            "RiskLevel": l.RiskLevel,
-            "Timestamp": l.Timestamp
+            "AgentId": l["AgentId"],
+            "ActivityType": l["ActivityType"],
+            "WindowTitle": l["WindowTitle"],
+            "ProcessName": l["ProcessName"],
+            "Url": l["Url"],
+            "DurationSeconds": l["DurationSeconds"] or 0.0,
+            "IdleSeconds": l["IdleSeconds"] or 0.0,
+            "Category": l["Category"],
+            "ProductivityScore": l["ProductivityScore"],
+            "RiskLevel": l["RiskLevel"],
+            "Timestamp": l["Timestamp"],
+            # [FIX] Derived start/end timestamps so the frontend can show a real time range
+            "StartTime": l["Timestamp"].isoformat() if l["Timestamp"] else None,
+            "EndTime": (l["Timestamp"] + __import__('datetime').timedelta(seconds=l["DurationSeconds"] or 0)).isoformat() if l["Timestamp"] else None,
         }
-        for l in logs
+        for l in page.items
     ]
 
 @router.get("/activity/{agent_id}/stats")
@@ -475,49 +620,40 @@ async def get_activity_stats(
     if not agent_obj or (current_user.Role != "SuperAdmin" and agent_obj.TenantId != current_user.TenantId):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    from sqlalchemy import func
-    stats_query = select(
-        func.sum(ActivityLogModel.DurationSeconds).label("total_duration"),
-        func.sum(ActivityLogModel.IdleSeconds).label("total_idle")
-    ).where(func.lower(ActivityLogModel.AgentId) == func.lower(agent_id))
+    hours = 24
+    if date_range == "7d": hours = 168
+    elif date_range == "30d": hours = 720
 
-    if date_range:
-        now = datetime.utcnow()
-        if date_range == "24h":
-            delta = timedelta(hours=24)
-        elif date_range == "7d":
-            delta = timedelta(days=7)
-        else:
-            delta = timedelta(days=30)
+    from ..db.pg_helpers import pg
+    
+    # 1. Fetch KPI stats
+    stats_dict = await pg.get_activity_stats(db_sql, agent_id, hours)
+    if not stats_dict:
+        stats_dict = {"total_duration_seconds": 0, "total_idle_seconds": 0}
 
-        stats_query = stats_query.where(ActivityLogModel.Timestamp >= now - delta)
-
-    stats_res = await db_sql.execute(stats_query)
-    stats_row = stats_res.first()
-
-    total_duration = float(stats_row.total_duration or 0.0) if stats_row else 0.0
-    total_idle = float(stats_row.total_idle or 0.0) if stats_row else 0.0
+    total_duration = stats_dict.get("total_duration_seconds", 0.0)
+    total_idle = stats_dict.get("total_idle_seconds", 0.0)
     active_work = max(0.0, total_duration - total_idle)
 
-    # Fetch recent logs for Behavioral Audit Trail
-    q_acts = select(ActivityLogModel).where(func.lower(ActivityLogModel.AgentId) == func.lower(agent_id)).order_by(ActivityLogModel.Timestamp.desc()).limit(15)
-    res_acts = await db_sql.execute(q_acts)
-    act_docs = res_acts.scalars().all()
+    # 2. Fetch recent logs using paginator
+    from ..db.pg_pagination import paginate_activity_logs
+    recent_page = await paginate_activity_logs(db_sql, agent_id, limit=15, as_dict=True)
     
     recent_logs = []
-    for doc in act_docs:
+    for doc in recent_page.items:
         recent_logs.append({
-            "type": doc.ActivityType,
-            "details": f"{doc.ProcessName or ''} {doc.WindowTitle or ''}".strip(),
-            "timestamp": doc.Timestamp.isoformat(),
-            "agentId": doc.AgentId
+            "type": doc["ActivityType"],
+            "details": f"{doc.get('ProcessName') or ''} {doc.get('WindowTitle') or ''}".strip(),
+            "timestamp": doc["Timestamp"],
+            "agentId": doc["AgentId"]
         })
 
     return {
         "total_duration": total_duration,
         "total_idle": total_idle,
         "active_work": active_work,
-        "recentLogs": recent_logs
+        "recentLogs": recent_logs,
+        "_extended_stats": stats_dict 
     }
 
 @router.post("/simulate/{agent_id}")
@@ -642,3 +778,36 @@ def analyze_risk(title: str, process: str, url: str):
     if any(k in text for k in ["terminal", "powershell", "nmap"]): score = 80; level = "High"
     return score, level
 
+@router.get("/locations")
+async def get_latest_locations(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    from ..db.models import LocationReport, Agent # type: ignore
+    
+    # Query latest location for all active agents in the tenant
+    query = select(LocationReport, Agent.Hostname).join(
+        Agent, LocationReport.AgentId == Agent.AgentId
+    ).where(
+        LocationReport.TenantId == current_user.TenantId
+    ).order_by(
+        LocationReport.AgentId, LocationReport.Timestamp.desc()
+    )
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    # Deduplicate: only keep the newest record per agent
+    latest_locations = {}
+    for loc_report, hostname in rows:
+        if loc_report.AgentId not in latest_locations:
+            latest_locations[loc_report.AgentId] = {
+                "AgentId": loc_report.AgentId,
+                "Hostname": hostname or loc_report.AgentId,
+                "Latitude": loc_report.Latitude,
+                "Longitude": loc_report.Longitude,
+                "Source": loc_report.Source,
+                "Timestamp": loc_report.Timestamp.isoformat()
+            }
+            
+    return list(latest_locations.values())

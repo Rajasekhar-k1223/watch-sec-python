@@ -15,6 +15,8 @@ from sqlalchemy.future import select # type: ignore
 router = APIRouter()
 
 STORAGE_SHADOWS = "storage/Shadows"
+STORAGE_PCAPS = "storage/pcaps"
+os.makedirs(STORAGE_PCAPS, exist_ok=True)
 
 @router.post("/shadow")
 async def upload_shadow(
@@ -108,8 +110,82 @@ async def upload_shadow(
         )
         db.add(shadow_entry)
         await db.commit()
+        
+        from ..socket_instance import sio
+        await sio.emit("new_shadow_file", {
+            "AgentId": agent_id,
+            "FileName": req_filename,
+            "Timestamp": datetime.utcnow().isoformat()
+        }, room=agent_id)
+        
         return {"status": "Uploaded", "path": file_path, "id": shadow_entry.Id}
     except HTTPException: raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/pcap")
+async def upload_pcap(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    x_signature: Optional[str] = Header(None, alias="X-Signature"),
+    x_timestamp: Optional[str] = Header(None, alias="X-Timestamp")
+):
+    body_bytes = await request.body()
+    try:
+        req_data = json.loads(body_bytes)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+        
+    agent_id = req_data.get("agent_id") or req_data.get("AgentId")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id missing")
+
+    file_b64 = req_data.get("file_b64") or req_data.get("FileB64")
+    if not file_b64:
+        raise HTTPException(status_code=400, detail="FileB64 missing")
+        
+    file_bytes = base64.b64decode(file_b64)
+    filename = req_data.get("filename") or req_data.get("FilePath") or "capture.pcap"
+    
+    target_dir = os.path.join(STORAGE_PCAPS, agent_id)
+    os.makedirs(target_dir, exist_ok=True)
+    file_path = os.path.join(target_dir, filename)
+    
+    with open(file_path, "wb") as buffer:
+        buffer.write(file_bytes)
+        
+    # [Deep Packet Inspection (DPI)]
+    # We trigger a background task to sweep the payload
+    import asyncio
+    async def inspect_pcap(filepath: str, a_id: str):
+        try:
+            with open(filepath, "rb") as f:
+                content = f.read()
+            # Simple string sweep for cleartext threats
+            if b"password=" in content.lower() or b"malicious-payload" in content.lower():
+                from ..db.session import AsyncSessionLocal
+                from ..db.models import DetectionAlert
+                from ..services.soar_engine import soar_engine
+                
+                async with AsyncSessionLocal() as bg_db:
+                    alert = DetectionAlert(
+                        AgentId=a_id,
+                        RuleId=9005,
+                        TelemetryId=0,
+                        MatchedContent=f"PCAP Forensics: Cleartext credential or threat found in {filename}!"
+                    )
+                    bg_db.add(alert)
+                    await bg_db.commit()
+                    
+                    try:
+                        await soar_engine.trigger_playbook(bg_db, playbook_id=1, target_agent_id=a_id)
+                    except:
+                        pass
+        except Exception as e:
+            print(f"[PCAP DPI] Error: {e}")
+            
+    asyncio.create_task(inspect_pcap(file_path, agent_id))
+    
+    return {"status": "success", "file": filename}

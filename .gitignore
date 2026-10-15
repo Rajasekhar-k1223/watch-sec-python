@@ -122,3 +122,11 @@ agent/test_auth.py
 # OS junk
 .DS_Store
 Thumbs.db
+backend/scratch_*.py
+backend/query*.py
+backend/run_*.py
+backend/trigger*.py
+backend/test.py
+backend/scripts/fix_db.py
+test_ocr.py
+get_screenshots.py

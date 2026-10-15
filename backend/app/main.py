@@ -230,6 +230,125 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(agentless_background_telemetry())
 
+    # [PG-OPT] Materialized View Refresh Task
+    # Keeps mv_tenant_dashboard_stats, mv_agent_risk_summary, etc. fresh.
+    # Runs every 5 minutes on PostgreSQL only (skipped on SQLite local dev).
+    async def refresh_materialized_views_task():
+        from .db.session import AsyncSessionLocal  # type: ignore
+        from .db.pg_helpers import refresh_all_materialized_views  # type: ignore
+        import asyncio as _asyncio
+
+        # Initial wait — let the DB settle after startup
+        await _asyncio.sleep(30)
+
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    await refresh_all_materialized_views(db)
+            except Exception as mv_err:
+                print(f"[MV Refresh Error] {mv_err}", flush=True)
+            await _asyncio.sleep(300)  # Every 5 minutes
+
+    # [PG-OPT] GDPR Retention Purge Task (nightly at startup + every 24h)
+    async def gdpr_retention_task():
+        from .db.session import AsyncSessionLocal  # type: ignore
+        from .db.pg_helpers import purge_tenant_data  # type: ignore
+        from .db.models import Tenant  # type: ignore
+        from sqlalchemy.future import select as _select  # type: ignore
+        import asyncio as _asyncio
+
+        # Run once at startup, then every 24 hours
+        await _asyncio.sleep(60)
+
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(_select(Tenant.Id))
+                    tenant_ids = result.scalars().all()
+                    for tid in tenant_ids:
+                        try:
+                            await purge_tenant_data(db, tid)
+                        except Exception as t_err:
+                            print(f"[GDPR Purge] Tenant {tid} error: {t_err}", flush=True)
+                print("[GDPR Purge] Completed for all tenants.", flush=True)
+            except Exception as gdpr_err:
+                print(f"[GDPR Retention Task Error] {gdpr_err}", flush=True)
+            await _asyncio.sleep(86400)  # Every 24 hours
+
+    asyncio.create_task(refresh_materialized_views_task())
+    asyncio.create_task(gdpr_retention_task())
+
+    # [THREAT INTEL] Auto-seed well-known public feeds on first boot + schedule 6-hour sync
+    async def threat_intel_bootstrap_task():
+        from .db.session import AsyncSessionLocal  # type: ignore
+        from .db.models import ThreatFeed  # type: ignore
+        from sqlalchemy.future import select as _select  # type: ignore
+        from .services.threat_intel_pipeline import ti_pipeline  # type: ignore
+        import asyncio as _asyncio
+
+        # Wait for DB to fully settle
+        await _asyncio.sleep(20)
+
+        # Well-known free public threat intel feeds (HTTPS only)
+        DEFAULT_FEEDS = [
+            {
+                "Name": "Feodo Tracker (abuse.ch) — C2 IPv4",
+                "SourceUrl": "https://feodotracker.abuse.ch/downloads/ipblocklist.txt",
+                "FeedType": "plain",
+            },
+            {
+                "Name": "URLhaus (abuse.ch) — Malware URLs",
+                "SourceUrl": "https://urlhaus.abuse.ch/downloads/text/",
+                "FeedType": "plain",
+            },
+            {
+                "Name": "SSLBL (abuse.ch) — Botnet C2 IPs",
+                "SourceUrl": "https://sslbl.abuse.ch/blacklist/sslipblacklist.txt",
+                "FeedType": "plain",
+            },
+            {
+                "Name": "Emerging Threats — Compromised IPs",
+                "SourceUrl": "https://rules.emergingthreats.net/blockrules/compromised-ips.txt",
+                "FeedType": "plain",
+            },
+        ]
+
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(_select(ThreatFeed))
+                    existing = result.scalars().all()
+                    existing_urls = {getattr(f, "SourceUrl", "") for f in existing}
+
+                    # Seed missing default feeds
+                    seeded = 0
+                    for feed_def in DEFAULT_FEEDS:
+                        if feed_def["SourceUrl"] not in existing_urls:
+                            feed = ThreatFeed(
+                                Name=feed_def["Name"],
+                                SourceUrl=feed_def["SourceUrl"],
+                                FeedType=feed_def["FeedType"],
+                                IsEnabled=True,
+                            )
+                            db.add(feed)
+                            seeded += 1
+                    if seeded:
+                        await db.commit()
+                        print(f"[ThreatIntel] Seeded {seeded} default threat feeds.", flush=True)
+
+                    # Sync all enabled feeds
+                    print("[ThreatIntel] Starting scheduled feed sync...", flush=True)
+                    await ti_pipeline.sync_all_active_feeds(db)
+                    print("[ThreatIntel] Feed sync complete. IOC cache primed.", flush=True)
+
+            except Exception as ti_err:
+                print(f"[ThreatIntel Bootstrap Error] {ti_err}", flush=True)
+
+            # Resync every 6 hours
+            await _asyncio.sleep(6 * 3600)
+
+    asyncio.create_task(threat_intel_bootstrap_task())
+
     # [NEW] v3.0 Streaming Architecture Setup
     from .core.kafka_producer import kafka_client
     from .db.clickhouse import clickhouse_db
@@ -364,6 +483,7 @@ plugin_manager.load_api_plugins("app.api.v2")
 # [FIX] Manually mount the secondary agent_router since PluginManager only mounts the first router per file
 from .api import agents
 app.include_router(agents.agent_router, prefix="/api/agent", tags=["Agent Communication"])
+app.include_router(sandbox.router, prefix="/api/sandbox", tags=["Sandbox"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

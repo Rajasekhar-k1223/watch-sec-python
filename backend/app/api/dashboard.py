@@ -23,52 +23,43 @@ async def get_dashboard_status(
         if current_user.Role != "SuperAdmin":
             tenantId = current_user.TenantId
 
-        # [REFACTORED] Use SQL to get the LATEST report for each agent in one go.
-        # This prevents loading 100k+ reports into Python memory.
+        # 1. Fetch latest report per agent using DISTINCT ON (PostgreSQL specific, supported by asyncpg)
+        stmt = select(AgentReportEntity)
+        if tenantId:
+            stmt = stmt.where(AgentReportEntity.TenantId == tenantId)
+        stmt = stmt.distinct(AgentReportEntity.AgentId).order_by(AgentReportEntity.AgentId, desc(AgentReportEntity.Timestamp))
         
-        # 1. Fetch Agents
+        report_res = await db.execute(stmt)
+        latest_reports = report_res.scalars().all()
+        
+        reports_map = {
+            r.AgentId: {
+                "CpuUsage": r.CpuUsage or 0,
+                "MemoryUsage": r.MemoryUsage or 0,
+                "Timestamp": r.Timestamp
+            } for r in latest_reports
+        }
+
+        # 2. Fetch Agents (for static fields like Hostname, HardwareJson, etc)
         agent_query = select(Agent)
         try:
             agent_query = agent_query.where(Agent.IsPendingUninstall == False)
         except Exception:
             pass # Handle missing column gracefully
-
+            
         if tenantId:
             agent_query = agent_query.where(Agent.TenantId == tenantId)
         
         agent_result = await db.execute(agent_query)
         agents = agent_result.scalars().all()
-        agents_map = {a.AgentId: a for a in agents}
         
         if not agents:
             return []
 
-        # 2. Optimized Subquery to get Max ID per Agent (simplest way for latest row)
-        threshold = datetime.utcnow() - timedelta(hours=24)
-        
-        subq = select(
-            AgentReportEntity.AgentId,
-            func.max(AgentReportEntity.Id).label("max_id")
-        ).where(AgentReportEntity.Timestamp >= threshold).group_by(AgentReportEntity.AgentId)
-        
-        if tenantId:
-            subq = subq.where(AgentReportEntity.TenantId == tenantId)
-        
-        # Now join back to get full row
-        report_subq = subq.subquery()
-        latest_reports_query = select(AgentReportEntity).join(
-            report_subq, 
-            AgentReportEntity.Id == report_subq.c.max_id
-        )
-        
-        res = await db.execute(latest_reports_query)
-        latest_reports = res.scalars().all()
-        reports_map = {r.AgentId: r for r in latest_reports}
-
         now = datetime.utcnow()
         results = []
-        for agent_id, agent in agents_map.items():
-            report = reports_map.get(agent_id)
+        for agent in agents:
+            report = reports_map.get(agent.AgentId)
             
             status = "Offline"
             cpu = 0
@@ -76,20 +67,20 @@ async def get_dashboard_status(
             ts = agent.LastSeen or now
             
             if report:
-                cpu = report.CpuUsage
-                mem = report.MemoryUsage
-                ts = report.Timestamp
+                cpu = report.get("CpuUsage", 0)
+                mem = report.get("MemoryUsage", 0)
+                ts = report.get("Timestamp", ts)
                 
             if agent.LastSeen and (now - agent.LastSeen).total_seconds() < 120:
                 status = "Online"
-                if not report or agent.LastSeen > report.Timestamp:
+                if not report or agent.LastSeen > report.get("Timestamp", agent.LastSeen):
                     ts = agent.LastSeen
-            elif report and (now - report.Timestamp).total_seconds() < 120:
+            elif report and (now - report.get("Timestamp", now)).total_seconds() < 120:
                 status = "Online"
 
             results.append({
                 "id": agent.Id,
-                "agentId": agent_id,
+                "agentId": agent.AgentId,
                 "status": status,
                 "cpuUsage": cpu,
                 "memoryUsage": mem,
@@ -185,52 +176,83 @@ async def get_dashboard_stats(
     try:
         total_agents = 0
         online_agents = 0
-        
-        # 1. Agent Stats
-        q_total = select(func.count(Agent.Id))
-        try:
-             q_total = q_total.where(Agent.IsPendingUninstall == False)
-        except Exception:
-             pass
+        offline_agents = 0
+        avg_cpu = 0
+        avg_mem = 0
+        violations_count = 0
+        critical_threats_count = 0
+        high_cpu_count = 0
+        inbound_mbps = 0
+        outbound_mbps = 0
 
-        if tenantId: q_total = q_total.where(Agent.TenantId == tenantId)
-        total_res = await db.execute(q_total)
-        total_agents = total_res.scalar() or 0
+        from ..db.pg_helpers import pg
+        kpis = await pg.get_tenant_dashboard_kpis(db, tenantId or 1, int(total_hours))
         
-        threshold_online = now_utc - timedelta(minutes=2)
-        
-        # [FIX] Use Agent.LastSeen directly (updated every heartbeat) and sum network stats
-        q_online = select(
-            func.count(Agent.Id),
-            func.sum(Agent.NetworkInMbps),
-            func.sum(Agent.NetworkOutMbps)
-        ).where(Agent.LastSeen >= threshold_online)
-        
-        try:
-            q_online = q_online.where(Agent.IsPendingUninstall == False)
-        except Exception:
-            pass
+        if kpis:
+            total_agents = kpis.get("total_agents", 0)
+            avg_cpu = kpis.get("avg_cpu", 0)
+            avg_mem = kpis.get("avg_memory", 0)
+            violations_count = kpis.get("total_events", 0)
+            critical_threats_count = kpis.get("critical_events", 0)
+            high_cpu_count = kpis.get("high_risk_agents", 0)
             
-        if tenantId: q_online = q_online.where(Agent.TenantId == tenantId)
-        online_res = await db.execute(q_online)
-        online_row = online_res.one_or_none()
-        online_agents = online_row[0] if online_row and online_row[0] else 0
-        inbound_mbps = round(float(online_row[1] or 0), 2) if online_row else 0
-        outbound_mbps = round(float(online_row[2] or 0), 2) if online_row else 0
-        
-        offline_agents = max(0, total_agents - online_agents)
-
-        # 2. Resources (Avg over RANGE)
-        q_res = select(
-            func.avg(AgentReportEntity.CpuUsage),
-            func.avg(AgentReportEntity.MemoryUsage)
-        ).where(AgentReportEntity.Timestamp >= start_dt).where(AgentReportEntity.Timestamp <= end_dt)
-        if tenantId: q_res = q_res.where(AgentReportEntity.TenantId == tenantId)
-        
-        res_avg = await db.execute(q_res)
-        avg_cpu, avg_mem = res_avg.one()
-        avg_cpu = float(avg_cpu or 0)
-        avg_mem = float(avg_mem or 0)
+            threshold_online = now_utc - timedelta(minutes=2)
+            q_online = select(func.count(Agent.Id), func.sum(Agent.NetworkInMbps), func.sum(Agent.NetworkOutMbps)).where(Agent.LastSeen >= threshold_online)
+            try: q_online = q_online.where(Agent.IsPendingUninstall == False)
+            except Exception: pass
+            if tenantId: q_online = q_online.where(Agent.TenantId == tenantId)
+            online_res = await db.execute(q_online)
+            online_row = online_res.one_or_none()
+            online_agents = online_row[0] if online_row else 0
+            offline_agents = max(0, total_agents - online_agents)
+            inbound_mbps = round(float(online_row[1] or 0), 2) if online_row else 0
+            outbound_mbps = round(float(online_row[2] or 0), 2) if online_row else 0
+        else:
+            # 1. Agent Stats
+            q_total = select(func.count(Agent.Id))
+            try:
+                 q_total = q_total.where(Agent.IsPendingUninstall == False)
+            except Exception:
+                 pass
+    
+            if tenantId: q_total = q_total.where(Agent.TenantId == tenantId)
+            total_res = await db.execute(q_total)
+            total_agents = total_res.scalar() or 0
+            
+            threshold_online = now_utc - timedelta(minutes=2)
+            
+            # [FIX] Use Agent.LastSeen directly (updated every heartbeat) and sum network stats
+            q_online = select(
+                func.count(Agent.Id),
+                func.sum(Agent.NetworkInMbps),
+                func.sum(Agent.NetworkOutMbps)
+            ).where(Agent.LastSeen >= threshold_online)
+            
+            try:
+                q_online = q_online.where(Agent.IsPendingUninstall == False)
+            except Exception:
+                pass
+                
+            if tenantId: q_online = q_online.where(Agent.TenantId == tenantId)
+            online_res = await db.execute(q_online)
+            online_row = online_res.one_or_none()
+            online_agents = online_row[0] if online_row and online_row[0] else 0
+            inbound_mbps = round(float(online_row[1] or 0), 2) if online_row else 0
+            outbound_mbps = round(float(online_row[2] or 0), 2) if online_row else 0
+            
+            offline_agents = max(0, total_agents - online_agents)
+    
+            # 2. Resources (Avg over RANGE)
+            q_res = select(
+                func.avg(AgentReportEntity.CpuUsage),
+                func.avg(AgentReportEntity.MemoryUsage)
+            ).where(AgentReportEntity.Timestamp >= start_dt).where(AgentReportEntity.Timestamp <= end_dt)
+            if tenantId: q_res = q_res.where(AgentReportEntity.TenantId == tenantId)
+            
+            res_avg = await db.execute(q_res)
+            avg_cpu_val, avg_mem_val = res_avg.one()
+            avg_cpu = float(avg_cpu_val or 0)
+            avg_mem = float(avg_mem_val or 0)
 
         # 3. Resource Trend (Optimized: SQL-Level Bucketing)
         # Use finer buckets for recent windows so the chart has smooth continuous flow
@@ -271,7 +293,8 @@ async def get_dashboard_stats(
         q_trend = select(
             time_expr.label("time_bucket"),
             func.avg(AgentReportEntity.CpuUsage).label("cpu"),
-            func.avg(AgentReportEntity.MemoryUsage).label("mem")
+            func.avg(AgentReportEntity.MemoryUsage).label("mem"),
+            func.avg(AgentReportEntity.NetworkInMbps + AgentReportEntity.NetworkOutMbps).label("net")
         ).where(AgentReportEntity.Timestamp >= start_dt)\
          .where(AgentReportEntity.Timestamp <= end_dt)\
          .group_by(time_expr)\
@@ -283,7 +306,7 @@ async def get_dashboard_stats(
         items = trend_res.all()
         
         trends = []
-        for bucket, cpu, mem in items:
+        for bucket, cpu, mem, net in items:
             try:
                 # bucket is 'YYYY-MM-DD', 'YYYY-MM-DD HH:MM', or 'YYYY-MM-DD HH:00'
                 if group_by_day:
@@ -305,6 +328,7 @@ async def get_dashboard_stats(
                 "time": label,
                 "cpu": round(float(cpu or 0), 1),
                 "mem": round(float(mem or 0), 1),
+                "net": round(float(net or 0), 1),
                 "full_date": str(bucket)
             })
 
@@ -473,44 +497,42 @@ async def get_dashboard_stats(
             print(f"[Dashboard] Productivity Breakdown Error: {e}")
 
         # 9. Dynamic Metrics for Dashboard Cards
-        high_cpu_count = 0
-        try:
-            q_high_cpu = select(func.count(func.distinct(AgentReportEntity.AgentId)))\
-                .where(AgentReportEntity.Timestamp >= start_dt)\
-                .where(AgentReportEntity.Timestamp <= end_dt)\
-                .where(AgentReportEntity.CpuUsage > 85)
-            if tenantId:
-                q_high_cpu = q_high_cpu.where(AgentReportEntity.TenantId == tenantId)
-            res_high_cpu = await db.execute(q_high_cpu)
-            high_cpu_count = res_high_cpu.scalar() or 0
-        except Exception as e:
-            print(f"[Dashboard] High CPU Count Error: {e}")
-
-        violations_count = 0
-        try:
-            q_crit = select(func.count(EventLog.Id))\
-                .where(EventLog.Timestamp >= start_dt)\
-                .where(EventLog.Timestamp <= end_dt)\
-                .where((EventLog.Severity == 'Critical') | (EventLog.Severity == 'High'))
-            if tenantId:
-                q_crit = q_crit.where(EventLog.AgentId.in_(tenant_agent_ids))
-            res_crit = await db.execute(q_crit)
-            critical_threats_count = res_crit.scalar() or 0
-        except Exception:
-            critical_threats_count = 0
-            
-
-        try:
-            q_vio = select(func.count(EventLog.Id))\
-                .where(EventLog.Timestamp >= start_dt)\
-                .where(EventLog.Timestamp <= end_dt)\
-                .where((EventLog.Type.like('%Alert%')) | (EventLog.Type.like('%High%')))
-            if tenantId:
-                q_vio = q_vio.where(EventLog.AgentId.in_(tenant_agent_ids))
-            res_vio = await db.execute(q_vio)
-            violations_count = res_vio.scalar() or 0
-        except Exception as e:
-            print(f"[Dashboard] Violations Count Error: {e}")
+        if not kpis:
+            try:
+                q_high_cpu = select(func.count(func.distinct(AgentReportEntity.AgentId)))\
+                    .where(AgentReportEntity.Timestamp >= start_dt)\
+                    .where(AgentReportEntity.Timestamp <= end_dt)\
+                    .where(AgentReportEntity.CpuUsage > 85)
+                if tenantId:
+                    q_high_cpu = q_high_cpu.where(AgentReportEntity.TenantId == tenantId)
+                res_high_cpu = await db.execute(q_high_cpu)
+                high_cpu_count = res_high_cpu.scalar() or 0
+            except Exception as e:
+                print(f"[Dashboard] High CPU Count Error: {e}")
+    
+            try:
+                q_crit = select(func.count(EventLog.Id))\
+                    .where(EventLog.Timestamp >= start_dt)\
+                    .where(EventLog.Timestamp <= end_dt)\
+                    .where((EventLog.Severity == 'Critical') | (EventLog.Severity == 'High'))
+                if tenantId:
+                    q_crit = q_crit.where(EventLog.AgentId.in_(tenant_agent_ids))
+                res_crit = await db.execute(q_crit)
+                critical_threats_count = res_crit.scalar() or 0
+            except Exception:
+                critical_threats_count = 0
+                
+            try:
+                q_vio = select(func.count(EventLog.Id))\
+                    .where(EventLog.Timestamp >= start_dt)\
+                    .where(EventLog.Timestamp <= end_dt)\
+                    .where((EventLog.Type.like('%Alert%')) | (EventLog.Type.like('%High%')))
+                if tenantId:
+                    q_vio = q_vio.where(EventLog.AgentId.in_(tenant_agent_ids))
+                res_vio = await db.execute(q_vio)
+                violations_count = res_vio.scalar() or 0
+            except Exception as e:
+                print(f"[Dashboard] Violations Count Error: {e}")
             
         low_battery_count = 0
         try:

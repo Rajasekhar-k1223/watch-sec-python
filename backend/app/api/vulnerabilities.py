@@ -120,8 +120,6 @@ async def get_agent_cves(
     [RedRainbow SDK Integration] Returns a list of active CVE IDs, affected software, and CVSS scores mapped to the agent_id.
     Computes matches dynamically based on installed AgentSoftware and Vulnerability intelligence.
     """
-    from packaging import version
-    
     # 1. Verify Access
     agent_query = select(Agent).where(Agent.AgentId == agent_id)
     if current_user.Role != "SuperAdmin":
@@ -132,49 +130,21 @@ async def get_agent_cves(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # 2. Fetch Software & Vulnerability Data
-    sw_res = await db.execute(select(AgentSoftware).where(AgentSoftware.AgentId == agent_id))
-    software_list = sw_res.scalars().all()
+    from ..db.pg_helpers import pg
+    vulns = await pg.get_active_vulnerabilities(db, agent_id=agent_id, limit=500)
     
-    vuln_res = await db.execute(select(Vulnerability))
-    all_vulns = vuln_res.scalars().all()
-
-    # 3. Compute active CVEs
     active_cves = []
+    cvss_map = {"Critical": 9.8, "High": 8.1, "Medium": 5.5, "Low": 3.0, "None": 0.0}
     
-    for sw in software_list:
-        if not sw.Version or sw.Version == "Unknown":
-            continue
-            
-        for v in all_vulns:
-            if v.AffectedProduct.lower() in sw.Name.lower():
-                is_vulnerable = False
-                try:
-                    sv = version.parse(sw.Version)
-                    v_min = version.parse(v.MinVersion) if v.MinVersion else None
-                    v_max = version.parse(v.MaxVersion) if v.MaxVersion else None
-                    
-                    if v_min and v_max:
-                        if v_min <= sv <= v_max: is_vulnerable = True
-                    elif v_min:
-                        if sv >= v_min: is_vulnerable = True
-                    elif v_max:
-                        if sv <= v_max: is_vulnerable = True
-                    else:
-                        is_vulnerable = True
-                except Exception:
-                    is_vulnerable = True # Fallback if version parse fails
-                    
-                if is_vulnerable:
-                    # Map Severity to a dummy CVSS score since we don't have CVSS column
-                    cvss_map = {"Critical": 9.8, "High": 8.1, "Medium": 5.5, "Low": 3.0, "None": 0.0}
-                    active_cves.append({
-                        "cveId": v.CVE,
-                        "software": sw.Name,
-                        "softwareVersion": sw.Version,
-                        "severity": v.Severity,
-                        "cvssScore": cvss_map.get(v.Severity, 5.0)
-                    })
+    for v in vulns:
+        severity = v.get("cve_severity", "Medium")
+        active_cves.append({
+            "cveId": v.get("CVE"),
+            "software": v.get("software_name"),
+            "softwareVersion": v.get("installed_version"),
+            "severity": severity,
+            "cvssScore": cvss_map.get(severity, 5.0)
+        })
                     
     return active_cves
 
@@ -472,9 +442,43 @@ async def get_agent_software_audit(
 
     rows.sort(key=lambda x: (SEVERITY_ORDER.get(x["Severity"], 4), x["Name"].lower()))
 
+    # Calculate Vulnerability Score
+    score = 100
+    deductions = []
+    
+    for r in rows:
+        if r["IsVulnerable"]:
+            penalty = 0
+            if r["Severity"] == "Critical": penalty = 20
+            elif r["Severity"] == "High": penalty = 10
+            elif r["Severity"] == "Medium": penalty = 5
+            elif r["Severity"] == "Low": penalty = 1
+            
+            if penalty > 0:
+                score -= penalty
+                deductions.append({
+                    "points": -penalty,
+                    "reason": f"{r['Severity']} vulnerability found in {r['Name']} ({r['InstalledVersion']})"
+                })
+        elif r["UpdateStatus"] == "Update Available":
+            score -= 1
+            deductions.append({
+                "points": -1,
+                "reason": f"Outdated software: {r['Name']} (Latest: {r['LatestVersion']})"
+            })
+
+    # Floor score at 0
+    score = max(0, score)
+    
+    # Only keep the top 10 most impactful deductions
+    deductions.sort(key=lambda x: x["points"])
+    deductions = deductions[:10]
+
     return {
         "AgentId": agent_id,
         "Hostname": agent.Hostname,
+        "VulnerabilityScore": score,
+        "Deductions": deductions,
         "TotalPackages": len(rows),
         "VulnerablePackages": sum(1 for r in rows if r["IsVulnerable"]),
         "UpdatesAvailable": sum(1 for r in rows if r["UpdateStatus"] == "Update Available"),

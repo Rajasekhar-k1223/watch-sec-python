@@ -59,6 +59,7 @@ class KafkaConsumerWorker:
 
     async def process_event(self, event: dict):
         try:
+            print(f"[DEBUG] Received EventType: {event.get('EventType')}", flush=True)
             async with AsyncSessionLocal() as db:
                 # 1. DLP Pipeline Scan
                 agent_id = event.get("AgentId", "Unknown")
@@ -105,9 +106,19 @@ class KafkaConsumerWorker:
 
             # 4. Real-time Dashboard Updates
             if event.get("EventType") == "ProcessSnapshot":
+                processes = event.get("Processes") or event.get("Payload", {}).get("Processes", [])
+                print(f"[DEBUG] Emitting agent_processes for {agent_id}. Count: {len(processes)}", flush=True)
                 await sio.emit('agent_processes', {
                     'agent_id': agent_id,
-                    'processes': event.get("Processes", [])
+                    'processes': processes
+                }, room=agent_id)
+            elif event.get("EventType") == "LiveSessionTelemetry":
+                process_name = event.get("ProcessName") or event.get("Payload", {}).get("ProcessName", "")
+                window_title = event.get("WindowTitle") or event.get("Payload", {}).get("WindowTitle", "")
+                await sio.emit('live_session_telemetry', {
+                    'agent_id': agent_id,
+                    'process_name': process_name,
+                    'window_title': window_title
                 }, room=f"tenant_{event.get('TenantId')}")
 
             # 5. [FIM] Persist FileIntegrityAlert as an EventLog for federation API & dashboard
@@ -160,7 +171,7 @@ class KafkaConsumerWorker:
             record = (
                 event.get("event_id", str(uuid.uuid4())),
                 event.get("AgentId", ""),
-                event.get("TenantId", ""),
+                str(event.get("TenantId", "")),
                 event.get("EventType", "Unknown"),
                 datetime.utcnow(),
                 json.dumps(event)

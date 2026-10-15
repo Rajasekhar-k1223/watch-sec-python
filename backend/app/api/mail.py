@@ -303,6 +303,28 @@ async def log_mail(
         )
         db.add(new_incident)
 
+    # [SOAR] Escalate High and Critical mail risk to the detection pipeline
+    if risk in ("High", "Critical"):
+        from ..db.models import DetectionAlert # type: ignore
+        from ..services.soar_engine import soar_engine # type: ignore
+        import asyncio
+        
+        severity_label = "Malicious Attachment" if malware_detected else "DLP Violation"
+        alert = DetectionAlert(
+            AgentId=dto.AgentId,
+            RuleId=9006,
+            TelemetryId=0,
+            MatchedContent=(
+                f"[WebMail {severity_label}] Subject: '{dto.Subject}' | "
+                f"Recipient: {dto.Recipient} | Body: {str(dto.BodyPreview or '')[:200]}"
+            )
+        )
+        db.add(alert)
+        try:
+            asyncio.create_task(soar_engine.trigger_playbook(db, playbook_id=1, target_agent_id=dto.AgentId))
+        except Exception as e:
+            print(f"[MAIL-SOAR] Could not trigger playbook: {e}")
+
     new_log = MailLog(
         AgentId=dto.AgentId,
         Sender=dto.Sender,

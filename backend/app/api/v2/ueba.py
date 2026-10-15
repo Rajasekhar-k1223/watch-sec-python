@@ -9,6 +9,24 @@ import json
 
 router = APIRouter()
 
+@router.get("/baselines")
+async def list_baselines(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Lists all user and entity behavior baselines."""
+    stmt = select(UebaBaseline)
+    if current_user.Role != "SuperAdmin":
+        stmt = stmt.where(UebaBaseline.TenantId == current_user.TenantId)
+    baselines = (await db.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": b.Id,
+            "entity_id": b.EntityId,
+            "entity_type": b.EntityType or ("User" if "@" in (b.EntityId or "") else "Device"),
+            "profile": json.loads(b.ProfileDataJson or "{}"),
+            "last_updated": b.LastUpdated.isoformat() if b.LastUpdated else None
+        }
+        for b in baselines
+    ]
+
 @router.get("/baselines/{entity_id}")
 async def get_baseline(entity_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     baseline = (await db.execute(select(UebaBaseline).where(UebaBaseline.EntityId == entity_id))).scalars().first()

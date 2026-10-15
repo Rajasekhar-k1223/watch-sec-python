@@ -15,7 +15,7 @@ class SoarEngine:
         execution_records = []
 
         for action_def in actions:
-            action_type = action_def.get("action")
+            action_type = action_def.get("type") or action_def.get("action")
 
             execution = SoarActionExecution(
                 PlaybookId=playbook.Id,

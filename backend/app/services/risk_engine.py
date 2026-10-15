@@ -16,37 +16,55 @@ async def calculate_risk_score(db: AsyncSession, agent_id: str):
     profile = (await db.execute(select(DeviceRiskProfile).where(DeviceRiskProfile.AgentId == agent_id))).scalars().first()
     agent = (await db.execute(select(Agent).where(Agent.AgentId == agent_id))).scalars().first()
 
+    now = datetime.datetime.utcnow()
     if not profile:
         if not agent:
             return None
-        profile = DeviceRiskProfile(AgentId=agent_id, TenantId=agent.TenantId)
+        profile = DeviceRiskProfile(
+            AgentId=agent_id, 
+            TenantId=agent.TenantId,
+            DeviceRiskScore=15.0,
+            UserRiskScore=10.0,
+            ProcessRiskScore=10.0,
+            NetworkRiskScore=15.0,
+            BehavioralRiskScore=10.0,
+            ThreatIntelRiskScore=10.0,
+            TotalRiskScore=12.5,
+            RiskLevel="Low",
+            LastCalculatedAt=now
+        )
         db.add(profile)
 
-    if agent and not agent.AutoPatchEnabled:
+    # Initialize any None attributes
+    profile.DeviceRiskScore = profile.DeviceRiskScore if profile.DeviceRiskScore is not None else 15.0
+    profile.UserRiskScore = profile.UserRiskScore if profile.UserRiskScore is not None else 10.0
+    profile.ProcessRiskScore = profile.ProcessRiskScore if profile.ProcessRiskScore is not None else 10.0
+    profile.NetworkRiskScore = profile.NetworkRiskScore if profile.NetworkRiskScore is not None else 15.0
+    profile.BehavioralRiskScore = profile.BehavioralRiskScore if profile.BehavioralRiskScore is not None else 10.0
+    profile.ThreatIntelRiskScore = profile.ThreatIntelRiskScore if profile.ThreatIntelRiskScore is not None else 10.0
+    profile.LastCalculatedAt = profile.LastCalculatedAt or now
+
+    if agent and not getattr(agent, "AutoPatchEnabled", False):
         profile.DeviceRiskScore = min(profile.DeviceRiskScore + 10.0, 100.0)
 
     # Wire in UEBA Evaluation
     try:
         from app.services.ueba_engine import ueba_engine
-        # Evaluate recent mock event for the agent to simulate real-time ingestion
-        # In a real system, this happens continually on the data stream
         mock_event = {
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "process_name": "unknown_binary.exe"
         }
         eval_result = await ueba_engine.evaluate_event(db, agent_id, mock_event)
         
-        if eval_result["score"] > 0:
+        if eval_result.get("score", 0) > 0:
             profile.BehavioralRiskScore = min(profile.BehavioralRiskScore + eval_result["score"], 100.0)
             
-            # If there are user-level anomalies (like impossible travel), spike UserRisk
-            for anomaly in eval_result["anomalies"]:
+            for anomaly in eval_result.get("anomalies", []):
                 if "travel" in anomaly.lower() or "hours" in anomaly.lower():
                     profile.UserRiskScore = min(profile.UserRiskScore + 50.0, 100.0)
     except Exception as e:
         print(f"[RiskEngine] Failed to evaluate UEBA: {e}")
 
-    now = datetime.datetime.utcnow()
     hours_since = (now - profile.LastCalculatedAt).total_seconds() / 3600.0
     if hours_since > 24:
         decay = 0.9

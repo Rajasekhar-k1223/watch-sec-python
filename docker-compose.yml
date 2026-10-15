@@ -11,12 +11,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
-      - REDIS_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
+      - REDIS_URL=redis://sentinel_redis:6379/0
+      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.elsea.co.in
@@ -28,6 +28,7 @@ services:
       - ../agent-rust:/opt/apps/monitorix/agent-rust
     networks:
       - watch-sec-network
+      - shared-db-net
 
   agent-gateway:
     build: ./backend
@@ -40,12 +41,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
-      - REDIS_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
+      - REDIS_URL=redis://sentinel_redis:6379/0
+      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.elsea.co.in
@@ -57,6 +58,7 @@ services:
       - ../agent-rust:/opt/apps/monitorix/agent-rust
     networks:
       - watch-sec-network
+      - shared-db-net
 
   grpc-gateway:
     build: ./backend
@@ -70,12 +72,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
-      - REDIS_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
+      - REDIS_URL=redis://sentinel_redis:6379/0
+      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
@@ -84,6 +86,7 @@ services:
       - ./backend:/app
     networks:
       - watch-sec-network
+      - shared-db-net
 
   load-balancer:
     image: nginx:alpine
@@ -97,6 +100,7 @@ services:
       - agent-gateway
     networks:
       - watch-sec-network
+      - shared-db-net
 
   frontend:
     build:
@@ -109,6 +113,7 @@ services:
       - "8085:80"
     networks:
       - watch-sec-network
+      - shared-db-net
 
   celery:
     build: ./backend
@@ -120,12 +125,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
-      - REDIS_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
+      - REDIS_URL=redis://sentinel_redis:6379/0
+      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - MONITORIX_BASE_URL=https://monitorix.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
@@ -143,12 +148,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@db.monitorix.co.in:41892/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@db.monitorix.co.in:52741/monitorix?authSource=admin
-      - REDIS_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_BROKER_URL=redis://db.monitorix.co.in:49103/0
-      - CELERY_RESULT_BACKEND=redis://db.monitorix.co.in:49103/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@db.monitorix.co.in:58320/monitorix
+      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
+      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
+      - REDIS_URL=redis://sentinel_redis:6379/0
+      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
+      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
       - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
@@ -157,6 +162,7 @@ services:
       - ./backend:/app
     networks:
       - watch-sec-network
+      - shared-db-net
 
 
   zookeeper:
@@ -164,10 +170,12 @@ services:
     container_name: watch-sec-zookeeper
     restart: unless-stopped
     environment:
+      KAFKA_HEAP_OPTS: "-Xmx256M -Xms256M"
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     networks:
       - watch-sec-network
+      - shared-db-net
 
   kafka:
     image: confluentinc/cp-kafka:7.3.2
@@ -178,6 +186,7 @@ services:
     ports:
       - "9092:9092"
     environment:
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
@@ -186,26 +195,11 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     networks:
       - watch-sec-network
-
-  mongo:
-    image: mongo:latest
-    container_name: watch-sec-mongo
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=${DB_PASSWORD}
-      - MONGO_INITDB_DATABASE=monitorix_db
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - watch-sec-network
+      - shared-db-net
 
 networks:
+  shared-db-net:
+    external: true
   watch-sec-network:
     external: true
-    name: watch-sec-network
 
-volumes:
-  mongo_data:

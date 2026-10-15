@@ -187,52 +187,62 @@ class SecurityAIService:
     def calculate_threat_score(self, agent_id: str, events: list):
         """[v2.1.0] Aggregates risk factors across multiple domains to produce a unified threat score."""
         if not events:
-            return {"Score": 0, "Level": "Normal", "TopRisks": []}
+            return {"Score": 0, "Level": "Normal", "TopRisks": [], "Recommendation": "Monitor", "Explanation": "No significant events detected."}
 
-        base_score = 0
-        risks = []
+        import requests
+        import json
+
+        # Prepare the prompt
+        events_summary = json.dumps(events[:50], indent=2)  # Send up to 50 events
         
-        # 1. Domain Weights
-        # events is a list of dicts with {type, details, timestamp}
-        
-        auth_failures = [e for e in events if "auth" in e.get("Type", "").lower() or "login" in e.get("Details", "").lower()]
-        network_risks = [e for e in events if "network" in e.get("Type", "").lower()]
-        dlp_events = [e for e in events if "dlp" in e.get("Type", "").lower() or "usb" in e.get("Type", "").lower()]
-        
-        # Scoring Logic
-        if len(auth_failures) > 5:
-            base_score += 40
-            risks.append("Brute-force Login Pattern")
-        elif len(auth_failures) > 0:
-            base_score += 10
-        
-        if dlp_events:
-            base_score += 30 * len(dlp_events)
-            risks.append(f"Sensitive Data Movement ({len(dlp_events)} events)")
+        system_prompt = (
+            "You are an expert Cybersecurity Analyst evaluating telemetry from an endpoint agent.\n"
+            "Analyze the following recent system events and determine a Threat Score (0 to 100), where 100 is highly critical.\n"
+            "Also determine the Risk Level (Normal, Medium, High, Critical), identify the Top Risks, and provide a short Explanation.\n"
+            "Return ONLY a raw JSON object with the exact keys: 'Score' (integer), 'Level' (string), 'TopRisks' (list of strings), 'Recommendation' (string), and 'Explanation' (string)."
+        )
+
+        try:
+            response = requests.post(
+                "https://ai-apis.elsea.co.in/v1/chat/completions",
+                json={
+                    "model": "gpt-3.5-turbo",  # or whichever model the API supports
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Agent Events:\n{events_summary}"}
+                    ]
+                },
+                timeout=10
+            )
+            response.raise_for_status()
+            ai_data = response.json()
+            content = ai_data["choices"][0]["message"]["content"]
             
-        if network_risks:
-            base_score += 20
-            risks.append("Suspicious Network Activity")
-
-        # 2. Behavioral Anomaly Bonus (Unsupervised)
-        # Placeholder for temporal analysis: If frequency is > 300% of baseline
-        # In this implementation, we use a simple heuristic for demonstration
-        if len(events) > 50: # Excessive event burst
-            base_score += 20
-            risks.append("Event Burst Anomaly")
-
-        final_score = min(base_score, 100)
-        risk_level = "Normal"
-        if final_score > 30: risk_level = "Medium"
-        if final_score > 60: risk_level = "High"
-        if final_score >= 90: risk_level = "Critical"
-
-        return {
-            "Score": final_score,
-            "Level": risk_level,
-            "TopRisks": list(set(risks)),
-            "Recommendation": "Isolate" if risk_level in ["High", "Critical"] else "Monitor"
-        }
+            # Clean up markdown if AI wraps it in ```json
+            if content.startswith("```"):
+                content = content.strip("`").replace("json\n", "", 1)
+                
+            result = json.loads(content)
+            
+            # Ensure safe fallback values
+            return {
+                "Score": int(result.get("Score", 0)),
+                "Level": result.get("Level", "Normal"),
+                "TopRisks": result.get("TopRisks", []),
+                "Recommendation": result.get("Recommendation", "Monitor"),
+                "Explanation": result.get("Explanation", "AI assessment completed successfully.")
+            }
+        except Exception as e:
+            print(f"[AI] Threat Scoring failed: {e}")
+            # Fallback to a basic heuristic if API fails
+            base_score = min(len(events) * 5, 50)
+            return {
+                "Score": base_score,
+                "Level": "Medium" if base_score > 30 else "Normal",
+                "TopRisks": ["API Error - Fallback Heuristics Applied"],
+                "Recommendation": "Monitor",
+                "Explanation": f"Failed to reach AI endpoint: {e}"
+            }
 
     def generate_incident_summary(self, events: list):
         """[v2.5.0] Generates a rich tactical security incident narrative from live event telemetry."""
@@ -516,115 +526,27 @@ class SecurityAIService:
             "Recent Active Vulnerabilities:\n" + str(vulns_summary) + "\n\n"
             "Recent Critical Security Events:\n" + str(events_summary) + "\n\n"
             "Instructions:\n"
-            "1. Respond directly, conversationally, and intelligently in Markdown to the user's specific prompt. "
-            "Use the live data above to answer accurately without stubs. Be deeply detailed and technical.\n"
-            "2. At the very end of your response, output a raw JSON block containing suggested actions for the UI in this format: "
-            "JSON_ACTIONS: {\"SuggestedActions\": [\"Action 1\", \"Action 2\", \"Action 3\"]}\n"
-            "Limit suggestions to exactly 3 highly relevant, contextual next steps (e.g. \"Isolate RAJ\" if RAJ has high alerts, "
-            "\"View Infrastructure Map\", \"Download Vulnerability Report\")."
+            "1. Respond directly, conversationally, and intelligently in Markdown to the user's specific query.\n"
+            "2. Ensure your response is highly detailed and technical, referencing the live telemetry.\n"
+            "3. Your response MUST be valid JSON matching exactly this schema:\n"
+            '{"Response": "Your markdown formatted text here", "SuggestedActions": ["Action 1", "Action 2"]}\n'
+            f"\nUser Query: {query}"
         )
 
-        # ── TIER A: CLOUD GENAI ENGINE (OPENAI) ──
-        if api_key:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "gpt-4o-mini",
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": query}
-                            ],
-                            "temperature": 0.3
-                        }
-                    )
-                    if resp.status_code == 200:
-                        content = resp.json()["choices"][0]["message"]["content"]
-                        suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
-                        import re
-                        json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
-                        if json_match:
-                            try:
-                                import json
-                                actions_data = json.loads(json_match.group(1))
-                                if "SuggestedActions" in actions_data:
-                                    suggested = actions_data["SuggestedActions"]
-                                content = re.sub(r'JSON_ACTIONS:\s*\{.*?\}', '', content, flags=re.DOTALL).strip()
-                            except:
-                                pass
-                        
-                        return {
-                            "Response": content,
-                            "SuggestedActions": suggested
-                        }
-            except Exception as e:
-                print(f"[AI Copilot] Cloud LLM failed: {e}")
-
-        # ── TIER B: SOVEREIGN OFFLINE GENAI ENGINE (LOCAL OLLAMA) ──
-        # Check targets in parallel to completely eliminate sequential timeout delays!
-        target_hosts = [ollama_host, "http://localhost:11434", "http://host.docker.internal:11434"]
+        from .ai_copilot import ai_engine # type: ignore
+        fallback_resp = {
+            "Response": "I am experiencing connectivity issues to my generative AI core. Falling back to semantic reasoning...",
+            "SuggestedActions": ["Run a threat summary"]
+        }
         
-        async def check_ollama(host: str):
-            try:
-                async with httpx.AsyncClient(timeout=0.3) as check_client:
-                    resp_tags = await check_client.get(f"{host}/api/tags")
-                    if resp_tags.status_code == 200:
-                        return host, resp_tags.json()
-            except Exception:
-                pass
-            return None
+        ai_response = await ai_engine._run_llm_inference(system_prompt, fallback_response=fallback_resp)
         
-        import asyncio
-        results = await asyncio.gather(*(check_ollama(h) for h in target_hosts))
-        active_host_data = next((r for r in results if r is not None), None)
-        
-        if active_host_data:
-            target_host, models_data = active_host_data
-            try:
-                models = [m["name"] for m in models_data.get("models", [])]
-                active_model = models[0] if models else "phi3"
-                
-                async with httpx.AsyncClient(timeout=45.0) as chat_client:
-                    resp_chat = await chat_client.post(
-                        f"{target_host}/api/chat",
-                        json={
-                            "model": active_model,
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": query}
-                            ],
-                            "options": {
-                                "temperature": 0.3
-                            },
-                            "stream": False
-                        }
-                    )
-                    if resp_chat.status_code == 200:
-                        content = resp_chat.json()["message"]["content"]
-                        suggested = ["Show me high-risk agents", "Any new DLP alerts?", "Run a threat summary"]
-                        import re
-                        json_match = re.search(r'JSON_ACTIONS:\s*(\{.*?\})', content, re.DOTALL)
-                        if json_match:
-                            try:
-                                import json
-                                actions_data = json.loads(json_match.group(1))
-                                if "SuggestedActions" in actions_data:
-                                    suggested = actions_data["SuggestedActions"]
-                                content = re.sub(r'JSON_ACTIONS:\s*\{.*?\}', '', content, flags=re.DOTALL).strip()
-                            except:
-                                pass
-                        
-                        return {
-                            "Response": content,
-                            "SuggestedActions": suggested
-                        }
-            except Exception as e:
-                print(f"[AI Copilot] Ollama execution failed: {e}")
+        if ai_response.get("Response") != fallback_resp["Response"] and "Response" in ai_response:
+            # We got a successful response from LLM!
+            return {
+                "Response": ai_response.get("Response", ""),
+                "SuggestedActions": ai_response.get("SuggestedActions", ["Show me high-risk agents"])
+            }
 
         # 3. Local High-Fidelity NLP Semantic Reasoning Fallback
         # ── GEOLOCATION, POSITION & IP INQUIRY ──
@@ -995,5 +917,46 @@ class SecurityAIService:
             "Recommendation": "Isolate Host" if risk_level in ["High", "Critical"] else "Monitor"
         }
 
+    async def generate_kql_from_nl(self, query: str):
+        """[v2.8.0] AI Threat Hunter Copilot: Translates Natural Language to KQL."""
+        import requests
+        import json
+
+        system_prompt = (
+            "You are an expert Threat Hunter AI Copilot. "
+            "Convert the user's natural language request into a valid KQL/Lucene query for our telemetry search engine. "
+            "Common fields: process.name, network.dest_port, network.dest_ip, user.name, event.type. "
+            "Return ONLY a raw JSON object with exactly two keys: 'translated_kql' (the query string) and 'analysis' (a short, 1-2 sentence explanation of what you are looking for)."
+        )
+
+        try:
+            response = requests.post(
+                "https://ai-apis.elsea.co.in/v1/chat/completions",
+                json={
+                    "model": "gpt-3.5-turbo",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": query}
+                    ]
+                },
+                timeout=10
+            )
+            response.raise_for_status()
+            ai_data = response.json()
+            content = ai_data["choices"][0]["message"]["content"]
+            
+            if content.startswith("```"):
+                content = content.strip("`").replace("json\n", "", 1)
+                
+            return json.loads(content)
+        except Exception as e:
+            print(f"[AI Copilot] KQL Generation failed: {e}")
+            # Fallback
+            return {
+                "translated_kql": f"event.type:\"*\" AND raw:\"*{query}*\"",
+                "analysis": "Falling back to generic wildcard search due to AI service unavailability."
+            }
+
 # Singleton Instance
 ai_service = SecurityAIService()
+

@@ -51,8 +51,10 @@ class ClickHouseClient:
                 tenant_id String,
                 event_type LowCardinality(String),
                 timestamp DateTime64(3),
-                payload String
+                payload String,
+                INDEX payload_idx payload TYPE ngrambf_v1(4, 1024, 2, 0) GRANULARITY 1
             ) ENGINE = MergeTree()
+            PARTITION BY toYYYYMMDD(timestamp)
             ORDER BY (tenant_id, agent_id, timestamp)
         ''')
         print("[ClickHouse] Schema initialized")

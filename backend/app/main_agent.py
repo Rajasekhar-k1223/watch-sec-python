@@ -15,7 +15,7 @@ from .api import ( # type: ignore
     uploads, reports, dashboard, ai, system, # type: ignore
     ocr, thesaurus, speech, hashbank, fingerprints, # type: ignore
     searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
-    notifications, report_downloads # type: ignore
+    notifications, report_downloads, sandbox # type: ignore
 ) # type: ignore
 import asyncio # type: ignore
 
@@ -95,6 +95,9 @@ app = FastAPI(
 async def log_requests(request: Request, call_next):
     if "/api/events/activity" in request.url.path:
         body = await request.body()
+        # Re-cache the body so the endpoint can read it again for HMAC verification.
+        # Without this, `request.body()` in the endpoint returns empty bytes → HMAC mismatch → 403.
+        request._body = body
         print(f"[DEBUG MIDDLEWARE] {request.method} {request.url.path} Body: {body}")
     
     response = await call_next(request)
@@ -130,6 +133,7 @@ app.include_router(mail.router, prefix="/api/mail", tags=["Mail"])
 app.include_router(screenshots.router, prefix="/api/screenshots", tags=["Screenshots"])
 app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
 app.include_router(system.router, prefix="/api", tags=["System"])
+app.include_router(sandbox.router, prefix="/api/sandbox", tags=["Sandbox"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

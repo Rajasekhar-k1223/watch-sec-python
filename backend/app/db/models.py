@@ -122,6 +122,7 @@ class Agent(Base):
     NetworkAuditEnabled = Column(Boolean, default=False) # Old: NetworkMonitoringEnabled
     DataLossPreventionEnabled = Column(Boolean, default=False) # Old: FileDlpEnabled
     VulnerabilityIntelligenceEnabled = Column(Boolean, default=False) # [NEW] Enterprise Feature
+    RedRainbowEnabled = Column(Boolean, default=False) # [NEW] RedRainbow Sandbox
     MonitoringConsentRequired = Column(Boolean, default=False) # [NEW] Compliance Notification
 
     # SQLAlchemy Synonyms for Backward Compatibility
@@ -142,6 +143,7 @@ class Agent(Base):
     UsbBlockingEnabled = synonym("UsbComplianceEnabled")
     NetworkMonitoringEnabled = synonym("NetworkAuditEnabled")
     FileDlpEnabled = synonym("DataLossPreventionEnabled")
+    SandboxEnabled = synonym("RedRainbowEnabled")
     
     LastSeen = Column(DateTime, default=datetime.utcnow)
     Hostname = Column(String(255), default="Unknown")
@@ -157,8 +159,13 @@ class Agent(Base):
     DiskEncrypted = Column(Boolean, default=False) # [NEW] MDM Disk Encryption
     NetworkInMbps = Column(Float, default=0.0) # [NEW]
     NetworkOutMbps = Column(Float, default=0.0) # [NEW]
+    TotalNetworkInGB = Column(Float, default=0.0)
+    TotalNetworkOutGB = Column(Float, default=0.0)
+    ActiveNicName = Column(String(100), default="")
     BlockedAppsJson = Column(Text, default="[]") # [NEW] Feature 7: App Blocker
     ShadowPathsJson = Column(Text, default="[]") # [NEW] Enterprise Shadow Vault Paths
+    FileIntegrityMonitoringEnabled = Column(Boolean, default=False) # [NEW] FIM Toggle
+    FimPathsJson = Column(Text, default="[]") # [NEW] JSON list of paths for FIM
     
     MachineId = Column(String(255), nullable=True) # [v1.8.44] Hardware-specific ID
     ClusterName = Column(String(100), nullable=True) # [v2.6.0] Grouping for Replicas/ASG
@@ -199,6 +206,7 @@ class Agent(Base):
     BehavioralMetadataJson = Column(Text, nullable=True) # [v2.7.5] Human Intelligence Analytics
     RequireMtls = Column(Boolean, default=False) # [Layer 1] Require mTLS authentication
     TpmHash = Column(String(255), nullable=True) # [Layer 1] TPM Attestation Hash
+    IsIsolated = Column(Boolean, default=False) # [Host Isolation Status]
 
 class Incident(Base):
     """[v3.1.0] SOAR Incident Tracking"""
@@ -347,6 +355,8 @@ class AgentSoftware(Base):
     AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
     Name = Column(String(255))
     Version = Column(String(100))
+    FileVersion = Column(String(100), nullable=True) # [NEW]
+    ProductVersion = Column(String(100), nullable=True) # [NEW]
     Type = Column(String(50)) # 'OS', 'Python', 'Node', etc.
     VulnerabilityCount = Column(Integer, default=0)
     LatestVersion = Column(String(100), nullable=True) # [NEW]
@@ -403,7 +413,14 @@ class EventLog(Base):
     Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     Status = Column(String(50), default="Open") # [v2.2.0] Open, In-Progress, Resolved, Risk-Accepted
     Severity = Column(String(20), default="Medium") # [v2.2.0] Low, Medium, High, Critical
+    IsAlert = Column(Boolean, default=False)
     RawData = Column(Text, nullable=True)
+
+    # Composite index: covers the most common query pattern GET /events/{agent_id}?start_date=...
+    __table_args__ = (
+        Index('ix_event_logs_agentid_ts', 'AgentId', 'Timestamp'),
+        Index('ix_event_logs_type_ts', 'Type', 'Timestamp'),
+    )
 
 class ActivityLog(Base):
     __tablename__ = "ActivityLogs"
@@ -429,6 +446,26 @@ class ActivityLog(Base):
     __table_args__ = (
         Index('ix_activity_logs_agentid_ts', 'AgentId', 'Timestamp'),
         Index('ix_activity_logs_tenantid_ts', 'TenantId', 'Timestamp'),
+    )
+
+class LocationHistory(Base):
+    """[v3.3.0] Per-heartbeat GPS/IP geolocation snapshot for movement trail."""
+    __tablename__ = "LocationHistory"
+    CreatedDate = Column(DateTime, default=datetime.utcnow)
+
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(50), index=True, nullable=False)
+    TenantId = Column(Integer, index=True, nullable=True)
+    Latitude = Column(Float, nullable=True)
+    Longitude = Column(Float, nullable=True)
+    Country = Column(String(100), nullable=True)
+    City = Column(String(100), nullable=True)
+    Isp = Column(String(255), nullable=True)    # ISP / Carrier name
+    PublicIp = Column(String(50), nullable=True)
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('ix_location_history_agentid_ts', 'AgentId', 'Timestamp'),
     )
 
 class SpeechLog(Base):
@@ -717,6 +754,8 @@ class DetectionAlert(Base):
     MatchedContent = Column(Text) # The specific cmdline or file that triggered the rule
     Status = Column(String(50), default="New") # New, Investigating, False Positive, Confirmed
     Timestamp = Column(DateTime, default=datetime.utcnow)
+    HitCount = Column(Integer, default=1)
+    LastSeenAt = Column(DateTime, default=datetime.utcnow)
 
 class UebaBaseline(Base):
     __tablename__ = "UebaBaselines"
@@ -1034,4 +1073,69 @@ class SupportTicket(Base):
     UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     AttachmentsJson = Column(Text, default="[]") # Store list of dicts as JSON string
 
+
+
+class GlobalSoftwareCatalog(Base):
+    __tablename__ = "GlobalSoftwareCatalog"
+    Id = Column(Integer, primary_key=True, index=True)
+    SoftwareName = Column(String(255), index=True, unique=True)
+    MarketingVersion = Column(String(100)) # e.g. "28"
+    InternalVersion = Column(String(100)) # e.g. "7.0.0" or regex pattern
+    ReleaseDate = Column(DateTime, default=datetime.utcnow)
+    DownloadUrl = Column(String(500), nullable=True)
+    PatchInstructions = Column(Text, nullable=True)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class SandboxAnalysis(Base):
+    __tablename__ = "SandboxAnalysis"
+
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"))
+    Filename = Column(String)
+    Status = Column(String) # SAFE, MALICIOUS, ANALYZING
+    Hash = Column(String)
+    Reason = Column(String)
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class LocationReport(Base):
+    __tablename__ = "LocationReports"
+    
+    Id = Column(Integer, primary_key=True, index=True)
+    AgentId = Column(String(255), index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True)
+    Latitude = Column(Float)
+    Longitude = Column(Float)
+    Source = Column(String(255))
+    Timestamp = Column(DateTime, default=datetime.utcnow)
+
+class CyberRangeScenario(Base):
+    __tablename__ = "CyberRangeScenarios"
+    Id = Column(Integer, primary_key=True, index=True)
+    ScenarioCode = Column(String(100), unique=True, index=True)
+    Name = Column(String(255), nullable=False)
+    Description = Column(Text, nullable=True)
+    Category = Column(String(100), default="Adversary Simulation")
+    Severity = Column(String(50), default="Critical")
+    MitreTacticsJson = Column(Text, default="[]")
+    MitreTechniquesJson = Column(Text, default="[]")
+    StagesJson = Column(Text, default="[]")
+    IsActive = Column(Boolean, default=True)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class CyberRangeRun(Base):
+    __tablename__ = "CyberRangeRuns"
+    Id = Column(Integer, primary_key=True, index=True)
+    ScenarioId = Column(Integer, ForeignKey("CyberRangeScenarios.Id"), nullable=True)
+    ScenarioCode = Column(String(100), index=True)
+    TargetAgentId = Column(String(50), index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=True)
+    Status = Column(String(50), default="COMPLETED")
+    StagesCompleted = Column(Integer, default=0)
+    TotalStages = Column(Integer, default=0)
+    AlertsTriggered = Column(Integer, default=0)
+    ContainmentAction = Column(String(100), nullable=True)
+    StartedAt = Column(DateTime, default=datetime.utcnow)
+    CompletedAt = Column(DateTime, default=datetime.utcnow)
+    ExecutionLogJson = Column(Text, default="[]")
 

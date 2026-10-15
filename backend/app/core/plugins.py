@@ -35,7 +35,7 @@ class PluginManager:
                         
                         # Look for 'router' instance of APIRouter
                         for name, obj in inspect.getmembers(module):
-                            if isinstance(obj, APIRouter):
+                            if isinstance(obj, APIRouter) and name == "router":
                                 prefix = f"/api/{filename[:-3]}"
                                 # Special case for auth/main
                                 if filename[:-3] in ["auth", "main"]:

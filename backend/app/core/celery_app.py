@@ -56,4 +56,8 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.agentless.poll_endpoints",
         "schedule": 30.0,  # Every 30 seconds
     },
+    "sync-global-software-catalog-weekly": {
+        "task": "app.tasks.security.scheduled_sync_global_catalog",
+        "schedule": 604800.0, # Every 7 days
+    },
 }

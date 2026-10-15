@@ -235,3 +235,14 @@ async def get_training_dataset(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class CopilotQueryRequest(BaseModel):
+    query: str
+
+@router.post("/hunting/copilot")
+async def threat_hunting_copilot(
+    req: CopilotQueryRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """[v2.8.0] AI Threat Hunter Copilot."""
+    response = await ai_service.generate_kql_from_nl(req.query)
+    return response

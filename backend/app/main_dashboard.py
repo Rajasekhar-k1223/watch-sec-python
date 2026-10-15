@@ -21,7 +21,7 @@ from .api import ( # type: ignore
 from .api.v2 import ( # type: ignore
     agentless, agentless_receiver, cloud_visibility, compliance, threat_intel, # type: ignore
     hunting, ransomware, risk, lineage, copilot, detection, dlp, # type: ignore
-    ueba, deception, vault, soar, pki, federation, remote as remote_v2 # type: ignore
+    ueba, deception, vault, soar, pki, federation, remote as remote_v2, xdr, correlation, cyber_range, performance_scale, agent_reliability, ha_cluster, security_validation, ai_soc, analyst_console, enterprise_iam_scim, marketplace # type: ignore
 ) # type: ignore
 import asyncio # type: ignore
 
@@ -294,6 +294,17 @@ app.include_router(soar.router, prefix="/api/v2/soar", tags=["SOAR"])
 app.include_router(pki.router, prefix="/api/v2/pki", tags=["PKI"])
 app.include_router(federation.router, prefix="/api/v2/federation", tags=["Federation"])
 app.include_router(remote_v2.router, prefix="/api/v2/remote", tags=["Remote Control V2"])
+app.include_router(xdr.router, prefix="/api/v2/xdr", tags=["XDR Connectors"])
+app.include_router(correlation.router, prefix="/api/v2/correlation", tags=["Correlation & Attack Chains"])
+app.include_router(cyber_range.router, prefix="/api/v2/simulation", tags=["Cyber Range & Simulation"])
+app.include_router(performance_scale.router, prefix="/api/v2/performance/scale", tags=["Performance & 100K Scale Engine"])
+app.include_router(agent_reliability.router, prefix="/api/v2/agent-reliability", tags=["Agent Reliability & Offline Spooling"])
+app.include_router(ha_cluster.router, prefix="/api/v2/ha/cluster", tags=["High Availability & Failure Recovery"])
+app.include_router(security_validation.router, prefix="/api/v2/security-validation", tags=["Security Validation & Penetration Testing"])
+app.include_router(ai_soc.router, prefix="/api/v2/ai-soc", tags=["AI SOC Evaluation & Guardrails"])
+app.include_router(analyst_console.router, prefix="/api/v2/analyst", tags=["Advanced SOC Analyst Console & MDR"])
+app.include_router(enterprise_iam_scim.router, prefix="/api/v2/iam", tags=["Enterprise IAM & SCIM 2.0"])
+app.include_router(marketplace.router, prefix="/api/v2/marketplace", tags=["Security Connector Marketplace"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

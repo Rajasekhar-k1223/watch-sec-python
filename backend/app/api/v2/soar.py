@@ -15,7 +15,11 @@ class PlaybookRequest(BaseModel):
     name: str
     trigger_condition: str
     actions: list
-    requires_approval: bool = False
+    requires_approval: bool = True
+class PlaybookExecuteRequest(BaseModel):
+    playbook_id: int
+    target_agent_id: str
+    action_params: dict = {}
 
 @router.get("/playbooks")
 async def list_playbooks(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -32,6 +36,22 @@ async def create_playbook(request: PlaybookRequest, db: AsyncSession = Depends(g
     db.add(playbook)
     await db.commit()
     return {"status": "success", "playbook_id": playbook.Id}
+
+@router.post("/playbooks/execute")
+async def execute_playbook(
+    request: PlaybookExecuteRequest, 
+    db: AsyncSession = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    success, msg = await soar_engine.trigger_playbook(
+        db, 
+        request.playbook_id, 
+        request.target_agent_id, 
+        request.action_params
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "success", "message": msg}
 
 @router.get("/approvals")
 async def list_pending_approvals(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):

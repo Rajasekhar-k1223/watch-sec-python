@@ -2,15 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
-from typing import List
-
-from ..db.session import get_db
-from ..db.models import YaraRule, Agent, Tenant
-from .deps import get_current_user
-from ..socket_instance import sio
+from typing import List, Optional
 from datetime import datetime
 
+from ..db.session import get_db
+from ..db.models import YaraRule, Agent, Tenant, User
+from .deps import get_current_user
+from ..socket_instance import sio
+
 router = APIRouter()
+
+def get_user_tenant_id(user) -> Optional[int]:
+    if isinstance(user, dict):
+        return user.get("tenantId") or user.get("TenantId")
+    return getattr(user, "TenantId", None)
+
+def is_super_admin(user) -> bool:
+    if isinstance(user, dict):
+        return user.get("role") == "SuperAdmin" or user.get("Role") == "SuperAdmin"
+    return getattr(user, "Role", None) == "SuperAdmin"
 
 class YaraRuleCreate(BaseModel):
     name: str
@@ -25,9 +35,13 @@ class YaraRuleResponse(BaseModel):
 @router.get("/rules", response_model=List[YaraRuleResponse])
 async def list_yara_rules(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(YaraRule).where(YaraRule.TenantId == current_user["tenantId"]))
+    query = select(YaraRule)
+    tenant_id = get_user_tenant_id(current_user)
+    if not is_super_admin(current_user) and tenant_id is not None:
+        query = query.where(YaraRule.TenantId == tenant_id)
+    result = await db.execute(query)
     rules = result.scalars().all()
     return [{"id": r.Id, "name": r.Name, "rule_content": r.RuleContent, "created_at": r.CreatedAt} for r in rules]
 
@@ -35,10 +49,11 @@ async def list_yara_rules(
 async def create_yara_rule(
     rule: YaraRuleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
+    tenant_id = get_user_tenant_id(current_user) or 1
     new_rule = YaraRule(
-        TenantId=current_user["tenantId"],
+        TenantId=tenant_id,
         Name=rule.name,
         RuleContent=rule.rule_content,
         CreatedAt=datetime.utcnow()
@@ -58,9 +73,13 @@ async def create_yara_rule(
 async def delete_yara_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    result = await db.execute(select(YaraRule).where(YaraRule.Id == rule_id, YaraRule.TenantId == current_user["tenantId"]))
+    query = select(YaraRule).where(YaraRule.Id == rule_id)
+    tenant_id = get_user_tenant_id(current_user)
+    if not is_super_admin(current_user) and tenant_id is not None:
+        query = query.where(YaraRule.TenantId == tenant_id)
+    result = await db.execute(query)
     rule = result.scalars().first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -73,17 +92,24 @@ async def delete_yara_rule(
 async def trigger_yara_scan(
     agent_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
     # Verify agent belongs to tenant
-    result = await db.execute(select(Agent).where(Agent.AgentId == agent_id, Agent.TenantId == current_user["tenantId"]))
+    agent_query = select(Agent).where(Agent.AgentId == agent_id)
+    tenant_id = get_user_tenant_id(current_user)
+    if not is_super_admin(current_user) and tenant_id is not None:
+        agent_query = agent_query.where(Agent.TenantId == tenant_id)
+    result = await db.execute(agent_query)
     agent = result.scalars().first()
     
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
         
     # Get all YARA rules for this tenant
-    rule_result = await db.execute(select(YaraRule).where(YaraRule.TenantId == current_user["tenantId"]))
+    rule_query = select(YaraRule)
+    if not is_super_admin(current_user) and tenant_id is not None:
+        rule_query = rule_query.where(YaraRule.TenantId == tenant_id)
+    rule_result = await db.execute(rule_query)
     rules = rule_result.scalars().all()
     
     if not rules:

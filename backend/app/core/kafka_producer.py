@@ -29,14 +29,19 @@ class KafkaProducerClient:
 
     async def publish_event(self, event_data: dict):
         if not self.producer:
-            # Fallback if Kafka is down
-            return False
+            print("[Kafka] Producer not found, attempting auto-reconnect...")
+            await self.connect()
+            if not self.producer:
+                print("[Kafka] Auto-reconnect failed, dropping event.")
+                return False
             
         try:
             await self.producer.send_and_wait(self.topic, event_data)
             return True
         except Exception as e:
             print(f"[Kafka] Publish error: {e}")
+            # Reset producer on fatal publish error to force reconnect next time
+            self.producer = None
             return False
 
 kafka_client = KafkaProducerClient()
