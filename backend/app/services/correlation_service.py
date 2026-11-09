@@ -181,7 +181,11 @@ class StreamingCorrelationEngine:
                 "LATERAL_MOVEMENT_OUTBREAK_T1021_T1550",
                 "EGRESS_C2_BEACONING_T1071",
                 "DISTRIBUTED_BRUTE_FORCE_T1110",
-                "APT_LOLBIN_C2_EGRESS_T1059_T1071"
+                "APT_LOLBIN_C2_EGRESS_T1059_T1071",
+                "DECEPTION_CANARY_BREACH_T1486_T1565",
+                "VOLUME_SHADOW_DESTRUCTION_T1490",
+                "LSASS_CREDENTIAL_DUMP_T1003",
+                "PERSISTENCE_SUSPICIOUS_SERVICE_TASK_T1053_T1543"
             ]
         }
 
@@ -198,15 +202,15 @@ class StreamingCorrelationEngine:
         ev_type = str(raw.get("EventType") or raw.get("event_type") or payload_data.get("EventType") or "System")
         ts = _parse_ts(raw.get("Timestamp") or raw.get("timestamp") or payload_data.get("Timestamp"))
 
-        cmd = str(raw.get("CommandLine") or raw.get("command_line") or payload_data.get("CommandLine") or "")
-        pname = str(raw.get("ProcessName") or raw.get("process_name") or payload_data.get("ProcessName") or "")
-        fpath = str(raw.get("FilePath") or raw.get("file_path") or payload_data.get("FilePath") or "")
-        entropy = float(raw.get("Entropy") or raw.get("entropy") or payload_data.get("Entropy") or 0.0)
-        dst_ip = str(raw.get("DestinationIp") or raw.get("destination_ip") or payload_data.get("DestinationIp") or "")
-        dst_port = int(raw.get("DestinationPort") or raw.get("destination_port") or payload_data.get("DestinationPort") or 0)
-        details = str(raw.get("Details") or raw.get("details") or payload_data.get("Details") or "")
-        user = str(raw.get("User") or raw.get("user") or payload_data.get("User") or "")
-        status = str(raw.get("Status") or raw.get("status") or payload_data.get("Status") or "")
+        cmd = str(raw.get("CommandLine") or raw.get("command_line") or payload_data.get("CommandLine") or payload_data.get("command_line") or "")
+        pname = str(raw.get("ProcessName") or raw.get("process_name") or payload_data.get("ProcessName") or payload_data.get("process_name") or "")
+        fpath = str(raw.get("FilePath") or raw.get("file_path") or payload_data.get("FilePath") or payload_data.get("file_path") or "")
+        entropy = float(raw.get("Entropy") or raw.get("entropy") or payload_data.get("Entropy") or payload_data.get("entropy") or 0.0)
+        dst_ip = str(raw.get("DestinationIp") or raw.get("destination_ip") or payload_data.get("DestinationIp") or payload_data.get("destination_ip") or "")
+        dst_port = int(raw.get("DestinationPort") or raw.get("destination_port") or payload_data.get("DestinationPort") or payload_data.get("destination_port") or 0)
+        details = str(raw.get("Details") or raw.get("details") or payload_data.get("Details") or payload_data.get("details") or "")
+        user = str(raw.get("User") or raw.get("user") or payload_data.get("User") or payload_data.get("user") or "")
+        status = str(raw.get("Status") or raw.get("status") or payload_data.get("Status") or payload_data.get("status") or "")
 
         return {
             "agent_id": agent_id,
@@ -297,6 +301,26 @@ class StreamingCorrelationEngine:
         if r6:
             correlations.append(r6)
 
+        # Rule 7: Deception Canary File Breach (T1486 / T1565)
+        r7 = self._eval_canary_trap_breach(norm, agent_win)
+        if r7:
+            correlations.append(r7)
+
+        # Rule 8: Volume Shadow Copy & Recovery Destruction (T1490)
+        r8 = self._eval_volume_shadow_destruction(norm, agent_win)
+        if r8:
+            correlations.append(r8)
+
+        # Rule 9: LSASS Memory Injection & Credential Dumping (T1003.001)
+        r9 = self._eval_lsass_dumping(norm, agent_win)
+        if r9:
+            correlations.append(r9)
+
+        # Rule 10: Suspicious Scheduled Task / Service Persistence (T1053 / T1543)
+        r10 = self._eval_suspicious_persistence_task(norm, agent_win)
+        if r10:
+            correlations.append(r10)
+
         latency_us = (time.perf_counter() - t0) * 1_000_000.0
         self.total_eval_time_us += latency_us
 
@@ -312,28 +336,6 @@ class StreamingCorrelationEngine:
     def _eval_ransomware_blast(
         self, norm: Dict[str, Any], agent_win: Deque[Tuple[datetime, Dict[str, Any]]]
     ) -> Optional[Dict[str, Any]]:
-        cmd_lower = (norm["command_line"] + " " + norm["process_name"] + " " + norm["details"]).lower()
-
-        # Shadow copy destruction (T1490)
-        is_shadow_wipe = any(p in cmd_lower for p in SHADOW_WIPE_PATTERNS) or (
-            "vssadmin" in cmd_lower and "delete" in cmd_lower and "shadow" in cmd_lower
-        )
-        if is_shadow_wipe:
-            return {
-                "type": "Ransomware Volume Destruction",
-                "rule_id": "RANSOMWARE_BLAST_T1486_T1490",
-                "severity": "Critical",
-                "confidence": 98,
-                "agent_id": norm["agent_id"],
-                "tenant_id": norm["tenant_id"],
-                "mitre_tactic": "Impact",
-                "mitre_technique": "T1490 - Inhibit System Recovery",
-                "description": f"Shadow copy destruction command detected: {norm['command_line'] or norm['process_name']}",
-                "evidence": norm["command_line"] or norm["process_name"],
-                "detected_at": norm["timestamp"].isoformat(),
-                "recommended_playbook_id": 2
-            }
-
         # Mass high-entropy file encryption burst (T1486)
         if norm["file_entropy"] >= 7.5 or norm["file_extension"] in RANSOMWARE_EXTENSIONS:
             cutoff = norm["timestamp"] - timedelta(seconds=60)
@@ -565,6 +567,132 @@ class StreamingCorrelationEngine:
                         "detected_at": norm["timestamp"].isoformat(),
                         "recommended_playbook_id": 1
                     }
+
+        return None
+
+    def _eval_canary_trap_breach(
+        self, norm: Dict[str, Any], agent_win: Deque[Tuple[datetime, Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        fpath = norm.get("file_path", "").lower()
+        details = norm.get("details", "").lower()
+        ev_type = norm.get("event_type", "")
+
+        is_canary = (
+            ev_type in ("CanaryTriggered", "DeceptionBreach") or
+            any(pat in fpath or pat in details for pat in (".canary", "decoy_", ".ransom_canary", "deception_canary", "/canary/")) or
+            "canary token" in details
+        )
+
+        if is_canary:
+            return {
+                "type": "Deception Honeypot Canary Trap Breach",
+                "rule_id": "DECEPTION_CANARY_BREACH_T1486_T1565",
+                "severity": "Critical",
+                "confidence": 99,
+                "agent_id": norm["agent_id"],
+                "tenant_id": norm["tenant_id"],
+                "mitre_tactic": "Defense Evasion",
+                "mitre_technique": "T1486 Data Encrypted / T1565 Data Manipulation",
+                "description": f"Unauthorized access or modification detected on deception canary asset ({fpath or details[:80]}).",
+                "evidence": f"Canary Target: {fpath or details[:100]} Process: {norm.get('process_name')}",
+                "detected_at": norm["timestamp"].isoformat(),
+                "recommended_playbook_id": 2
+            }
+
+        return None
+
+    def _eval_volume_shadow_destruction(
+        self, norm: Dict[str, Any], agent_win: Deque[Tuple[datetime, Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        cmd = (norm.get("command_line", "") + " " + norm.get("details", "")).lower()
+
+        is_shadow_wipe = (
+            any(pat in cmd for pat in SHADOW_WIPE_PATTERNS) or
+            "wbadmin delete" in cmd or
+            "vssadmin delete" in cmd or
+            "shadowcopy delete" in cmd or
+            "ignoreallfailures" in cmd
+        )
+
+        if is_shadow_wipe:
+            return {
+                "type": "Destructive Shadow Copy & System Recovery Invalidation",
+                "rule_id": "VOLUME_SHADOW_DESTRUCTION_T1490",
+                "severity": "Critical",
+                "confidence": 98,
+                "agent_id": norm["agent_id"],
+                "tenant_id": norm["tenant_id"],
+                "mitre_tactic": "Impact",
+                "mitre_technique": "T1490 - Inhibit System Recovery",
+                "description": f"Ransomware precursor command executed to disable backup recovery: {norm.get('command_line')[:100]}.",
+                "evidence": norm.get("command_line")[:120] or cmd[:120],
+                "detected_at": norm["timestamp"].isoformat(),
+                "recommended_playbook_id": 2
+            }
+
+        return None
+
+    def _eval_lsass_dumping(
+        self, norm: Dict[str, Any], agent_win: Deque[Tuple[datetime, Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        cmd = (norm.get("command_line", "") + " " + norm.get("details", "")).lower()
+        pname = norm.get("process_name", "").lower()
+
+        is_lsass_dump = (
+            ("lsass" in cmd and any(tool in cmd for tool in ("procdump", "comsvcs", "minidump", "rundll32", "nanodump", "mimikatz", "sekurlsa", ".dmp"))) or
+            (pname in ("procdump.exe", "procdump", "nanodump.exe", "dumpert.exe", "mimikatz.exe") and "lsass" in cmd) or
+            ("minidumpwritedump" in cmd and "lsass" in cmd)
+        )
+
+        if is_lsass_dump:
+            return {
+                "type": "LSASS Memory Injection & Credential Harvesting",
+                "rule_id": "LSASS_CREDENTIAL_DUMP_T1003",
+                "severity": "Critical",
+                "confidence": 98,
+                "agent_id": norm["agent_id"],
+                "tenant_id": norm["tenant_id"],
+                "mitre_tactic": "Credential Access",
+                "mitre_technique": "T1003.001 - OS Credential Dumping: LSASS Memory",
+                "description": f"Direct memory dump or credential harvesting invocation against LSASS: {norm.get('command_line')[:100]}.",
+                "evidence": f"Target: lsass.exe Command: {norm.get('command_line')[:120]}",
+                "detected_at": norm["timestamp"].isoformat(),
+                "recommended_playbook_id": 1
+            }
+
+        return None
+
+    def _eval_suspicious_persistence_task(
+        self, norm: Dict[str, Any], agent_win: Deque[Tuple[datetime, Dict[str, Any]]]
+    ) -> Optional[Dict[str, Any]]:
+        cmd = (norm.get("command_line", "") + " " + norm.get("details", "")).lower()
+
+        is_task_create = (
+            ("schtasks" in cmd and "/create" in cmd) or
+            ("sc create" in cmd or "sc.exe create" in cmd) or
+            ("new-service" in cmd) or
+            ("crontab" in cmd and ("-e" in cmd or "echo" in cmd))
+        )
+
+        has_suspicious_payload = any(
+            ind in cmd for ind in ("powershell", "cmd.exe", "-enc", "hidden", "bypass", "curl", "certutil", "bitsadmin", "wscript", "cscript", "mshta", "iex")
+        )
+
+        if is_task_create and has_suspicious_payload:
+            return {
+                "type": "Suspicious Scheduled Task / Service Persistence",
+                "rule_id": "PERSISTENCE_SUSPICIOUS_SERVICE_TASK_T1053_T1543",
+                "severity": "High",
+                "confidence": 94,
+                "agent_id": norm["agent_id"],
+                "tenant_id": norm["tenant_id"],
+                "mitre_tactic": "Persistence",
+                "mitre_technique": "T1053.005 / T1543.003 - Scheduled Task & System Process Creation",
+                "description": f"Persistence mechanism created with embedded script or LOLBin execution: {norm.get('command_line')[:100]}.",
+                "evidence": norm.get("command_line")[:120] or cmd[:120],
+                "detected_at": norm["timestamp"].isoformat(),
+                "recommended_playbook_id": 4
+            }
 
         return None
 

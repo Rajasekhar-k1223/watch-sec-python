@@ -14,7 +14,8 @@ logger = logging.getLogger("monitorix.edr.process_tree")
 
 class ProcessNode:
     __slots__ = ("pid", "ppid", "name", "command_line", "cpu_usage", "memory_bytes",
-                 "status", "timestamp", "user", "children")
+                 "status", "timestamp", "user", "process_guid", "parent_guid",
+                 "exe_path", "sha256", "children")
 
     def __init__(
         self,
@@ -26,7 +27,11 @@ class ProcessNode:
         memory_bytes: int = 0,
         status: str = "RUNNING",
         timestamp: Optional[str] = None,
-        user: str = "SYSTEM"
+        user: str = "SYSTEM",
+        process_guid: Optional[str] = None,
+        parent_guid: Optional[str] = None,
+        exe_path: str = "",
+        sha256: str = ""
     ):
         self.pid = pid
         self.ppid = ppid
@@ -37,14 +42,22 @@ class ProcessNode:
         self.status = status
         self.timestamp = timestamp or datetime.utcnow().isoformat()
         self.user = user
+        self.process_guid = process_guid or f"proc-{pid}"
+        self.parent_guid = parent_guid or (f"proc-{ppid}" if ppid > 0 else "00000000-0000-0000-0000-000000000000")
+        self.exe_path = exe_path
+        self.sha256 = sha256
         self.children: List["ProcessNode"] = []
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "pid": self.pid,
             "ppid": self.ppid,
+            "process_guid": self.process_guid,
+            "parent_guid": self.parent_guid,
             "name": self.name,
             "command_line": self.command_line,
+            "exe_path": self.exe_path,
+            "sha256": self.sha256,
             "cpu_usage": round(self.cpu_usage, 2),
             "memory_bytes": self.memory_bytes,
             "status": self.status,
@@ -90,6 +103,10 @@ class ProcessTreeBuilder:
         status = str(raw.get("status") or raw.get("Status") or "RUNNING")
         ts = raw.get("Timestamp") or raw.get("timestamp")
         user = str(raw.get("User") or raw.get("user") or "SYSTEM")
+        pguid = raw.get("ProcessGuid") or raw.get("process_guid") or raw.get("guid")
+        parent_guid = raw.get("ParentProcessGuid") or raw.get("parent_guid")
+        exe_path = str(raw.get("ExePath") or raw.get("exe_path") or raw.get("exe") or "")
+        sha256 = str(raw.get("Sha256") or raw.get("sha256") or raw.get("hash") or "")
 
         return ProcessNode(
             pid=pid,
@@ -100,7 +117,11 @@ class ProcessTreeBuilder:
             memory_bytes=mem,
             status=status,
             timestamp=ts,
-            user=user
+            user=user,
+            process_guid=pguid,
+            parent_guid=parent_guid,
+            exe_path=exe_path,
+            sha256=sha256
         )
 
     @classmethod
@@ -200,6 +221,8 @@ class ProcessTreeBuilder:
             if n:
                 nodes.append(n)
         return cls.build_tree_from_nodes(nodes)
+
+    build_tree_from_snapshot = build_from_telemetry
 
     @classmethod
     def fetch_and_build(
