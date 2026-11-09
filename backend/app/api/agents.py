@@ -16,7 +16,7 @@ from datetime import datetime, timedelta # type: ignore
 _policy_cache: dict = {}  # key: PolicyId, value: (policy_obj, cached_at)
 
 from ..db.session import get_db # type: ignore
-from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog, LocationHistory # type: ignore
+from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog, LocationHistory, AgentEnrollmentToken # type: ignore
 from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible, check_role, get_current_active_user # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate, AgentFimUpdateRequest # type: ignore
@@ -48,7 +48,7 @@ async def agent_update_progress(
 
 
 from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, LATEST_AGENT_VERSION # type: ignore
-LATEST_AGENT_VERSION = "v2.5.0"
+LATEST_AGENT_VERSION = "v4.2.0"
 from ..core import trial_manager # type: ignore
 from ..tasks.security import scan_vulnerabilities_background # type: ignore
 from ..tasks.general import staggered_bulk_patch # type: ignore
@@ -129,6 +129,7 @@ async def get_agents(
     current_user: User = Depends(get_current_user), 
     db: AsyncSession = Depends(get_db),
     tenantId: Optional[int] = Query(None), # [NEW] Support explicit tenant filtering
+    status_filter: Optional[str] = Query(None, alias="status"), # [NEW] Support lifecycle status filtering (Active, Offline, Stale, Blocked, Decommissioned)
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
@@ -151,20 +152,41 @@ async def get_agents(
                 return [] # Non-SuperAdmin with no tenant access
             query = query.where(Agent.TenantId == current_user.TenantId)
         
-        query = query.order_by(Agent.LastSeen.desc())
+        query = query.order_by(Agent.LastSeen.desc().nullslast())
         query = query.limit(limit).offset(offset)
             
         result = await db.execute(query)
         agents = result.scalars().all()
         
-        # [FIX] Compute dynamic status for each agent
+        # [LIFECYCLE RESOLUTION] Authoritative agent state machine:
+        # DISCOVERED -> ENROLLMENT_PENDING -> ONLINE -> OFFLINE -> STALE -> BLOCKED -> DECOMMISSIONED
         now = datetime.utcnow()
         
         response = []
         for a in agents:
-            status = "Offline"
-            if a.LastSeen and (now - a.LastSeen).total_seconds() < 120:
-                status = "Online"
+            # Explicit persistent states
+            if a.Status in ["DECOMMISSIONED", "Decommissioned"]:
+                computed_status = "Decommissioned"
+            elif a.Status in ["BLOCKED", "Blocked"]:
+                computed_status = "Blocked"
+            elif not a.LastSeen:
+                computed_status = "Discovered"
+            elif (now - a.LastSeen).total_seconds() < 300:
+                computed_status = "Online"
+            elif (now - a.LastSeen).total_seconds() < 86400: # 24h
+                computed_status = "Offline"
+            else:
+                computed_status = "Stale"
+
+            # Filter by status if requested
+            if status_filter and status_filter.lower() != "all":
+                filter_term = status_filter.lower()
+                matches = (computed_status.lower() == filter_term) or (filter_term in ["online", "active"] and computed_status.lower() in ["online", "active"])
+                if not matches:
+                    continue
+
+            status = computed_status
+
             
             # [SAFE ACCESS] Use getattr to handle potentially missing columns before migration
             # This prevents 500 errors if the code is deployed before the DB schema update
@@ -181,6 +203,8 @@ async def get_agents(
                 "tenantId": a.TenantId,
                 "hostname": a.Hostname,
                 "status": status,
+                "isOnline": status == "Online",
+                "IsOnline": status == "Online",
                 "cpuUsage": a.CpuUsage,
                 "memoryUsage": a.MemoryUsage,
                 "lastSeen": a.LastSeen.isoformat() if a.LastSeen else None,
@@ -680,7 +704,21 @@ async def trigger_sovereign_unlock(
     
     return {"status": "success", "message": "Sovereign Unlock command dispatched."}
 
-async def _dispatch_signed_command(agent_id: str, action: str, params: dict, current_user: User, db: AsyncSession):
+
+class EndpointContainmentRequest(BaseModel):
+    confirmed: bool = True
+    justification: Optional[str] = "Manual endpoint network isolation"
+    safe_mode: Optional[bool] = False
+
+
+async def _dispatch_signed_command(
+    agent_id: str,
+    action: str,
+    params: dict,
+    current_user: User,
+    db: AsyncSession,
+    justification: Optional[str] = None
+):
     # Find agent
     query = select(Agent).where(Agent.AgentId == agent_id)
     if current_user.Role != "SuperAdmin":
@@ -731,12 +769,16 @@ async def _dispatch_signed_command(agent_id: str, action: str, params: dict, cur
         agent.IsIsolated = False
 
     # [AUDIT]
+    audit_details = f"Command {action} dispatched remotely."
+    if justification:
+        audit_details += f" Justification: {justification}"
+
     audit = AuditLog(
         TenantId=agent.TenantId,
         Actor=current_user.Username,
         Action=action,
         Target=agent.Hostname,
-        Details=f"Command {action} dispatched remotely.",
+        Details=audit_details,
         Timestamp=datetime.utcnow()
     )
     db.add(audit)
@@ -745,22 +787,35 @@ async def _dispatch_signed_command(agent_id: str, action: str, params: dict, cur
     return {"status": "success", "message": f"{action} command dispatched."}
 
 
+CONTAINMENT_ROLES = {"Admin", "SuperAdmin", "SecOpsLead", "admin", "superadmin"}
+
+
 @router.post("/{agent_id}/isolate")
 async def trigger_isolate(
     agent_id: str,
+    req: Optional[EndpointContainmentRequest] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    return await _dispatch_signed_command(agent_id, "IsolateNetwork", {}, current_user, db)
+    if current_user.Role not in CONTAINMENT_ROLES:
+        raise HTTPException(status_code=403, detail="Containment operations require administrative privileges")
+    if req and not req.confirmed:
+        raise HTTPException(status_code=400, detail="Explicit confirmation required to execute host network isolation")
+    justification = req.justification if req else "Manual endpoint network isolation"
+    return await _dispatch_signed_command(agent_id, "IsolateNetwork", {}, current_user, db, justification=justification)
 
 
 @router.post("/{agent_id}/unisolate")
 async def trigger_unisolate(
     agent_id: str,
+    req: Optional[EndpointContainmentRequest] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    return await _dispatch_signed_command(agent_id, "UnisolateNetwork", {}, current_user, db)
+    if current_user.Role not in CONTAINMENT_ROLES:
+        raise HTTPException(status_code=403, detail="Restoration operations require administrative privileges")
+    justification = req.justification if req else "Manual network restoration"
+    return await _dispatch_signed_command(agent_id, "UnisolateNetwork", {}, current_user, db, justification=justification)
 
 
 @router.post("/{agent_id}/forensics")
@@ -1173,7 +1228,27 @@ async def register_agent(
     """Dynamic Agent Registration: Exchanges TenantApiKey for a unique MachineSecret."""
     # 1. Validate PIN or TenantApiKey
     tenant = None
-    if payload.TenantApiKey and payload.TenantApiKey.isdigit() and len(payload.TenantApiKey) == 6:
+    if payload.TenantApiKey and payload.TenantApiKey.startswith("enr_"):
+        # [v4.3.0] Ephemeral Agent Enrollment Token (Expiring, Revokable, Quota-Controlled)
+        q_enr = select(AgentEnrollmentToken).where(AgentEnrollmentToken.Token == payload.TenantApiKey)
+        enr_tok = (await db.execute(q_enr)).scalars().first()
+        if not enr_tok:
+            raise HTTPException(status_code=401, detail="Enrollment token not found")
+        if enr_tok.IsRevoked:
+            raise HTTPException(status_code=401, detail=f"Enrollment token revoked: {enr_tok.RevokedReason or 'Administrative revocation'}")
+        if enr_tok.ExpiresAt < datetime.utcnow():
+            raise HTTPException(status_code=401, detail="Enrollment token has expired")
+        if enr_tok.UsesCount >= enr_tok.MaxUses:
+            raise HTTPException(status_code=401, detail="Enrollment token usage limit reached")
+
+        tenant = (await db.execute(select(Tenant).where(Tenant.Id == enr_tok.TenantId))).scalars().first()
+        if not tenant:
+            raise HTTPException(status_code=401, detail="Tenant associated with enrollment token not found")
+
+        # Increment usage counter
+        enr_tok.UsesCount += 1
+        await db.commit()
+    elif payload.TenantApiKey and payload.TenantApiKey.isdigit() and len(payload.TenantApiKey) == 6:
         # It's an OTP PIN
         import hashlib
         pin_hash = hashlib.sha256(payload.TenantApiKey.encode()).hexdigest()
@@ -1213,17 +1288,25 @@ async def register_agent(
             raise HTTPException(status_code=403, detail="Unauthorized Agent access")
         agent.MachineId = new_machine_secret
     else:
-        # Create minimal agent entry to hold the MachineId
+        # [ENTITLEMENT ENFORCEMENT] Authoritative Local Entitlement Engine quota check
+        from app.services.local_entitlement_engine import local_entitlement_engine
+        quota_check = await local_entitlement_engine.check_agent_enrollment_quota(db, tenant.Id)
+        if not quota_check["allowed"]:
+            return JSONResponse(status_code=403, content=quota_check)
+
+        # Create minimal agent entry to hold the MachineId with initial ACTIVE state
         agent = Agent(
             AgentId=payload.AgentId,
             TenantId=tenant.Id,
             Hostname=payload.Hostname,
-            MachineId=new_machine_secret
+            MachineId=new_machine_secret,
+            Status="ACTIVE"
         )
         db.add(agent)
         
     await db.commit()
     return {"status": "success", "machine_secret": new_machine_secret}
+
 
 from fastapi import Header
 
@@ -1272,29 +1355,10 @@ async def agent_heartbeat(
         _legacy_unsigned = False
 
         if not x_signature or not x_timestamp:
-            # [COMPAT] Allow unsigned heartbeats from pre-v1.8.x agents.
-            # Accept if the payload TenantApiKey matches the tenant (already-registered agents OR
-            # new legacy agents connecting for the first time via valid API key).
+            # Enforce authentication: payload TenantApiKey MUST match tenant.ApiKey
             unsigned_ok = payload.TenantApiKey and payload.TenantApiKey == tenant.ApiKey
             if not unsigned_ok:
-                # [COMPAT-HEARTBEAT] Legacy EXE (pre-v1.8.64): signing fails on SYSTEM account
-                # when config.json regenerates (losing TenantApiKey). Accept unsigned heartbeats
-                # from registered agents with a recent payload timestamp (replay protection).
-                compat_heartbeat_ok = False
-                if payload.AgentId and payload.Timestamp:
-                    try:
-                        ts_str = str(payload.Timestamp).replace('Z', '').split('+')[0]
-                        ts_dt = datetime.fromisoformat(ts_str)
-                        age_seconds = abs((datetime.utcnow() - ts_dt).total_seconds())
-                        if age_seconds < 300:
-                            compat_heartbeat_ok = True
-                            print(f"[COMPAT-HEARTBEAT] Accepting unsigned heartbeat from legacy agent {payload.AgentId} (age={age_seconds:.1f}s)")
-                    except Exception as ts_err:
-                        print(f"[COMPAT-HEARTBEAT] Timestamp parse failed: {ts_err}")
-                if not compat_heartbeat_ok:
-                    raise HTTPException(status_code=403, detail="Signature missing. Please update agent.")
-            else:
-                print(f"[COMPAT] Accepting unsigned heartbeat from legacy agent {payload.AgentId} (API key matched, no signature)")
+                raise HTTPException(status_code=403, detail="Signature missing or invalid credentials. Agent must authenticate.")
             _legacy_unsigned = True
         else:
             # [SEC] Enforce HMAC Signature
@@ -1403,13 +1467,19 @@ async def agent_heartbeat(
 
         if not agent:
             # Create New Agent if not found
-            # Check Agent Limit for Tenant
-            from sqlalchemy import func # type: ignore
-            limit_res = await db.execute(select(func.count()).select_from(Agent).where(Agent.TenantId == tenant.Id))
-            current_count = limit_res.scalar()
-            
-            if tenant.AgentLimit != -1 and current_count >= tenant.AgentLimit:
-                 raise HTTPException(status_code=403, detail="Agent Limit Reached")
+            # [ENTITLEMENT ENFORCEMENT] Authoritative Local Entitlement Engine quota check
+            from app.services.local_entitlement_engine import local_entitlement_engine
+            quota_check = await local_entitlement_engine.check_agent_enrollment_quota(db, tenant.Id)
+            if not quota_check["allowed"]:
+                return JSONResponse(status_code=403, content=quota_check)
+        elif agent and agent.Status in ["DECOMMISSIONED", "Decommissioned"]:
+            # Decommissioned agent attempting re-enrollment / revival: verify quota first
+            from app.services.local_entitlement_engine import local_entitlement_engine
+            quota_check = await local_entitlement_engine.check_agent_enrollment_quota(db, tenant.Id)
+            if not quota_check["allowed"]:
+                return JSONResponse(status_code=403, content=quota_check)
+            agent.Status = "ACTIVE"
+
             
             # Helper to check feature tier vs tenant plan
             plan_level = PLAN_LEVELS.get(tenant.Plan, 1)
@@ -1557,8 +1627,8 @@ async def agent_heartbeat(
                         agent.TargetVersion = LATEST_AGENT_VERSION
                         agent.UpdateStatus = "idle"
             
-            # [v1.8.37] Cryptographic Sync: Ensure MachineId is recorded
-            if payload.MachineSecret:
+            # [v1.8.37] Cryptographic Sync: Record MachineId only if unset
+            if payload.MachineSecret and not agent.MachineId:
                 agent.MachineId = payload.MachineSecret
                 # [v1.8.38] Intermediate Commit: Ensure MachineId is visible to /activity flushes immediately
                 try:
@@ -2365,7 +2435,134 @@ async def delete_agent(
     
     return status.HTTP_204_NO_CONTENT
 
+@router.post("/{agent_identifier}/decommission")
+async def decommission_agent(
+    agent_identifier: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [LIFECYCLE MANAGEMENT] Decommissions an agent.
+    Decommissioned agents do NOT consume active endpoint license quota.
+    Releases quota slot immediately for other endpoints.
+    """
+    query = select(Agent).where(Agent.AgentId == agent_identifier)
+    if agent_identifier.isdigit():
+        query = select(Agent).where((Agent.Id == int(agent_identifier)) | (Agent.AgentId == agent_identifier))
+    res = await db.execute(query)
+    agent = res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if current_user.Role != "SuperAdmin" and current_user.TenantId and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Unauthorized Agent access")
+
+    agent.Status = "DECOMMISSIONED"
+    agent.IsPendingUninstall = True
+
+    from ..db.models import AuditLog
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="AGENT_DECOMMISSIONED",
+        Target=f"{agent.Hostname} ({agent.AgentId})",
+        Details=f"Agent {agent.AgentId} decommissioned by {current_user.Username}. Endpoint quota slot released.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+
+    # Emit real-time update
+    try:
+        await sio.emit('agent_status_changed', {
+            'agentId': agent.AgentId,
+            'status': 'DECOMMISSIONED',
+            'action': 'quota_released'
+        }, room=f"tenant_{agent.TenantId}")
+    except Exception:
+        pass
+
+    return {
+        "status": "DECOMMISSIONED",
+        "agentId": agent.AgentId,
+        "message": f"Agent {agent.AgentId} decommissioned successfully. Endpoint quota slot released."
+    }
+
+@router.post("/{agent_identifier}/block")
+async def block_agent(
+    agent_identifier: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Blocks an agent from communicating with the control plane and data plane."""
+    query = select(Agent).where(Agent.AgentId == agent_identifier)
+    if agent_identifier.isdigit():
+        query = select(Agent).where((Agent.Id == int(agent_identifier)) | (Agent.AgentId == agent_identifier))
+    res = await db.execute(query)
+    agent = res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if current_user.Role != "SuperAdmin" and current_user.TenantId and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Unauthorized Agent access")
+
+    agent.Status = "BLOCKED"
+    from ..db.models import AuditLog
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="AGENT_BLOCKED",
+        Target=f"{agent.Hostname} ({agent.AgentId})",
+        Details=f"Agent {agent.AgentId} placed in BLOCKED state by {current_user.Username}.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+
+    return {"status": "BLOCKED", "agentId": agent.AgentId, "message": f"Agent {agent.AgentId} blocked."}
+
+@router.post("/{agent_identifier}/activate")
+async def activate_agent(
+    agent_identifier: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Reactivates a decommissioned or blocked agent, validating endpoint quota first."""
+    query = select(Agent).where(Agent.AgentId == agent_identifier)
+    if agent_identifier.isdigit():
+        query = select(Agent).where((Agent.Id == int(agent_identifier)) | (Agent.AgentId == agent_identifier))
+    res = await db.execute(query)
+    agent = res.scalars().first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if current_user.Role != "SuperAdmin" and current_user.TenantId and agent.TenantId != current_user.TenantId:
+        raise HTTPException(status_code=403, detail="Unauthorized Agent access")
+
+    from app.services.local_entitlement_engine import local_entitlement_engine
+    quota_check = await local_entitlement_engine.check_agent_enrollment_quota(db, agent.TenantId)
+    if not quota_check["allowed"]:
+        return JSONResponse(status_code=403, content=quota_check)
+
+    agent.Status = "ACTIVE"
+    agent.IsPendingUninstall = False
+
+    from ..db.models import AuditLog
+    audit = AuditLog(
+        TenantId=agent.TenantId,
+        Actor=current_user.Username,
+        Action="AGENT_ACTIVATED",
+        Target=f"{agent.Hostname} ({agent.AgentId})",
+        Details=f"Agent {agent.AgentId} reactivated by {current_user.Username}.",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+
+    return {"status": "ACTIVE", "agentId": agent.AgentId, "message": f"Agent {agent.AgentId} activated."}
+
 @router.post("/{agent_string_id}/toggle-screenshots")
+
 async def toggle_screenshots(
     agent_string_id: str, # String ID (e.g. "DEVICE-123")
     enabled: bool,
@@ -3394,15 +3591,51 @@ async def receive_agent_events(
 
     try:
         from ..core.kafka_producer import kafka_client
+        from ..services.offline_buffer_engine import offline_buffer_engine
         
         ingest_time = datetime.utcnow().isoformat()
         enriched_events = []
-        for ev in payload.events:
-            # We don't want to mutate original just in case, but dict is safe here
+        dedup_count = 0
+        replayed_count = 0
+
+        # Enforce quota eviction if burst exceeds safety threshold
+        events_to_process = payload.events
+        if len(events_to_process) > 1000:
+            events_to_process, _ = offline_buffer_engine.apply_quota_eviction(events_to_process, max_events_quota=1000)
+
+        for ev in events_to_process:
+            if not isinstance(ev, dict):
+                continue
+
+            # Idempotency fingerprinting & deduplication check
+            fp = ev.get("EventFingerprint") or ev.get("event_fingerprint")
+            if not fp:
+                fp = offline_buffer_engine.compute_event_fingerprint(payload.agent_id, ev)
+                ev["EventFingerprint"] = fp
+
+            if offline_buffer_engine.is_duplicate(payload.agent_id, fp):
+                dedup_count += 1
+                continue
+
+            offline_buffer_engine.record_fingerprint(payload.agent_id, fp)
+
+            if ev.get("IsBufferedReplay") or ev.get("is_buffered_replay"):
+                replayed_count += 1
+
             ev["_ingest_time"] = ingest_time
             ev["AgentId"] = payload.agent_id
             ev["TenantId"] = tenant.Id
             enriched_events.append(ev)
+
+        if dedup_count > 0:
+            offline_buffer_engine.record_dedup_metric(dedup_count)
+        if replayed_count > 0:
+            offline_buffer_engine.record_replay_metric(replayed_count)
+
+        # Update Agent Status to Online and record LastSeen
+        agent.Status = "Online"
+        agent.LastSeen = datetime.utcnow()
+        await db.commit()
             
         if enriched_events:
             # [v3.0] Publish telemetry to Kafka Event Bus instead of Mongo

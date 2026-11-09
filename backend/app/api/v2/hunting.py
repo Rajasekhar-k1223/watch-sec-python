@@ -9,6 +9,8 @@ from app.api.deps import get_current_user
 from pydantic import BaseModel
 import datetime
 
+from app.services.hunting import compile_threat_hunt_query
+
 router = APIRouter()
 
 class SearchPayload(BaseModel):
@@ -30,24 +32,58 @@ class EvidenceRequest(BaseModel):
 
 @router.post("/search")
 async def execute_search(payload: SearchPayload, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Parse basic keyword
-    keyword = payload.query.replace("process.name:", "").replace("\"", "").strip()
+    tenant_id = getattr(current_user, "TenantId", 1) or 1
     
-    # Query ClickHouse Data Lake for the keyword across all raw telemetry payloads
-    rows = clickhouse_db.search_telemetry(keyword, limit=100)
-    
+    # Ensure ClickHouse connection is alive
+    if not clickhouse_db.client:
+        clickhouse_db.connect()
+
     results = []
-    for row in rows:
-        event_id, agent_id, event_type, timestamp, payload_str = row
-        results.append({
-            "id": str(event_id),
-            "type": event_type,
-            "agent": agent_id,
-            "data": payload_str,
-            "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
-        })
+    try:
+        if clickhouse_db.client:
+            sql, params = compile_threat_hunt_query(
+                query_str=payload.query,
+                tenant_id=tenant_id,
+                limit=100
+            )
+            rows = clickhouse_db.client.execute(sql, params)
+            for row in rows:
+                event_id, agent_id, event_type, timestamp, payload_str = row
+                results.append({
+                    "id": str(event_id),
+                    "type": event_type,
+                    "agent": agent_id,
+                    "data": payload_str,
+                    "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
+                })
+        else:
+            # Fallback simple search
+            keyword = payload.query.replace("process.name:", "").replace("\"", "").strip()
+            rows = clickhouse_db.search_telemetry(keyword, limit=100)
+            for row in rows:
+                event_id, agent_id, event_type, timestamp, payload_str = row
+                results.append({
+                    "id": str(event_id),
+                    "type": event_type,
+                    "agent": agent_id,
+                    "data": payload_str,
+                    "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
+                })
+    except Exception as e:
+        # Fallback on search error
+        keyword = payload.query.replace("process.name:", "").replace("\"", "").strip()
+        rows = clickhouse_db.search_telemetry(keyword, limit=100)
+        for row in rows:
+            event_id, agent_id, event_type, timestamp, payload_str = row
+            results.append({
+                "id": str(event_id),
+                "type": event_type,
+                "agent": agent_id,
+                "data": payload_str,
+                "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp)
+            })
         
-    return {"status": "success", "hits": len(results), "results": results}
+    return {"status": "success", "hits": len(results), "query": payload.query, "results": results}
 
 @router.get("/saved")
 async def list_saved_hunts(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):

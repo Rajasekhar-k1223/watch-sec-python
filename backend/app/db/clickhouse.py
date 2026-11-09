@@ -4,23 +4,36 @@ from clickhouse_driver import Client
 class ClickHouseClient:
     def __init__(self):
         self.client = None
-        self.url = os.getenv("CLICKHOUSE_URL", "clickhouse://localhost:9000/monitorix")
+        self.url = os.getenv("CLICKHOUSE_URL", "clickhouse://sentinel_user:sentinel_password@clickhouse:9000/monitorix")
         
     def connect(self):
         try:
-            # Parse simple clickhouse://user:pass@host:port/db URL
-            host = "localhost"
+            # Parse clickhouse://user:pass@host:port/db URL
+            host = "clickhouse"
             port = 9000
-            user = "default"
-            password = ""
+            user = "sentinel_user"
+            password = "sentinel_password"
             database = "monitorix"
             
             if "@" in self.url:
                 creds, address = self.url.replace("clickhouse://", "").split("@")
-                user, password = creds.split(":")
+                if ":" in creds:
+                    user, password = creds.split(":")
+                else:
+                    user = creds
+                    password = ""
                 host, port_db = address.split(":")
                 port = int(port_db.split("/")[0])
                 database = port_db.split("/")[1]
+            elif "://" in self.url:
+                address = self.url.replace("clickhouse://", "")
+                if ":" in address:
+                    host, port_db = address.split(":")
+                    port = int(port_db.split("/")[0])
+                    if "/" in port_db:
+                        database = port_db.split("/")[1]
+                else:
+                    host = address
                 
             self.client = Client(
                 host=host,
@@ -56,6 +69,7 @@ class ClickHouseClient:
             ) ENGINE = MergeTree()
             PARTITION BY toYYYYMMDD(timestamp)
             ORDER BY (tenant_id, agent_id, timestamp)
+            TTL timestamp + toIntervalDay(90)
         ''')
         print("[ClickHouse] Schema initialized")
 
