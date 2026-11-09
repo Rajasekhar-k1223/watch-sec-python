@@ -21,7 +21,6 @@ class ApiKeyResponse(BaseModel):
     id: int
     name: str
     prefix: str
-    raw_key: Optional[str] = None # Added for full key copy
     created_at: datetime
     expires_at: Optional[datetime]
     last_used_at: Optional[datetime]
@@ -53,7 +52,6 @@ async def create_api_key(
         Name=payload.name,
         KeyHash=key_hash,
         Prefix=prefix,
-        RawKey=raw_key,
         CreatedAt=datetime.utcnow(),
         ExpiresAt=expires_at
     )
@@ -87,7 +85,6 @@ async def list_api_keys(
             "id": k.Id,
             "name": k.Name,
             "prefix": k.Prefix,
-            "raw_key": k.RawKey,
             "created_at": k.CreatedAt,
             "expires_at": k.ExpiresAt,
             "last_used_at": k.LastUsedAt

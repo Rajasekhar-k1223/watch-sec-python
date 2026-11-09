@@ -128,11 +128,14 @@ async def process_ocr(
         
         confidence = 1.0 # Tesseract confidence requires image_to_data, simplified for now
         
+        from ..core.privacy import BackendPrivacyRedactor # type: ignore
+        sanitized_text = BackendPrivacyRedactor.redact_text(text)
+
         # 4. Save Log
         new_log = OCRLog(
             AgentId=agentId,
             ScreenshotId=screenshot_id,
-            ExtractedText=text[:5000], # Limit size
+            ExtractedText=sanitized_text[:5000], # Limit size with DLP redaction
             Confidence=confidence,
             SensitiveKeywordsFound=json.dumps(found_keywords)
         )

@@ -98,7 +98,6 @@ async def log_requests(request: Request, call_next):
         # Re-cache the body so the endpoint can read it again for HMAC verification.
         # Without this, `request.body()` in the endpoint returns empty bytes → HMAC mismatch → 403.
         request._body = body
-        print(f"[DEBUG MIDDLEWARE] {request.method} {request.url.path} Body: {body}")
     
     response = await call_next(request)
     return response
@@ -122,18 +121,19 @@ app.add_middleware(
 )
 
 # ======================================================
-# API ROUTERS (Minimal Ingestion Set)
+# API ROUTERS (Agent Ingestion & Telemetry Set Only)
 # ======================================================
-app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
-app.include_router(agents.router, prefix="/api/agents", tags=["Agents"])
 app.include_router(agents.agent_router, prefix="/api/agent", tags=["Agent Communication"])
-app.include_router(downloads.router, prefix="/api/downloads", tags=["Downloads"])
+app.include_router(agents.router, prefix="/api/agents", tags=["Agents"])
 app.include_router(events.router, prefix="/api/events", tags=["Events"])
-app.include_router(mail.router, prefix="/api/mail", tags=["Mail"])
+app.include_router(uploads.router, prefix="/api/uploads", tags=["Uploads"])
+app.include_router(speech.router, prefix="/api/speech", tags=["Speech"])
 app.include_router(screenshots.router, prefix="/api/screenshots", tags=["Screenshots"])
-app.include_router(remote.router, prefix="/api", tags=["Remote Control"])
-app.include_router(system.router, prefix="/api", tags=["System"])
+app.include_router(mail.router, prefix="/api/mail", tags=["Mail"])
+app.include_router(downloads.router, prefix="/api/downloads", tags=["Downloads"])
+app.include_router(vulnerabilities.router, prefix="/api/vulnerabilities", tags=["Vulnerabilities"])
 app.include_router(sandbox.router, prefix="/api/sandbox", tags=["Sandbox"])
+app.include_router(commands.router, prefix="/api/commands", tags=["Commands"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -144,8 +144,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    print(f"[DEBUG] Validation Error: {exc.errors()}")
-    print(f"[DEBUG] Body: {await request.body()}")
     return Response(content=str(exc.errors()), status_code=422)
 
 # ======================================================
@@ -171,6 +169,10 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "healthy"}
+
+@app.get("/api/system/health")
+async def system_health():
+    return {"status": "healthy", "service": "agent-gateway"}
 
 # ======================================================
 # MOUNT SOCKET.IO APP

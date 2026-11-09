@@ -118,4 +118,21 @@ class SoarEngine:
         await db.commit()
         return True, "Action approved and executed."
 
+    async def reject_action(self, db: AsyncSession, approval_id: int, admin_id: str, reason: str = "Rejected by administrator"):
+        approval = (await db.execute(select(SoarApprovalQueue).where(SoarApprovalQueue.Id == approval_id))).scalars().first()
+        if not approval or approval.Status != "Pending":
+            return False, "Invalid or already resolved approval."
+
+        approval.Status = "Denied"
+        approval.ApproverId = admin_id
+        approval.ResolvedAt = datetime.datetime.utcnow()
+
+        execution = (await db.execute(select(SoarActionExecution).where(SoarActionExecution.Id == approval.ExecutionId))).scalars().first()
+        if execution:
+            execution.Status = (f"Rejected: {reason}" if reason else "Rejected")[:50]
+            execution.ExecutedBy = (admin_id or "admin")[:100]
+
+        await db.commit()
+        return True, "Action rejected successfully."
+
 soar_engine = SoarEngine()

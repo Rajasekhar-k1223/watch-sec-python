@@ -134,11 +134,14 @@ async def upload_speech_log(
     except Exception as e:
         pass
 
+    from ..core.privacy import BackendPrivacyRedactor # type: ignore
+    sanitized_speech_text = BackendPrivacyRedactor.redact_text(transcribed_text)
+
     # 5. Save DB Record
     log = SpeechLog(
         AgentId=agent_id,
         AudioUrl=f"/api/speech/download/{save_filename}", # Fixed URL path
-        TranscribedText=transcribed_text,
+        TranscribedText=sanitized_speech_text,
         Confidence=0.92, 
         DurationSeconds=duration,
         FlaggedKeywordsJson=json.dumps(keywords_found),

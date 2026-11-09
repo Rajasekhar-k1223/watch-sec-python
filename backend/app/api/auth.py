@@ -423,3 +423,19 @@ async def register_tenant(
             "tenantId": new_user.TenantId
         }
     }
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Logs out active user session and immediately invalidates Redis authentication cache."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth_header.split(" ", 1)[1]
+    from .deps import get_current_user
+    current_user = await get_current_user(token=token, db=db)
+    from ..services.auth_cache import auth_cache
+    await auth_cache.invalidate_user(current_user.Username, tenant_id=current_user.TenantId)
+    return {"status": "success", "message": f"Successfully logged out and purged cache for {current_user.Username}"}

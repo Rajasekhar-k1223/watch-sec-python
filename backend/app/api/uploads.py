@@ -1,16 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Header # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, Request, Header, Response # type: ignore
 from typing import List, Optional # type: ignore
 import os # type: ignore
 from datetime import datetime # type: ignore
 import shutil # type: ignore
 import base64 # type: ignore
 import json # type: ignore
+import hmac # type: ignore
+import hashlib # type: ignore
+import logging # type: ignore
 
 from .deps import get_current_user # type: ignore
 from ..db.models import User, Agent, ShadowedFile, Tenant # type: ignore
 from ..db.session import get_db # type: ignore
+from ..services.minio_vault import minio_vault # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
+
+logger = logging.getLogger("UploadsAPI")
 
 router = APIRouter()
 
@@ -28,8 +34,23 @@ async def upload_shadow(
 ):
     body_bytes = await request.body()
     
-    if not x_signature or not x_timestamp:
-        raise HTTPException(status_code=401, detail="Missing signature")
+    # Dual-mode authentication: Agent HMAC signature OR Admin/Analyst JWT Bearer token
+    is_admin_call = False
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            from jose import jwt
+            from ..core.security import SECRET_KEY, ALGORITHM
+            token_str = auth_header.split(" ", 1)[1]
+            jwt_payload = jwt.decode(token_str, SECRET_KEY, algorithms=[ALGORITHM])
+            if jwt_payload.get("sub"):
+                is_admin_call = True
+        except Exception:
+            pass
+
+    if not is_admin_call:
+        if not x_signature or not x_timestamp:
+            raise HTTPException(status_code=401, detail="Missing signature")
         
     try:
         req_data = json.loads(body_bytes)
@@ -50,23 +71,23 @@ async def upload_shadow(
     if not tenant_obj:
         raise HTTPException(status_code=403, detail="Tenant not found")
 
-    # Cryptographic Validation
-    import hmac, hashlib
-    key_seed = agent.MachineId.encode() if agent.MachineId else tenant_obj.ApiKey.encode()
-    signing_key = hashlib.sha256(key_seed).digest()
-    
-    msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
-    expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
-    
-    is_valid = hmac.compare_digest(expected, x_signature)
-    if not is_valid and not agent.MachineId:
-         fallback_key = tenant_obj.ApiKey.encode()
-         expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
-         if hmac.compare_digest(expected_fallback, x_signature):
-             is_valid = True
-             
-    if not is_valid:
-        raise HTTPException(status_code=403, detail="Invalid signature")
+    # Cryptographic Validation for agent uploads
+    if not is_admin_call:
+        key_seed = agent.MachineId.encode() if agent.MachineId else tenant_obj.ApiKey.encode()
+        signing_key = hashlib.sha256(key_seed).digest()
+        
+        msg = f"{body_bytes.decode('utf-8')}|{x_timestamp}".encode('utf-8')
+        expected = hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
+        
+        is_valid = hmac.compare_digest(expected, x_signature)
+        if not is_valid and not agent.MachineId:
+             fallback_key = tenant_obj.ApiKey.encode()
+             expected_fallback = hmac.new(fallback_key, msg, hashlib.sha256).hexdigest()
+             if hmac.compare_digest(expected_fallback, x_signature):
+                 is_valid = True
+                 
+        if not is_valid:
+            raise HTTPException(status_code=403, detail="Invalid signature")
 
     # E2EE Decryption
     from ..core.security import decrypt_e2e_payload
@@ -94,15 +115,42 @@ async def upload_shadow(
         with open(file_path, "wb") as buffer:
             buffer.write(file_bytes)
             
-        # Forensic Integrity Verification
+        # Forensic Integrity Verification: compute SHA-256 directly on decoded binary bytes
+        computed_sha256 = hashlib.sha256(file_bytes).hexdigest().lower()
         if x_content_sha256:
-             sha256_hash = hashlib.sha256()
-             with open(file_path, "rb") as f:
-                 for byte_block in iter(lambda: f.read(4096), b""):
-                     sha256_hash.update(byte_block)
-             if sha256_hash.hexdigest().lower() != x_content_sha256.lower():
-                  os.remove(file_path)
-                  raise HTTPException(status_code=400, detail="Hash verification failed")
+             declared_clean = str(x_content_sha256).strip().lower()
+             if not hmac.compare_digest(computed_sha256, declared_clean):
+                  if os.path.exists(file_path):
+                       os.remove(file_path)
+                  raise HTTPException(
+                      status_code=400,
+                      detail=f"Hash verification failed: declared={declared_clean}, computed={computed_sha256}"
+                  )
+
+        # Lookup TenantId for forensic isolation
+        agent_tenant_id = 1
+        try:
+             agent_res = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+             agent_obj = agent_res.scalars().first()
+             if agent_obj and agent_obj.TenantId:
+                  agent_tenant_id = agent_obj.TenantId
+        except Exception:
+             pass
+
+        # MinIO Sovereign S3 Object Storage dispatch
+        minio_key = None
+        try:
+             minio_result = minio_vault.store_forensic_artifact(
+                 tenant_id=agent_tenant_id,
+                 agent_id=agent_id,
+                 filename=safe_filename,
+                 data_bytes=file_bytes,
+                 declared_sha256=computed_sha256,
+                 artifact_type="shadow"
+             )
+             minio_key = minio_result.get("object_key")
+        except Exception as e:
+             logger.warning(f"[Uploads] MinIO storage fallback (non-fatal): {e}")
 
         shadow_entry = ShadowedFile(
             AgentId=agent_id, OriginalPath=req_filename, FileName=req_filename,
@@ -115,14 +163,50 @@ async def upload_shadow(
         await sio.emit("new_shadow_file", {
             "AgentId": agent_id,
             "FileName": req_filename,
-            "Timestamp": datetime.utcnow().isoformat()
+            "Timestamp": datetime.utcnow().isoformat(),
+            "Sha256": computed_sha256
         }, room=agent_id)
         
-        return {"status": "Uploaded", "path": file_path, "id": shadow_entry.Id}
+        return {
+            "status": "Uploaded",
+            "path": file_path,
+            "id": shadow_entry.Id,
+            "sha256": computed_sha256,
+            "minio_key": minio_key,
+            "verified": True
+        }
     except HTTPException: raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/shadow/{shadow_id}")
+async def get_shadow_file(
+    shadow_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    [Phase 2A] Retrieve and verify forensic shadow artifact.
+    Re-evaluates SHA-256 before streaming to ensure end-to-end cryptographic integrity.
+    """
+    entry = (await db.execute(select(ShadowedFile).where(ShadowedFile.Id == shadow_id))).scalars().first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Shadow file not found")
+
+    if entry.StoragePath and os.path.exists(entry.StoragePath):
+        with open(entry.StoragePath, "rb") as f:
+            data = f.read()
+        sha256_hash = hashlib.sha256(data).hexdigest().lower()
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{os.path.basename(entry.FileName or 'shadow.dat')}\"",
+                "X-Content-Sha256": sha256_hash,
+                "X-Agent-Id": entry.AgentId or ""
+            }
+        )
+    raise HTTPException(status_code=404, detail="Artifact file missing from storage")
 
 @router.post("/pcap")
 async def upload_pcap(

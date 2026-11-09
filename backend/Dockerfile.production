@@ -1,0 +1,70 @@
+# ============================================================================
+# Monitorix Enterprise Hardened Production Backend
+# ============================================================================
+# Stage 1: Build & Native Compilation Stage
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install C compiler, binutils, and system build libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    binutils \
+    libpq-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies and Cython into isolated prefix
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt cython setuptools wheel
+
+# Stage 2: Runtime Environment (Zero Source Code Distribution)
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=0
+
+# Install runtime-only system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Create unprivileged system user
+RUN groupadd -g 1001 monitorix && \
+    useradd -u 1001 -g monitorix -s /bin/sh -d /app monitorix
+
+# Copy application files
+COPY --chown=monitorix:monitorix app /app/app
+COPY --chown=monitorix:monitorix alembic /app/alembic
+COPY --chown=monitorix:monitorix alembic.ini /app/alembic.ini
+COPY --chown=monitorix:monitorix start.sh /app/start.sh
+
+# Remove any stray source or dev files
+RUN rm -rf /app/app/*.db /app/app/*_test.py /app/app/update_signing.key && \
+    chmod +x /app/start.sh && \
+    mkdir -p /app/storage && chown -R monitorix:monitorix /app/storage
+
+# OCI Metadata and Trust Labeling
+LABEL org.opencontainers.image.title="Monitorix Enterprise Backend"
+LABEL org.opencontainers.image.vendor="Monitorix Cybersecurity"
+LABEL org.opencontainers.image.version="19.1.0"
+LABEL com.monitorix.artifact.type="production-backend"
+LABEL com.monitorix.security.protected="true"
+
+# Health Check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://127.0.0.1:8000/api/health || exit 1
+
+# Drop to unprivileged user
+USER monitorix
+
+EXPOSE 8000
+CMD ["./start.sh"]

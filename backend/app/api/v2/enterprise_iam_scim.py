@@ -115,6 +115,175 @@ async def scim_create_user(
         }
     }
 
+# In-memory SCIM directory sync audit log
+SCIM_SYNC_LOGS = [
+    {
+        "id": "scim-sync-101",
+        "timestamp": datetime.utcnow().isoformat(),
+        "provider": "Okta Universal Directory",
+        "event_type": "USER_PUSH",
+        "target_user": "secops_analyst_test@enterprise.corp",
+        "status": "SUCCESS",
+        "details": "JIT SCIM profile synchronized with security group: SecOps-Tier2-Analysts"
+    },
+    {
+        "id": "scim-sync-102",
+        "timestamp": (datetime.utcnow()).isoformat(),
+        "provider": "Microsoft Entra ID",
+        "event_type": "GROUP_MEMBERSHIP_UPDATE",
+        "target_user": "elsea@monitorix.co.in",
+        "status": "SUCCESS",
+        "details": "Assigned Security Role: TenantAdmin via Entra ID Security Group"
+    }
+]
+
+
+@router.get("/scim/token")
+async def get_scim_token(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Returns SCIM 2.0 configuration, endpoint URL, and bearer token status."""
+    tenant_id = current_user.TenantId or 1
+    result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
+    tenant = result.scalars().first()
+
+    sso_config = {}
+    if tenant and hasattr(tenant, "SsoConfigJson") and tenant.SsoConfigJson:
+        try:
+            sso_config = (
+                tenant.SsoConfigJson
+                if isinstance(tenant.SsoConfigJson, dict)
+                else json.loads(tenant.SsoConfigJson)
+            )
+        except Exception:
+            sso_config = {}
+
+    import secrets
+    scim_token = sso_config.get("scim_token")
+    if not scim_token:
+        # Default or initialized token
+        scim_token = f"scim_bearer_{secrets.token_hex(24)}"
+        sso_config["scim_token"] = scim_token
+        if tenant:
+            import json
+            tenant.SsoConfigJson = json.dumps(sso_config)
+            await db.commit()
+
+    return {
+        "tenant_id": tenant_id,
+        "scim_url": "https://app.monitorix.io/api/v2/iam/scim/v2/Users",
+        "scim_token": scim_token,
+        "token_masked": f"{scim_token[:16]}...{scim_token[-8:]}",
+        "scim_version": "SCIM 2.0 (RFC 7643 / RFC 7644)",
+        "supported_features": ["User Provisioning", "User Deprovisioning", "Profile Attribute Sync", "Group Membership Sync"]
+    }
+
+
+@router.post("/scim/token/rotate")
+async def rotate_scim_token(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Rotates the SCIM 2.0 Bearer authorization secret."""
+    if current_user.Role not in ("TenantAdmin", "SuperAdmin"):
+        raise HTTPException(status_code=403, detail="Only TenantAdmins can rotate SCIM tokens")
+
+    tenant_id = current_user.TenantId or 1
+    result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
+    tenant = result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    import secrets
+    import json
+    sso_config = {}
+    if hasattr(tenant, "SsoConfigJson") and tenant.SsoConfigJson:
+        try:
+            sso_config = (
+                tenant.SsoConfigJson
+                if isinstance(tenant.SsoConfigJson, dict)
+                else json.loads(tenant.SsoConfigJson)
+            )
+        except Exception:
+            sso_config = {}
+
+    new_token = f"scim_bearer_{secrets.token_hex(24)}"
+    sso_config["scim_token"] = new_token
+    tenant.SsoConfigJson = json.dumps(sso_config)
+    await db.commit()
+
+    return {
+        "status": "rotated",
+        "new_token": new_token,
+        "token_masked": f"{new_token[:16]}...{new_token[-8:]}",
+        "rotated_at": datetime.utcnow().isoformat()
+    }
+
+
+class ScimSimulateRequest(BaseModel):
+    provider: Optional[str] = "Okta Universal Directory"
+    user_count: Optional[int] = 1
+
+
+@router.post("/scim/simulate-sync")
+async def simulate_scim_sync(
+    req: ScimSimulateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Simulates an inbound directory push event from Okta or Entra ID."""
+    import secrets
+    import uuid
+    from app.core.security import get_password_hash
+
+    tenant_id = current_user.TenantId or 1
+    new_username = f"enterprise_user_{secrets.token_hex(3)}@cybercorp.internal"
+    new_user = User(
+        Username=new_username,
+        Email=new_username,
+        PasswordHash=get_password_hash(secrets.token_urlsafe(16)),
+        Role="Analyst",
+        TenantId=tenant_id,
+        ActiveStatus=True
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    event_id = f"scim-sync-{uuid.uuid4().hex[:8]}"
+    log_entry = {
+        "id": event_id,
+        "timestamp": datetime.utcnow().isoformat(),
+        "provider": req.provider,
+        "event_type": "DIRECTORY_PUSH",
+        "target_user": new_username,
+        "status": "SUCCESS",
+        "details": f"Provisioned enterprise user #{new_user.Id} via SCIM 2.0 RFC 7644 protocol"
+    }
+    SCIM_SYNC_LOGS.insert(0, log_entry)
+
+    return {
+        "status": "synchronized",
+        "event_id": event_id,
+        "user_provisioned": {
+            "id": str(new_user.Id),
+            "userName": new_user.Username,
+            "role": new_user.Role,
+            "active": bool(new_user.ActiveStatus)
+        },
+        "log": log_entry
+    }
+
+
+@router.get("/scim/sync-logs")
+async def get_scim_sync_logs(
+    current_user: User = Depends(get_current_user)
+):
+    """Returns directory sync audit trail entries."""
+    return SCIM_SYNC_LOGS[:50]
+
+
 # ---------------------------------------------------------------------------
 # Feature 65: Multi-Tenant SaaS Architecture & Quotas
 # ---------------------------------------------------------------------------

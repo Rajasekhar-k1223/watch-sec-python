@@ -16,12 +16,12 @@ from .api import ( # type: ignore
     ocr, thesaurus, speech, hashbank, fingerprints, # type: ignore
     searches, remote, vulnerabilities, trials, agents, bandwidth, # type: ignore
     notifications, report_downloads, incidents, network, apikeys, # type: ignore
-    yara, software_requests, remediation, sso, support, clusters # type: ignore
+    yara, software_requests, remediation, sso, support, clusters, mobile, sandbox # type: ignore
 ) # type: ignore
 from .api.v2 import ( # type: ignore
     agentless, agentless_receiver, cloud_visibility, compliance, threat_intel, # type: ignore
     hunting, ransomware, risk, lineage, copilot, detection, dlp, # type: ignore
-    ueba, deception, vault, soar, pki, federation, remote as remote_v2, xdr, correlation, cyber_range, performance_scale, agent_reliability, ha_cluster, security_validation, ai_soc, analyst_console, enterprise_iam_scim, marketplace # type: ignore
+    ueba, deception, vault, soar, pki, federation, remote as remote_v2, xdr, correlation, cyber_range, performance_scale, agent_reliability, ha_cluster, security_validation, ai_soc, analyst_console, enterprise_iam_scim, marketplace, soc_ops, saas_global, commercial, commercial_lifecycle, global_platform, autonomous_security, security_intelligence, security_research, global_mdr_mssp, continuous_evolution, itdr, cnapp, easm, waap, dspm, secrets_security, database_security, k8s_security, supply_chain, ndr, platform_protection, malware_analysis, attack_validation # type: ignore
 ) # type: ignore
 import asyncio # type: ignore
 
@@ -276,9 +276,13 @@ app.include_router(sso.router, prefix="/api/sso", tags=["SSO"])
 app.include_router(support.router, prefix="/api/support", tags=["Support"])
 app.include_router(clusters.router, prefix="/api/clusters", tags=["Clusters"])
 app.include_router(audit_export.router, prefix="/api/audit", tags=["Audit Export"])
+app.include_router(mobile.router, prefix="/api/mobile", tags=["Mobile Security"])
+app.include_router(sandbox.router, prefix="/api/sandbox", tags=["Sandbox"])
+app.include_router(sandbox.router, prefix="/api/v2/sandbox", tags=["Sandbox V2"])
 app.include_router(agentless_receiver.router, prefix="/api/v2/agentless", tags=["Agentless Receiver"])
 app.include_router(cloud_visibility.router, prefix="/api/v2/cloud", tags=["Cloud Visibility"])
 app.include_router(compliance.router, prefix="/api/v2/compliance", tags=["Compliance"])
+app.include_router(compliance.router, prefix="/api/compliance", tags=["Compliance Legacy"])
 app.include_router(threat_intel.router, prefix="/api/v2/threat-intel", tags=["Threat Intel"])
 app.include_router(hunting.router, prefix="/api/v2/hunting", tags=["Hunting"])
 app.include_router(ransomware.router, prefix="/api/v2/ransomware", tags=["Ransomware"])
@@ -305,18 +309,47 @@ app.include_router(ai_soc.router, prefix="/api/v2/ai-soc", tags=["AI SOC Evaluat
 app.include_router(analyst_console.router, prefix="/api/v2/analyst", tags=["Advanced SOC Analyst Console & MDR"])
 app.include_router(enterprise_iam_scim.router, prefix="/api/v2/iam", tags=["Enterprise IAM & SCIM 2.0"])
 app.include_router(marketplace.router, prefix="/api/v2/marketplace", tags=["Security Connector Marketplace"])
+app.include_router(soc_ops.router, prefix="/api/v2/soc", tags=["Enterprise SOC & MDR Operations"])
+app.include_router(saas_global.router, prefix="/api/v2/saas", tags=["SaaS & Global Enterprise"])
+app.include_router(saas_global.billing_router, prefix="/api/v2/billing", tags=["Billing & Usage Metering"])
+app.include_router(commercial.router, prefix="/api/v2/commercial", tags=["Commercialization & Managed Security"])
+app.include_router(commercial_lifecycle.router)
+app.include_router(global_platform.router, prefix="/api/v2/global-platform", tags=["Global Security Platform"])
+app.include_router(autonomous_security.router, prefix="/api/v2/autonomous", tags=["Autonomous Security & Defense"])
+app.include_router(security_intelligence.router, prefix="/api/v2/intelligence", tags=["Security Intelligence Network"])
+app.include_router(security_research.router, prefix="/api/v2/research", tags=["Security Research & Innovation Lab"])
+app.include_router(global_mdr_mssp.router, prefix="/api/v2/mssp", tags=["Global MDR & MSSP"])
+app.include_router(continuous_evolution.router, prefix="/api/v2/evolution", tags=["Continuous Evolution & Release Governance"])
+app.include_router(itdr.router, prefix="/api/v2/itdr", tags=["Identity Threat Detection & Response"])
+app.include_router(cnapp.router, prefix="/api/v2/cnapp", tags=["Cloud Security, CNAPP & CSPM"])
+app.include_router(easm.router, prefix="/api/v2/easm", tags=["External Attack Surface Management"])
+app.include_router(waap.router, prefix="/api/v2/waap", tags=["Web Application & API Security (WAAP / WAF)"])
+app.include_router(dspm.router, prefix="/api/v2/dspm", tags=["Data Security Posture Management (DSPM)"])
+app.include_router(secrets_security.router, prefix="/api/v2/secrets", tags=["Secrets Security & Vault Governance"])
+app.include_router(database_security.router, prefix="/api/v2/database-security", tags=["Database Security & Activity Monitoring (DAM)"])
+app.include_router(k8s_security.router, prefix="/api/v2/k8s-security", tags=["Kubernetes & Container Workload Security (KSPM / CWPP)"])
+app.include_router(supply_chain.router, prefix="/api/v2/supply-chain", tags=["Software Supply-Chain Security & SBOM Governance"])
+app.include_router(ndr.router, prefix="/api/v2/ndr", tags=["Advanced Network Detection & Response (NDR)"])
+app.include_router(platform_protection.router, prefix="/api/v2/platform-protection", tags=["Platform Self-Protection & Tamper Defense"])
+app.include_router(malware_analysis.router, prefix="/api/v2/malware-analysis", tags=["Advanced Malware Analysis & Detonation Sandbox"])
+app.include_router(attack_validation.router, prefix="/api/v2/attack-validation", tags=["Attack-Path Validation & Automated Breach Emulation"])
+
+
+from .core.sanitizer import sanitize_raw_body # type: ignore
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     import traceback # type: ignore
-    print(f"[ERROR] Global Exception Handler caught: {exc}")
-    traceback.print_exc()
+    print(f"[ERROR] Global Exception Handler caught: {type(exc).__name__}: {str(exc)}")
+    traceback.print_exc(limit=5)
     return Response(content="Internal Server Error", status_code=500)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    raw_body = await request.body()
+    sanitized_body = sanitize_raw_body(raw_body)
     print(f"[DEBUG] Validation Error: {exc.errors()}")
-    print(f"[DEBUG] Body: {await request.body()}")
+    print(f"[DEBUG] Sanitized Body: {sanitized_body}")
     return Response(content=str(exc.errors()), status_code=422)
 
 # ======================================================

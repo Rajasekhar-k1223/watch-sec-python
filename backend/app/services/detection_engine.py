@@ -7,12 +7,14 @@ from sqlalchemy.future import select
 from app.db.models import DetectionRule, DetectionAlert
 
 async def forward_to_siem(alert_data: dict):
-    siem_url = os.getenv("SIEM_WEBHOOK_URL", "https://siem.internal.corp/hooks/monitorix")
+    siem_url = os.getenv("SIEM_WEBHOOK_URL")
+    if not siem_url or siem_url.strip() == "" or "siem.internal.corp" in siem_url:
+        return
     try:
         async with aiohttp.ClientSession() as session:
             await session.post(siem_url, json=alert_data, timeout=5)
     except Exception as e:
-        print(f"[SIEM Forwarder] Failed to forward alert: {e}")
+        print(f"[SIEM Forwarder] Warning: Failed to forward alert to {siem_url}: {e}")
 
 class SigmaEvaluator:
     def __init__(self):
@@ -24,16 +26,40 @@ class SigmaEvaluator:
 
         for rule in active_rules:
             try:
-                if "selection:" in rule.RuleContent:
-                    pattern = r"(?i)powershell.*-enc"
-                    self.rules_cache.append({
-                        "id": rule.Id,
-                        "pattern": re.compile(pattern),
-                        "tactic": rule.MitreTactic,
-                        "technique": rule.MitreTechnique
-                    })
-            except Exception:
-                pass
+                name_l = rule.Name.lower()
+                content = rule.RuleContent or ""
+                
+                # Rule-specific intelligent pattern compilation
+                if "lsass" in name_l:
+                    pat = r"(?i)(lsass(\.exe)?|procdump|mimikatz|sekurlsa|0x1010)"
+                elif "powershell" in name_l:
+                    pat = r"(?i)(powershell(\.exe)?.*(-enc|-encodedcommand|frombase64string|bypass))"
+                elif "firewall" in name_l:
+                    pat = r"(?i)(netsh(\.exe)?.*(advfirewall|firewall add|state off|mode=disable))"
+                elif "pass-the-hash" in name_l or "winrm" in name_l:
+                    pat = r"(?i)(wmic(\.exe)?.*process call|winrm|pass-the-hash|5985|5986)"
+                elif "canary" in name_l or "ransomware" in name_l:
+                    pat = r"(?i)(vssadmin(\.exe)?.*delete shadows|canary.*alphv|\.locked|ransomware)"
+                elif "perimeter" in name_l or "ingress" in name_l:
+                    pat = r"(?i)(global-protect|globalprotect|fortigate|vpn\.corp|cve-2024-3400)"
+                elif "dlp" in name_l or "egress" in name_l:
+                    pat = r"(?i)(rclone(\.exe)?.*copy|mega\.nz|exfil|outbound.*100m)"
+                elif "threat intelligence" in name_l or "beacon" in name_l:
+                    pat = r"(?i)(185\.220\.101\.42|cobalt strike|beaconing)"
+                else:
+                    keywords = [re.escape(w) for w in rule.Name.split() if len(w) > 4]
+                    pat = r"(?i)(" + "|".join(keywords) + r")" if keywords else r"(?i)malicious_unmatched"
+
+                self.rules_cache.append({
+                    "id": rule.Id,
+                    "pattern": re.compile(pat),
+                    "tactic": rule.MitreTactic,
+                    "technique": rule.MitreTechnique,
+                    "name": rule.Name,
+                    "severity": rule.Severity
+                })
+            except Exception as e:
+                print(f"[SigmaEvaluator] Pattern compilation error for rule {rule.Id}: {e}")
 
     async def evaluate_telemetry(self, db: AsyncSession, telemetry_payload: dict, agent_id: str):
         if not self.rules_cache:
@@ -254,7 +280,7 @@ class SigmaEvaluator:
                 AgentId=agent_id,
                 RuleId=9008,
                 TelemetryId=0,
-                MatchedContent=f"RedRainbow Sandbox prevented execution of {filename}. Reason: {reason}"
+                MatchedContent=f"Monitorix Native Detonation Sandbox prevented execution of {filename}. Reason: {reason}"
             )
 
         elif event_type == "WebmailActivity":

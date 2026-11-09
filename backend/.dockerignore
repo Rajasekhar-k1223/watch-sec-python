@@ -17,4 +17,13 @@ build/
 *.log
 *.sqlite
 *.db
+*.key
+*.pem
+scratch*
+test*
+.env*
+check_*
+fix_*
+query_*
+
 

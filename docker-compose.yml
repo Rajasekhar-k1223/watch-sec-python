@@ -60,30 +60,65 @@ services:
       - watch-sec-network
       - shared-db-net
 
-  grpc-gateway:
+  grpc-gateway-1:
     build: ./backend
-    container_name: watch-sec-grpc-gateway
+    container_name: watch-sec-grpc-gateway-1
     restart: unless-stopped
     command: python -m app.grpc_gateway
-    ports:
-      - "50051:50051"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://sentinel_user:rVcDsUVYia5tsHefxFKTbPOl@sentinel_postgres:5432/monitorix
-      - MONGO_URL=mongodb://root:LGfhcnMyhnUwA9owN5FnWdkV@sentinel_mongodb:27017/monitorix?authSource=admin
-      - REDIS_URL=redis://sentinel_redis:6379/0
-      - CELERY_BROKER_URL=redis://sentinel_redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://sentinel_redis:6379/0
-      - CLICKHOUSE_URL=clickhouse://sentinel_user:sentinel_password@sentinel_clickhouse:9000/monitorix
-      - KAFKA_BROKER_URL=kafka:29092
       - PYTHONUNBUFFERED=1
       - MONITORIX_BASE_URL=https://monitorix.co.in
       - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+      - GATEWAY_INSTANCE_ID=grpc-gateway-1
     volumes:
       - ./backend:/app
+      - ./backend/storage:/app/storage
+    networks:
+      - watch-sec-network
+      - shared-db-net
+
+  grpc-gateway-2:
+    build: ./backend
+    container_name: watch-sec-grpc-gateway-2
+    restart: unless-stopped
+    command: python -m app.grpc_gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+      - GATEWAY_INSTANCE_ID=grpc-gateway-2
+    volumes:
+      - ./backend:/app
+      - ./backend/storage:/app/storage
+    networks:
+      - watch-sec-network
+      - shared-db-net
+
+  grpc-gateway-3:
+    build: ./backend
+    container_name: watch-sec-grpc-gateway-3
+    restart: unless-stopped
+    command: python -m app.grpc_gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONITORIX_BASE_URL=https://monitorix.co.in
+      - VAULT_MASTER_KEY=${VAULT_MASTER_KEY}
+      - GATEWAY_INSTANCE_ID=grpc-gateway-3
+    volumes:
+      - ./backend:/app
+      - ./backend/storage:/app/storage
     networks:
       - watch-sec-network
       - shared-db-net
@@ -94,13 +129,20 @@ services:
     restart: unless-stopped
     ports:
       - "8005:80"
+      - "50051:50051"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - agent-gateway
+      - grpc-gateway-1
+      - grpc-gateway-2
+      - grpc-gateway-3
     networks:
-      - watch-sec-network
-      - shared-db-net
+      watch-sec-network:
+        aliases:
+          - watch-sec-grpc-gateway
+          - grpc-gateway
+      shared-db-net:
 
   frontend:
     build:

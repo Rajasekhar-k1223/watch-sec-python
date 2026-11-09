@@ -11,7 +11,7 @@ from sqlalchemy import desc
 from app.db.session import get_db
 from app.db.models import DetectionAlert, DetectionRule, Agent, EventLog, User
 from app.api.deps import get_current_user
-from app.services.correlation_service import correlation_engine
+from app.services.correlation_service import correlation_engine, streaming_correlation_engine
 
 router = APIRouter()
 logger = logging.getLogger("CorrelationAPI")
@@ -105,6 +105,22 @@ async def get_fleet_threat_correlations(
             }
         ]
 
+    # Prepend real-time in-flight streaming correlations if active
+    recent_stream = list(streaming_correlation_engine.recent_correlations)
+    if recent_stream:
+        stream_threats = []
+        for rc in reversed(recent_stream[-10:]):
+            stream_threats.append({
+                "type": rc.get("type", "Streaming Threat Correlation"),
+                "severity": rc.get("severity", "High"),
+                "nodes": [rc.get("agent_id", "Unknown")],
+                "description": rc.get("description", ""),
+                "mitre_tactic": f"{rc.get('mitre_tactic', '')} ({rc.get('mitre_technique', '')})",
+                "status": "Active Streaming In-Flight",
+                "detected_at": rc.get("detected_at", datetime.utcnow().isoformat())
+            })
+        threats = stream_threats + threats
+
     return {
         "status": "success",
         "total_active_threats": len(threats),
@@ -157,7 +173,7 @@ async def get_attack_chains(
                     "stage_num": 1,
                     "tactic": "Initial Access",
                     "technique": "T1133 - External Remote Services",
-                    "source": "RedRainbow Recon",
+                    "source": "Monitorix Perimeter Recon",
                     "title": "Perimeter Ingress via VPN CVE-2024-3400",
                     "timestamp": (datetime.utcnow() - timedelta(hours=2, minutes=15)).isoformat(),
                     "details": "Authenticated ingress session originated from external IP 203.0.113.45 targeting GlobalProtect gateway.",
@@ -262,6 +278,13 @@ async def get_attack_chains(
         }
     ]
 
+    # Prepend real-time in-flight attack chains synthesized from streaming telemetry
+    dynamic_chains = streaming_correlation_engine.get_active_chains(agent_id=agent_id)
+    if dynamic_chains:
+        seen_agents = set(c["agent_id"] for c in dynamic_chains)
+        filtered_static = [c for c in chains if c["agent_id"] not in seen_agents]
+        chains = list(dynamic_chains) + filtered_static
+
     return {
         "status": "success",
         "total_chains": len(chains),
@@ -299,3 +322,198 @@ async def trigger_correlation_run(
         "timestamp": datetime.utcnow().isoformat(),
         "findings": result
     }
+
+
+@router.get("/streaming-engine/status")
+async def get_streaming_engine_status(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [v18.2.0 In-Flight Streaming Threat Correlation Engine Status]
+    Returns streaming correlation engine health, sliding temporal windows,
+    processed events count, detected threats, and microsecond evaluation latency.
+    """
+    return {
+        "status": "success",
+        "data": streaming_correlation_engine.get_metrics(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/streaming-engine/evaluate")
+async def evaluate_streaming_events(
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [In-Flight Streaming Telemetry Evaluator]
+    Simulates or pushes live telemetry events directly through the streaming correlation engine.
+    """
+    events = payload.get("events")
+    if not events and "event" in payload:
+        events = [payload["event"]]
+    elif not events and isinstance(payload, dict) and ("EventType" in payload or "event_type" in payload or "AgentId" in payload):
+        events = [payload]
+
+    if not events:
+        raise HTTPException(status_code=400, detail="Missing events array or event object in request payload")
+
+    detected_correlations = []
+    worker_id = payload.get("worker_id")
+    partition = payload.get("partition")
+    for ev in events:
+        w_id = ev.get("worker_id") or worker_id
+        part = ev.get("partition") if ev.get("partition") is not None else partition
+        corr_list = streaming_correlation_engine.evaluate_event(ev, worker_id=w_id, partition=part)
+        detected_correlations.extend(corr_list)
+
+    return {
+        "status": "success",
+        "evaluated_count": len(events),
+        "total_correlations_detected": len(detected_correlations),
+        "correlations": detected_correlations,
+        "active_chains": streaming_correlation_engine.get_active_chains(),
+        "engine_metrics": streaming_correlation_engine.get_metrics(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/streaming-engine/chains")
+async def get_streaming_attack_chains(
+    tenant_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns real-time attack chains dynamically synthesized by the in-flight streaming engine.
+    """
+    chains = streaming_correlation_engine.get_active_chains(tenant_id=tenant_id, agent_id=agent_id)
+    return {
+        "status": "success",
+        "total_chains": len(chains),
+        "chains": chains,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/streaming-engine/reset")
+async def reset_streaming_engine(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Resets the in-flight streaming correlation engine memory, sliding windows, and active chains.
+    """
+    streaming_correlation_engine.reset()
+    return {
+        "status": "success",
+        "message": "In-flight streaming correlation engine state and sliding windows reset",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+# -----------------------------------------------------------------------------
+# Track 5: High-Availability Multi-Worker Scale & Distributed Partition Assignment
+# -----------------------------------------------------------------------------
+
+@router.get("/cluster-status")
+async def get_correlation_cluster_status(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [v18.5.0 High-Availability Multi-Worker Cluster Status]
+    Returns cluster health, active workers, partition assignments, balance score,
+    and Redis L2 sliding-window synchronization metrics.
+    """
+    status_data = streaming_correlation_engine.get_cluster_status()
+    return {
+        "status": "success",
+        "data": status_data,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/cluster/worker-heartbeat")
+async def register_cluster_worker_heartbeat(
+    payload: Dict[str, Any],
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Registers or updates worker node heartbeat and assigned Kafka partitions in the cluster registry.
+    """
+    worker_id = payload.get("worker_id")
+    if not worker_id:
+        raise HTTPException(status_code=400, detail="Missing worker_id in heartbeat payload")
+
+    partitions = payload.get("partitions", [0])
+    hostname = payload.get("hostname", "node-01")
+    worker_status = payload.get("status", "ACTIVE")
+    processed_count = payload.get("processed_count", 0)
+
+    heartbeat_record = streaming_correlation_engine.register_worker_heartbeat(
+        worker_id=worker_id,
+        partitions=partitions,
+        hostname=hostname,
+        status=worker_status,
+        processed_count=processed_count
+    )
+
+    return {
+        "status": "success",
+        "message": f"Worker {worker_id} heartbeat registered successfully",
+        "data": heartbeat_record,
+        "cluster_status": streaming_correlation_engine.get_cluster_status(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/simulate-cross-worker-attack")
+async def simulate_cross_worker_attack_drill(
+    payload: Dict[str, Any] = {},
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [Cross-Worker Distributed Attack Drill]
+    Simulates advanced attacks distributed across separate workers and Kafka partitions,
+    validating that Redis L2 distributed sliding windows synthesize unified attack chains.
+    """
+    attack_type = payload.get("attack_type", "coordinated_kerberoast_dcsync")
+    tenant_id = str(payload.get("tenant_id", "1"))
+
+    drill_result = streaming_correlation_engine.simulate_cross_worker_attack(
+        attack_type=attack_type,
+        tenant_id=tenant_id
+    )
+
+    return {
+        "status": "success",
+        "message": f"Cross-worker drill for '{attack_type}' completed successfully",
+        "data": drill_result,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@router.post("/cluster/failover-drill")
+async def simulate_worker_failover_drill(
+    payload: Dict[str, Any] = {},
+    current_user: User = Depends(get_current_user)
+):
+    """
+    [Worker Failover & Zero-Data-Loss Drill]
+    Simulates a worker crash, reassigns its partitions to a standby worker, and verifies
+    100% preservation of sliding windows and active attack chains in Redis.
+    """
+    dead_worker_id = payload.get("dead_worker_id", "worker-02")
+    standby_worker_id = payload.get("standby_worker_id", "worker-01")
+
+    failover_report = streaming_correlation_engine.simulate_worker_failover(
+        dead_worker_id=dead_worker_id,
+        standby_worker_id=standby_worker_id
+    )
+
+    return {
+        "status": "success",
+        "message": f"Worker failover drill ({dead_worker_id} -> {standby_worker_id}) completed",
+        "data": failover_report,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+

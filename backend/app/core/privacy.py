@@ -1,7 +1,7 @@
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy import delete # type: ignore
-from ..db.models import AgentReport, EventLog, ActivityLog, OCRLog
+from ..db.models import AgentReportEntity as AgentReport, EventLog, ActivityLog, OCRLog
 from typing import Dict, Any
 
 logger = logging.getLogger("PrivacyCore")
@@ -51,8 +51,25 @@ class PrivacyManager:
 # Global singleton
 privacy_manager = PrivacyManager()
 
+import re
+
 class BackendPrivacyRedactor:
-    @staticmethod
-    def redact_text(text: str) -> str:
-        # Dummy implementation that could be expanded
-        return text
+    CREDIT_CARD_REGEX = re.compile(r'\b(?:\d{4}[ -]?){3}\d{4}\b')
+    SSN_REGEX = re.compile(r'\b\d{3}-\d{2}-\d{4}\b')
+    BEARER_TOKEN_REGEX = re.compile(r'\b(?:ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]+\b|mk_[a-f0-9]{32}\b)', re.IGNORECASE)
+    PASSWORD_FIELD_REGEX = re.compile(r'((?:password|secret|passphrase|token)\s*[:=]\s*)[^\s,;]+', re.IGNORECASE)
+
+    @classmethod
+    def redact_text(cls, text: str) -> str:
+        """
+        Server-side real-time DLP redaction:
+        Masks credit card numbers, SSNs, bearer tokens, API keys, and inline passwords.
+        """
+        if not text:
+            return ""
+        
+        redacted = cls.CREDIT_CARD_REGEX.sub("••••-••••-••••-••••", text)
+        redacted = cls.SSN_REGEX.sub("•••-••-••••", redacted)
+        redacted = cls.BEARER_TOKEN_REGEX.sub("[TOKEN_REDACTED]", redacted)
+        redacted = cls.PASSWORD_FIELD_REGEX.sub(r'\1[REDACTED]', redacted)
+        return redacted

@@ -176,4 +176,7 @@ async def change_password(
     
     await db.commit()
     
+    from ..services.auth_cache import auth_cache
+    await auth_cache.invalidate_user(user.Username, tenant_id=user.TenantId)
+
     return {"message": "Password updated successfully."}

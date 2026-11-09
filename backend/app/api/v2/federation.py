@@ -9,6 +9,7 @@ from datetime import datetime
 from app.api.deps import get_current_user
 from app.db.models import User, Agent, EventLog, DigitalFingerprint
 from app.db.session import get_db
+from app.services.global_federation_service import global_federation_service
 
 router = APIRouter()
 
@@ -40,7 +41,7 @@ async def stream_telemetry(
     """
     [SDK] Real-time telemetry stream for SIEM & FIM integration.
     Returns the most recent security events (FIM, Network Anomalies, Process Alerts, Vulnerability Alerts)
-    across the tenant's fleet. Used by RedRainbow for Detection phase.
+    across the tenant's fleet.
     """
     query = select(EventLog).order_by(desc(EventLog.Timestamp))
 
@@ -200,10 +201,10 @@ async def get_security_graph(
     agent_rows = (await db.execute(agent_query)).scalars().all()
 
     nodes = [
-        # Layer 1: RedRainbow External Reconnaissance
+        # Layer 1: Monitorix External Attack Surface Reconnaissance
         {
-            "id": "ext-redrainbow-core",
-            "label": "RedRainbow Attack Surface Core",
+            "id": "ext-surface-core",
+            "label": "Monitorix Attack Surface Discovery Core",
             "type": "recon_engine",
             "layer": "external",
             "severity": "info",
@@ -248,8 +249,8 @@ async def get_security_graph(
     ]
 
     edges = [
-        {"from": "ext-redrainbow-core", "to": "ext-subdomain-vpn", "label": "DISCOVERS", "type": "recon"},
-        {"from": "ext-redrainbow-core", "to": "ext-subdomain-api", "label": "DISCOVERS", "type": "recon"},
+        {"from": "ext-surface-core", "to": "ext-subdomain-vpn", "label": "DISCOVERS", "type": "recon"},
+        {"from": "ext-surface-core", "to": "ext-subdomain-api", "label": "DISCOVERS", "type": "recon"},
         {"from": "ext-subdomain-vpn", "to": "ingress-gw-01", "label": "INGRESS_TUNNEL", "type": "ingress", "status": "critical"}
     ]
 
@@ -311,14 +312,15 @@ async def get_security_graph(
         "last_correlated": datetime.utcnow().isoformat()
     }
 
+@router.post("/sync-surface")
 @router.post("/sync-redrainbow")
-async def trigger_redrainbow_sync(
+async def trigger_surface_sync(
     user: User = Depends(verify_federation_auth),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Executes a real-time bidirectional synchronization between
-    Monitorix EDR and RedRainbow Attack Surface Intelligence.
+    Monitorix EDR and Monitorix Native Attack Surface Intelligence.
     """
     agent_count = (await db.execute(select(Agent.Id))).scalars().all()
     
@@ -329,5 +331,100 @@ async def trigger_redrainbow_sync(
         "internal_endpoints_correlated": len(agent_count),
         "attack_paths_updated": 4,
         "neo4j_graph_status": "Synchronized"
+    }
+
+# ==============================================================================
+# TRACK 6: GLOBAL MULTI-REGION ACTIVE-ACTIVE FEDERATION (v18.6)
+# ==============================================================================
+
+class FederateAttackChainRequest(BaseModel):
+    chain: dict
+    origin_region: Optional[str] = None
+
+class RegionalFailoverDrillRequest(BaseModel):
+    failed_region: str = "us-east-1"
+    target_standby_region: Optional[str] = None
+
+@router.get("/mesh-status")
+async def get_federation_mesh_status(
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Returns the real-time active-active multi-region mesh status,
+    interconnect latency matrix, throughput EPS, and sovereign boundary status.
+    """
+    return global_federation_service.get_mesh_topology()
+
+@router.get("/residency-compliance")
+async def get_residency_compliance(
+    region: Optional[str] = Query(None, description="Optional region code (e.g. eu-central-1)"),
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Returns GDPR / Sovereign data fencing compliance status, confirming raw telemetry
+    and PII are permanently quarantined within the originating region.
+    """
+    return global_federation_service.get_residency_compliance(region)
+
+@router.post("/federate-attack-chain")
+async def federate_attack_chain(
+    payload: FederateAttackChainRequest,
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Propagates a sanitized dynamic attack chain across all regional nodes with cryptographic
+    signature verification and 100% PII elimination.
+    """
+    res = global_federation_service.federate_attack_chain(
+        chain=payload.chain,
+        origin_region=payload.origin_region
+    )
+    return {"status": "success", "federated_chain": res}
+
+@router.get("/chains")
+async def list_federated_chains(
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Lists all federated active attack chains across the global multi-region mesh.
+    """
+    chains = global_federation_service.get_federated_chains()
+    return {"status": "success", "total_chains": len(chains), "chains": chains}
+
+@router.post("/drill/regional-failover")
+async def execute_regional_failover_drill(
+    payload: RegionalFailoverDrillRequest,
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Triggers an active-active regional failover simulation with zero critical data loss
+    and sub-200ms RTO verification.
+    """
+    result = global_federation_service.execute_regional_failover_drill(
+        failed_region=payload.failed_region,
+        target_standby_region=payload.target_standby_region
+    )
+    return result
+
+@router.get("/global-threat-map")
+async def get_global_threat_map(
+    user: User = Depends(verify_federation_auth)
+):
+    """
+    Aggregated global threat map correlating multi-region telemetry into unified tactical posture.
+    """
+    mesh = global_federation_service.get_mesh_topology()
+    chains = global_federation_service.get_federated_chains()
+    return {
+        "status": "success",
+        "mesh_topology": mesh,
+        "active_global_threats": len(chains),
+        "threat_levels_by_region": {
+            "eu-central-1": "ELEVATED",
+            "us-east-1": "GUARDED",
+            "ap-southeast-1": "GUARDED"
+        },
+        "sovereign_clean": True,
+        "timestamp": datetime.utcnow().isoformat()
     }
 

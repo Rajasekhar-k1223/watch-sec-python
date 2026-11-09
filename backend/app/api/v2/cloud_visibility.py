@@ -152,24 +152,29 @@ async def get_cloud_inventory(
 # CSPM Credentials 
 # ---------------------------------------------------------------------------
 
+from ...services.vault_encryption import vault_service
+
 @router.post("/cspm/credentials")
 async def add_cspm_credential(
     payload: CspmCredentialPayload,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Configures a new agentless cloud integration (AWS/Azure/GCP)."""
+    """Configures a new agentless cloud integration with AES-256-GCM envelope encryption."""
+    enc = vault_service.encrypt_secret(payload.secret_access_key or "")
     cred = CloudIntegrationCredential(
         TenantId=current_user.TenantId,
         Provider=payload.provider.lower(),
         AccountId=payload.account_id,
         AccessKeyId=payload.access_key_id,
-        SecretAccessKey=payload.secret_access_key,
+        EncryptedSecret=enc.get("ciphertext"),
+        EncryptionKeyId=enc.get("key_id", "k-master-v1"),
+        InitializationVector=enc.get("iv"),
         Region=payload.region
     )
     db.add(cred)
     await db.commit()
-    return {"status": "success", "id": cred.Id}
+    return {"status": "success", "id": cred.Id, "encryption": "AES-256-GCM"}
 
 @router.get("/cspm/credentials")
 async def get_cspm_credentials(

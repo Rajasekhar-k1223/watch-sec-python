@@ -272,6 +272,8 @@ async def get_system_health(
     try:
         from app.db.clickhouse import clickhouse_db # type: ignore
         t0 = time.time()
+        if not clickhouse_db.client:
+            clickhouse_db.connect()
         if clickhouse_db.client:
             clickhouse_db.client.execute("SELECT 1")
             status["services"]["clickhouse"]["latency_ms"] = round((time.time() - t0) * 1000, 2)

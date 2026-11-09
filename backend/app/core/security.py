@@ -3,6 +3,7 @@ from typing import Optional # type: ignore
 from jose import JWTError, jwt # type: ignore
 from passlib.context import CryptContext # type: ignore
 import os # type: ignore
+import sys # type: ignore
 import hmac
 import hashlib
 import json
@@ -12,17 +13,24 @@ load_dotenv()
 
 def _get_or_create_secret():
     """Root-of-trust: reads SECRET_KEY from environment (set via .env / docker env_file).
-    Falls back to generating an ephemeral key at runtime only when the env var is genuinely absent,
-    which should never happen in a correctly deployed container."""
+    Enforces strict high-entropy requirement for enterprise production deployment."""
     key = os.getenv("SECRET_KEY")
-    if key and key != "default-secret-key":
+    if key and key != "default-secret-key" and len(key) >= 32:
         return key
+
+    # In strict production mode, block startup if weak or missing secret is detected
+    is_testing = bool(os.getenv("PYTEST_CURRENT_TEST") or "pytest" in sys.modules)
+    is_dev = os.getenv("RUN_MODE", "production").lower() in ("development", "dev", "test")
+    if not is_testing and not is_dev:
+        raise RuntimeError(
+            "[CRITICAL SECURITY FAILURE] SECRET_KEY is not configured or is insecure! "
+            "Enterprise production deployment requires a high-entropy SECRET_KEY (min 32 chars) in .env or environment."
+        )
 
     import secrets # type: ignore
     new_secret = secrets.token_urlsafe(64)
     os.environ["SECRET_KEY"] = new_secret
-    print("[SECURITY] WARNING: SECRET_KEY was not set in the environment. "
-          "Generated an ephemeral key — JWTs will be invalidated on restart. "
+    print("[SECURITY] WARNING: Ephemeral SECRET_KEY generated for non-production environment. "
           "Add SECRET_KEY to your .env file to make it persistent.")
     return new_secret
 

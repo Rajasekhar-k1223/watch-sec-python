@@ -1,0 +1,69 @@
+"""
+[v2.8.0] Global National PII Classifiers Package
+Exports registry, checksum algorithms, and country definitions.
+"""
+from .registry import (
+    pii_classifier_registry,
+    PIIClassifierRegistry,
+    PII_CLASSIFIERS,
+    GLOBAL_CLASSIFIERS,
+    PIIDetectionResult,
+    PIIClassifierDefinition,
+    CHECKSUM_MAP
+)
+from .checksums import (
+    validate_verhoeff,
+    validate_luhn,
+    validate_brazil_cpf,
+    validate_brazil_cnpj,
+    validate_chile_rut,
+    validate_singapore_nric,
+    validate_china_ric,
+    validate_australia_tfn,
+    validate_turkey_tc_kimlik,
+    validate_uk_nhs,
+    validate_nz_ird,
+    validate_swiss_ahv,
+    validate_argentina_cuit,
+    validate_saudi_id,
+    validate_japan_my_number,
+    validate_korea_rrn,
+    validate_thailand_id,
+    validate_uae_emirates_id,
+    validate_canada_sin,
+    validate_south_africa_id,
+    validate_mexico_curp,
+    validate_mexico_rfc
+)
+
+__all__ = [
+    "pii_classifier_registry",
+    "PIIClassifierRegistry",
+    "PII_CLASSIFIERS",
+    "GLOBAL_CLASSIFIERS",
+    "PIIDetectionResult",
+    "PIIClassifierDefinition",
+    "CHECKSUM_MAP",
+    "validate_verhoeff",
+    "validate_luhn",
+    "validate_brazil_cpf",
+    "validate_brazil_cnpj",
+    "validate_chile_rut",
+    "validate_singapore_nric",
+    "validate_china_ric",
+    "validate_australia_tfn",
+    "validate_turkey_tc_kimlik",
+    "validate_uk_nhs",
+    "validate_nz_ird",
+    "validate_swiss_ahv",
+    "validate_argentina_cuit",
+    "validate_saudi_id",
+    "validate_japan_my_number",
+    "validate_korea_rrn",
+    "validate_thailand_id",
+    "validate_uae_emirates_id",
+    "validate_canada_sin",
+    "validate_south_africa_id",
+    "validate_mexico_curp",
+    "validate_mexico_rfc"
+]

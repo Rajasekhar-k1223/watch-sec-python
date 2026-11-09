@@ -71,11 +71,11 @@ async def get_dashboard_status(
                 mem = report.get("MemoryUsage", 0)
                 ts = report.get("Timestamp", ts)
                 
-            if agent.LastSeen and (now - agent.LastSeen).total_seconds() < 120:
+            if agent.LastSeen and (now - agent.LastSeen).total_seconds() < 300:
                 status = "Online"
                 if not report or agent.LastSeen > report.get("Timestamp", agent.LastSeen):
                     ts = agent.LastSeen
-            elif report and (now - report.get("Timestamp", now)).total_seconds() < 120:
+            elif report and (now - report.get("Timestamp", now)).total_seconds() < 300:
                 status = "Online"
 
             results.append({
@@ -90,7 +90,8 @@ async def get_dashboard_status(
                 "latitude": agent.Latitude,
                 "longitude": agent.Longitude,
                 "hardwareJson": agent.HardwareJson,
-                "powerStatusJson": agent.PowerStatusJson
+                "powerStatusJson": agent.PowerStatusJson,
+                "behavioralMetadataJson": agent.BehavioralMetadataJson
             })
 
         return results
@@ -186,7 +187,10 @@ async def get_dashboard_stats(
         outbound_mbps = 0
 
         from ..db.pg_helpers import pg
-        kpis = await pg.get_tenant_dashboard_kpis(db, tenantId or 1, int(total_hours))
+        if tenantId is not None:
+            kpis = await pg.get_tenant_dashboard_kpis(db, tenantId, int(total_hours))
+        else:
+            kpis = None
         
         if kpis:
             total_agents = kpis.get("total_agents", 0)
@@ -196,7 +200,7 @@ async def get_dashboard_stats(
             critical_threats_count = kpis.get("critical_events", 0)
             high_cpu_count = kpis.get("high_risk_agents", 0)
             
-            threshold_online = now_utc - timedelta(minutes=2)
+            threshold_online = now_utc - timedelta(minutes=5)
             q_online = select(func.count(Agent.Id), func.sum(Agent.NetworkInMbps), func.sum(Agent.NetworkOutMbps)).where(Agent.LastSeen >= threshold_online)
             try: q_online = q_online.where(Agent.IsPendingUninstall == False)
             except Exception: pass
@@ -219,7 +223,7 @@ async def get_dashboard_stats(
             total_res = await db.execute(q_total)
             total_agents = total_res.scalar() or 0
             
-            threshold_online = now_utc - timedelta(minutes=2)
+            threshold_online = now_utc - timedelta(minutes=5)
             
             # [FIX] Use Agent.LastSeen directly (updated every heartbeat) and sum network stats
             q_online = select(
@@ -552,11 +556,42 @@ async def get_dashboard_stats(
         except Exception as e:
             print(f"[Dashboard] Low Battery Count Error: {e}")
 
-        # 10. Network & OS Distribution (Mocked for OS since field is missing)
+        # 10. Real OS Distribution from Agent fleet
+        win_count = 0
+        lnx_count = 0
+        mac_count = 0
+        try:
+            q_os = select(Agent.HardwareJson, Agent.Hostname)
+            try: q_os = q_os.where(Agent.IsPendingUninstall == False)
+            except Exception: pass
+            if tenantId: q_os = q_os.where(Agent.TenantId == tenantId)
+            res_os = await db.execute(q_os)
+            for hw_json, hname in res_os.all():
+                detected = None
+                if hw_json:
+                    try:
+                        hw = json.loads(hw_json)
+                        os_sys = str(hw.get("OsSystem", "")).lower()
+                        if "win" in os_sys: detected = "Windows"
+                        elif "linux" in os_sys: detected = "Linux"
+                        elif "mac" in os_sys or "darwin" in os_sys: detected = "macOS"
+                    except Exception:
+                        pass
+                if not detected and hname:
+                    hn_lower = hname.lower()
+                    if "mac" in hn_lower or "darwin" in hn_lower: detected = "macOS"
+                    elif "win" in hn_lower or "desktop" in hn_lower or "raj" in hn_lower: detected = "Windows"
+                    else: detected = "Linux"
+                if detected == "Windows": win_count += 1
+                elif detected == "macOS": mac_count += 1
+                else: lnx_count += 1
+        except Exception as e:
+            print(f"[Dashboard] OS Dist Error: {e}")
+
         os_dist = [
-            {"name": "Windows", "value": int(total_agents * 0.65) or 1},
-            {"name": "Linux", "value": int(total_agents * 0.25) or 1},
-            {"name": "macOS", "value": int(total_agents * 0.10) or 1},
+            {"name": "Windows", "value": win_count},
+            {"name": "Linux", "value": lnx_count},
+            {"name": "macOS", "value": mac_count},
         ]
         
         return {
@@ -568,8 +603,8 @@ async def get_dashboard_stats(
                 "criticalThreats": critical_threats_count
             },
             "resources": {
-                "avgCpu": round(avg_cpu, 1), 
-                "avgMem": round(avg_mem, 1), 
+                "avgCpu": round(float(avg_cpu or 0), 1), 
+                "avgMem": round(float(avg_mem or 0), 1), 
                 "trend": trends 
             },
             "threats": threats,

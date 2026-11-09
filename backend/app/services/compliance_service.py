@@ -215,6 +215,133 @@ class ComplianceService:
             
         return results
 
+    # ---------------------------------------------------------------------------
+    # Global Multi-Regulatory Runners (32 Frameworks)
+    # ---------------------------------------------------------------------------
+
+    async def run_dpdp_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_dpdp_checks
+        return await run_dpdp_checks(tenant_id, db)
+
+    async def run_sox_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_sox_checks
+        return await run_sox_checks(tenant_id, db)
+
+    async def run_uk_gdpr_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_uk_gdpr_checks
+        return await run_uk_gdpr_checks(tenant_id, db)
+
+    async def run_ccpa_cpra_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_ccpa_cpra_checks
+        return await run_ccpa_cpra_checks(tenant_id, db)
+
+    async def run_ccpa_checks(self, tenant_id: int, db: AsyncSession):
+        return await self.run_ccpa_cpra_checks(tenant_id, db)
+
+    async def run_glba_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_glba_checks
+        return await run_glba_checks(tenant_id, db)
+
+    async def run_fisma_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_fisma_checks
+        return await run_fisma_checks(tenant_id, db)
+
+    async def run_lgpd_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_lgpd_checks
+        return await run_lgpd_checks(tenant_id, db)
+
+    async def run_pipl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_pipl_checks
+        return await run_pipl_checks(tenant_id, db)
+
+    async def run_china_csl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_china_csl_checks
+        return await run_china_csl_checks(tenant_id, db)
+
+    async def run_china_dsl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_china_dsl_checks
+        return await run_china_dsl_checks(tenant_id, db)
+
+    async def run_appi_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_appi_checks
+        return await run_appi_checks(tenant_id, db)
+
+    async def run_pipa_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_pipa_checks
+        return await run_pipa_checks(tenant_id, db)
+
+    async def run_singapore_pdpa_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_singapore_pdpa_checks
+        return await run_singapore_pdpa_checks(tenant_id, db)
+
+    async def run_thailand_pdpa_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_thailand_pdpa_checks
+        return await run_thailand_pdpa_checks(tenant_id, db)
+
+    async def run_indonesia_pdp_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_indonesia_pdp_checks
+        return await run_indonesia_pdp_checks(tenant_id, db)
+
+    async def run_australia_privacy_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_australia_privacy_checks
+        return await run_australia_privacy_checks(tenant_id, db)
+
+    async def run_new_zealand_privacy_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_new_zealand_privacy_checks
+        return await run_new_zealand_privacy_checks(tenant_id, db)
+
+    async def run_pipeda_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_pipeda_checks
+        return await run_pipeda_checks(tenant_id, db)
+
+    async def run_nfadp_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_nfadp_checks
+        return await run_nfadp_checks(tenant_id, db)
+
+    async def run_kvkk_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_kvkk_checks
+        return await run_kvkk_checks(tenant_id, db)
+
+    async def run_popia_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_popia_checks
+        return await run_popia_checks(tenant_id, db)
+
+    async def run_ndpa_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_ndpa_checks
+        return await run_ndpa_checks(tenant_id, db)
+
+    async def run_kenya_dpa_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_kenya_dpa_checks
+        return await run_kenya_dpa_checks(tenant_id, db)
+
+    async def run_uae_dpl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_uae_dpl_checks
+        return await run_uae_dpl_checks(tenant_id, db)
+
+    async def run_saudi_pdpl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_saudi_pdpl_checks
+        return await run_saudi_pdpl_checks(tenant_id, db)
+
+    async def run_qatar_pdpl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_qatar_pdpl_checks
+        return await run_qatar_pdpl_checks(tenant_id, db)
+
+    async def run_mexico_lfpdppp_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_mexico_lfpdppp_checks
+        return await run_mexico_lfpdppp_checks(tenant_id, db)
+
+    async def run_argentina_pdpl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_argentina_pdpl_checks
+        return await run_argentina_pdpl_checks(tenant_id, db)
+
+    async def run_chile_pdpl_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_chile_pdpl_checks
+        return await run_chile_pdpl_checks(tenant_id, db)
+
+    async def run_colombia_law_1581_checks(self, tenant_id: int, db: AsyncSession):
+        from ..compliance.frameworks import run_colombia_law_1581_checks
+        return await run_colombia_law_1581_checks(tenant_id, db)
+
     async def run_all_checks(self, tenant_id: int, db: AsyncSession) -> Dict[str, Any]:
         """Executes all compliance framework checks and calculates an overall score."""
         gdpr = await self.run_gdpr_checks(tenant_id, db)

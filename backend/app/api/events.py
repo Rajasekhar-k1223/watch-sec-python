@@ -216,20 +216,6 @@ async def report_event(
             if hmac.compare_digest(expected_fallback2, x_signature):
                 is_valid = True
 
-        # [COMPAT] Legacy EXE (pre-v1.8.60): HMAC key derivation differs; accept signed events
-        # from registered agents with a recent timestamp (replay protection) until new EXE deployed.
-        if not is_valid and agent and agent.AgentId:
-            try:
-                # Parse timestamp — agent sends naive UTC strings; strip tz info for comparison
-                ts_str = x_timestamp.replace('Z', '').split('+')[0]
-                ts_dt = datetime.fromisoformat(ts_str)
-                age_seconds = abs((datetime.utcnow() - ts_dt).total_seconds())
-                if age_seconds < 300:  # Accept if timestamp within 5 minutes (replay guard)
-                    is_valid = True
-                    print(f"[COMPAT-EVENT] Accepting signed event from legacy agent {dto.AgentId} (age={age_seconds:.1f}s)")
-            except Exception as ts_err:
-                print(f"[COMPAT-EVENT] Timestamp parse failed: {ts_err}")
-
         if not is_valid:
             raise HTTPException(status_code=403, detail="Invalid signature")
 

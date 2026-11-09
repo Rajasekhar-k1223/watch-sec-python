@@ -673,12 +673,19 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     rust_target_map = {
         "windows":     (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
         "windows-x64": (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
+        "windows-x86": (f"{RUST_AGENT_ROOT}/i686-pc-windows-gnu/release/monitorix-agent.exe",     "monitorix-agent.exe"),
         "linux":       (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
         "linux-x64":   (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "ubuntu":      (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "debian":      (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "centos":      (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
+        "rhel":        (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
         "linux-arm64": (f"{RUST_AGENT_ROOT}/aarch64-unknown-linux-gnu/release/monitorix-agent",    "monitorix-agent-linux-arm64"),
-        "mac":         (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/monitorix-agent",          "monitorix-agent-mac"),
+        "mac":         (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/monitorix-agent",         "monitorix-agent-mac"),
         "mac-x64":     (f"{RUST_AGENT_ROOT}/x86_64-apple-darwin/release/monitorix-agent",          "monitorix-agent-mac"),
         "mac-arm64":   (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/monitorix-agent",         "monitorix-agent-mac-arm64"),
+        "macos":       (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/monitorix-agent",         "monitorix-agent-mac"),
+        "darwin":      (f"{RUST_AGENT_ROOT}/aarch64-apple-darwin/release/monitorix-agent",         "monitorix-agent-mac"),
     }
     
     os_key = os_type.lower()
@@ -687,7 +694,7 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
     if os_key in rust_target_map:
         binary_path, binary_name = rust_target_map[os_key]
         # Linux x64 can also be the native build (fallback)
-        if not os.path.exists(binary_path) and "linux" in os_key and "arm" not in os_key:
+        if not os.path.exists(binary_path) and any(k in os_key for k in ["linux", "ubuntu", "debian", "centos", "rhel"]) and "arm" not in os_key:
             binary_path = f"{RUST_AGENT_ROOT}/release/monitorix-agent"
             
         if os.path.exists(binary_path):
@@ -699,19 +706,21 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
         backend_root = os.path.join(file_dir, "..", "..")
         base_path = os.path.join(backend_root, "storage", "AgentTemplate")
         template_folder_map = {
-            "windows": "win-x64", "windows-x64": "win-x64", 
+            "windows": "win-x64", "windows-x64": "win-x64", "windows-x86": "win-x86",
             "linux": "linux-x64", "linux-x64": "linux-x64", "linux-arm64": "linux-arm64", 
-            "mac": "osx-x64", "mac-x64": "osx-x64", "mac-arm64": "osx-arm64"
+            "ubuntu": "linux-x64", "debian": "linux-x64", "centos": "linux-x64", "rhel": "linux-x64",
+            "mac": "osx-arm64", "mac-x64": "osx-arm64", "mac-arm64": "osx-arm64",
+            "macos": "osx-arm64", "darwin": "osx-arm64"
         }
         folder_name = template_folder_map.get(os_key, "win-x64")
         template_dir = os.path.join(base_path, folder_name)
         
         # Check for expected binaries based on OS
         expected_names = []
-        if "linux" in os_key:
-            expected_names = ["monitorix-monitorix-agent-linux", "monitorix-agent-linux", "monitorix.zip"]
-        elif "mac" in os_key or "osx" in os_key:
-            expected_names = ["monitorix-monitorix-agent-mac", "monitorix-agent-mac", "monitorix.zip"]
+        if any(k in os_key for k in ["linux", "ubuntu", "debian", "centos", "rhel"]):
+            expected_names = ["monitorix-agent-rust-linux", "monitorix-agent-linux", "monitorix-monitorix-agent-linux", "monitorix.zip"]
+        elif any(k in os_key for k in ["mac", "osx", "darwin", "macos"]):
+            expected_names = ["monitorix-agent-mac", "monitorix-agent-rust-mac", "monitorix-monitorix-agent-mac", "monitorix.zip"]
         else:
             expected_names = ["monitorix-agent.exe", "monitorixagent.exe", "monitorix-setup-v3.exe", "monitorix.zip"]
             

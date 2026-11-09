@@ -83,3 +83,25 @@ async def get_scale_architecture_status(
         },
         "readiness_verdict": "CERTIFIED ENTERPRISE 100K READY"
     }
+
+@router.post("/capacity-report")
+async def generate_capacity_report(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Executes load tests across all 5 mandatory tiers (100, 1K, 10K, 50K, 100K endpoints)
+    and generates the comprehensive Phase 8.4 Capacity Report.
+    """
+    return await scale_engine.execute_full_capacity_suite()
+
+@router.get("/capacity-report")
+async def get_capacity_report(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the latest Phase 8.4 Capacity Report.
+    """
+    rep = scale_engine.get_capacity_report()
+    if not rep:
+        return await scale_engine.execute_full_capacity_suite()
+    return rep

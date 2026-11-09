@@ -40,11 +40,13 @@ def get_url():
         return "sqlite:///./watch-sec.db" # Fail-safe
         
     # Replace async driver with sync driver for Alembic
-    # Alembic requires a synchronous driver (e.g. pymysql, standard sqlite)
+    # Alembic requires a synchronous driver (e.g. psycopg2, pymysql, standard sqlite)
     if "sqlite+aiosqlite" in url:
         return url.replace("sqlite+aiosqlite", "sqlite")
     if "mysql+aiomysql" in url:
         return url.replace("mysql+aiomysql", "mysql+pymysql")
+    if "postgresql+asyncpg" in url:
+        return url.replace("postgresql+asyncpg", "postgresql")
     return url
 
 def run_migrations_offline() -> None:

@@ -57,12 +57,25 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
             TenantId=tenant_id
         )
     
+    # ── [Phase 3A] Fast-Path Redis Auth Cache Lookup (Max 60s TTL) ─────────────
+    from ..services.auth_cache import auth_cache
+    cached_user = await auth_cache.get_cached_user(username, tenant_id=payload.get("tenantId"))
+    if cached_user is not None:
+        if getattr(cached_user, "ActiveStatus", True) is False:
+            raise HTTPException(status_code=403, detail="User account is deactivated")
+        return cached_user
+
     result = await db.execute(select(User).where(User.Username == username))
     user = result.scalars().first()
     
     if user is None:
         raise credentials_exception
+
+    if getattr(user, "ActiveStatus", True) is False:
+        raise HTTPException(status_code=403, detail="User account is deactivated")
         
+    # Populate Redis cache with validated identity (passwords never cached)
+    await auth_cache.cache_user(user, tenant_id=payload.get("tenantId"))
     return user
 
 async def get_current_user_flexible(

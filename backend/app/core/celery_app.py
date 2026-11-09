@@ -33,11 +33,12 @@ celery_app.conf.update(
         'app.tasks.security.*': {'queue': 'high_priority'},
         'app.tasks.ocr_tasks.*': {'queue': 'heavy_tasks'},
         'app.tasks.reports.*': {'queue': 'heavy_tasks'},
-    }
+    },
+    beat_schedule_filename=os.getenv("CELERY_BEAT_SCHEDULE_FILE", "/app/storage/celerybeat-schedule")
 )
 
 # Auto-discover tasks in packages
-celery_app.autodiscover_tasks(["app.tasks.general", "app.tasks.reports", "app.tasks.security", "app.tasks"])
+celery_app.autodiscover_tasks(["app.tasks.general", "app.tasks.reports", "app.tasks.security", "app.tasks.pki_lifecycle_tasks", "app.tasks.maintenance", "app.tasks"])
 
 celery_app.conf.beat_schedule = {
     "send-tenant-reports-scheduled": {
@@ -59,5 +60,25 @@ celery_app.conf.beat_schedule = {
     "sync-global-software-catalog-weekly": {
         "task": "app.tasks.security.scheduled_sync_global_catalog",
         "schedule": 604800.0, # Every 7 days
+    },
+    "nightly-security-and-regression-audit": {
+        "task": "app.tasks.security.scheduled_security_and_regression_audit",
+        "schedule": 86400.0,  # Every 24 hours (Nightly)
+    },
+    "sync-threat-feeds-hourly": {
+        "task": "app.tasks.security.scheduled_sync_threat_feeds",
+        "schedule": 3600.0,  # Every hour
+    },
+    "audit-pki-lifecycle-daily": {
+        "task": "app.tasks.pki_lifecycle_tasks.scheduled_pki_lifecycle_audit",
+        "schedule": 86400.0,  # Every 24 hours
+    },
+    "purge-expired-data-daily": {
+        "task": "app.tasks.maintenance.purge_expired_data",
+        "schedule": 86400.0,  # Every 24 hours
+    },
+    "sync-pending-minio-artifacts-5min": {
+        "task": "app.tasks.maintenance.sync_pending_minio_artifacts",
+        "schedule": 300.0,  # Every 5 minutes
     },
 }

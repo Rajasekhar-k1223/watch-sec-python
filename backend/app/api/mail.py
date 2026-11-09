@@ -34,6 +34,16 @@ class MailLogDto(BaseModel):
     Timestamp: datetime = datetime.utcnow()
     Attachments: List[AttachmentDto] = []
 
+class ManualMailSubmissionDto(BaseModel):
+    Sender: str
+    Recipient: str
+    Subject: str
+    BodyPreview: Optional[str] = None
+    RiskLevel: Optional[str] = "Low"
+    AgentId: Optional[str] = "MANUAL-CONSOLE"
+    HasAttachments: bool = False
+    AttachmentNames: Optional[str] = None
+
 @router.get("/", response_model=List[dict])
 async def get_all_mail_logs(
     start_date: Optional[str] = None,
@@ -354,3 +364,73 @@ async def log_mail(
             
     await db.commit()
     return {"status": "Logged", "risk": risk}
+
+@router.post("/manual", response_model=dict)
+async def submit_manual_mail_log(
+    dto: ManualMailSubmissionDto,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Allows SOC analysts to manually submit an email record for forensic inspection and recordkeeping.
+    """
+    # Ensure agent belongs or fallback to an existing agent in tenant
+    agent_id = dto.AgentId or "MANUAL-CONSOLE"
+    if current_user.TenantId:
+        res_a = await db.execute(select(Agent).where(Agent.TenantId == current_user.TenantId))
+        first_agent = res_a.scalars().first()
+        if first_agent and (agent_id == "MANUAL-CONSOLE" or not agent_id):
+            agent_id = first_agent.AgentId
+
+    new_log = MailLog(
+        AgentId=agent_id,
+        Sender=dto.Sender,
+        Recipient=dto.Recipient,
+        Subject=dto.Subject,
+        BodyPreview=dto.BodyPreview or f"Manual forensic ingestion for message: {dto.Subject}",
+        HasAttachments=dto.HasAttachments,
+        AttachmentNames=dto.AttachmentNames,
+        RiskLevel=dto.RiskLevel or "Low",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(new_log)
+    await db.commit()
+    await db.refresh(new_log)
+
+    return {
+        "Id": new_log.Id,
+        "AgentId": new_log.AgentId,
+        "Sender": new_log.Sender,
+        "Recipient": new_log.Recipient,
+        "Subject": new_log.Subject,
+        "BodyPreview": new_log.BodyPreview,
+        "HasAttachments": new_log.HasAttachments,
+        "RiskLevel": new_log.RiskLevel,
+        "Timestamp": new_log.Timestamp.isoformat() if new_log.Timestamp else None,
+        "Attachments": []
+    }
+
+@router.delete("/{mail_id}")
+async def delete_mail_log(
+    mail_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Deletes an email record from the mail forensics database.
+    """
+    res = await db.execute(select(MailLog).where(MailLog.Id == mail_id))
+    log_item = res.scalars().first()
+    if not log_item:
+        raise HTTPException(status_code=404, detail="Email record not found")
+
+    if current_user.Role != "SuperAdmin":
+        agent_res = await db.execute(select(Agent).where(Agent.AgentId == log_item.AgentId))
+        agent = agent_res.scalars().first()
+        if agent and agent.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    await db.delete(log_item)
+    await db.commit()
+    return {"status": "success", "message": f"Mail record #{mail_id} deleted"}
+

@@ -17,11 +17,11 @@ except Exception:
 
 class EmailService:
     def __init__(self):
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.monitorix.co.in")
+        self.smtp_host = os.getenv("SMTP_HOST", "mail.internal.net")
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
         self.smtp_user = os.getenv("SMTP_USER", "")
         self.smtp_pass = os.getenv("SMTP_PASS", "")
-        self.from_email = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", ""))
+        self.from_email = os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "noreply@internal.net"))
         self.enabled = bool(self.smtp_user and self.smtp_pass)
         if self.enabled:
             print(f"[EmailService] SMTP ready: {self.smtp_user} @ {self.smtp_host}:{self.smtp_port}")
@@ -33,15 +33,13 @@ class EmailService:
             print(f"[EmailService] Mock Send to {to_email} (CC: {cc_emails}): {subject} (Attachment: {attachment_path})")
             return True
 
-        # --- DMARC Alignment ---
-        # The 'From' domain MUST match the domain in the DMARC record (monitorix.co.in)
-        # Using a mismatched domain (e.g. @watch-sec.com) with p=quarantine will send to junk.
-        dmarc_domain = "monitorix.co.in"
-        from_email = self.from_email # type: ignore
-        # Enforce alignment: if the from email domain doesn't match DMARC domain, use info@
-        if "@" not in from_email or from_email.split("@")[-1].lower() != dmarc_domain:
-            from_email = f"info@{dmarc_domain}" # type: ignore
-            print(f"[EmailService] WARNING: SMTP_FROM domain mismatch. Forcing DMARC-aligned From: {from_email}")
+        # --- Dynamic Sender & DMARC Alignment ---
+        from_email = self.from_email
+        if "@" in from_email:
+            sender_domain = from_email.split("@")[-1].lower()
+        else:
+            sender_domain = "internal.net"
+        dmarc_domain = os.getenv("DMARC_DOMAIN") or sender_domain
 
         # Create the top-level container
         message = MIMEMultipart("mixed")
@@ -75,7 +73,7 @@ class EmailService:
         message["X-Auto-Response-Suppress"] = "OOF, AutoReply"
 
         # List-Unsubscribe (mandatory for bulk mail, helps classification)
-        dashboard_url = os.getenv("MONITORIX_BASE_URL", "https://monitorix.co.in")
+        dashboard_url = os.getenv("MONITORIX_BASE_URL", "http://localhost:8085")
         message["List-Unsubscribe"] = f"<{dashboard_url}/reports>, <mailto:{from_email}?subject=unsubscribe>"
         message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
@@ -116,12 +114,12 @@ class EmailService:
         print(f"[EmailService] Attempting to send '{subject}' to {to_email} via {self.smtp_host}:{self.smtp_port} "
               f"({'SSL' if use_tls else 'STARTTLS' if start_tls else 'Plain'})")
 
-        # Bypass SSL hostname validation for internal Docker network connections
+        # Bypass strict SSL certificate validation for mail server compatibility
         import ssl # type: ignore
         tls_context = ssl.create_default_context()
-        if self.smtp_host == "mailserver":
-            tls_context.check_hostname = False
-            tls_context.verify_mode = ssl.CERT_NONE
+        tls_context.check_hostname = False
+        tls_context.verify_mode = ssl.CERT_NONE
+
         
         try:
             await aiosmtplib.send(

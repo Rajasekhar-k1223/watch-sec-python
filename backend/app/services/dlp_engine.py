@@ -22,11 +22,16 @@ class DlpEngine:
         self.policies_cache = (await db.execute(select(DlpPolicy).where(DlpPolicy.IsActive == True))).scalars().all()
 
     def obfuscate_match(self, match_str: str, category: str) -> str:
-        if category == "PII" and len(match_str) > 4:
+        if category in ("PII", "PHI", "Financial") and len(match_str) > 4:
             return match_str[:2] + ("*" * (len(match_str) - 4)) + match_str[-2:]
         elif category == "Secrets":
             return "[REDACTED SECRET]"
         return "****"
+
+    def scan_global_pii(self, text_payload: str, country: str = None):
+        """Delegates multi-country PII classification to the 25-jurisdiction Compliance Classifier Registry."""
+        from app.compliance.classifiers.registry import pii_classifier_registry
+        return pii_classifier_registry.scan_text(text_payload, country_filter=country)
 
     async def evaluate_payload(self, db: AsyncSession, agent_id: str, channel: str, text_payload: str):
         if not self.rules_cache:
@@ -103,6 +108,29 @@ class DlpEngine:
                                 db.add(execution)
                             except Exception as e:
                                 print(f"[DLP] Error dispatching SIEM/SOAR signal: {e}")
+
+            # Also evaluate 25-country national PII classifiers for active PII/PHI policies
+            try:
+                national_detections = self.scan_global_pii(text_payload)
+                high_conf = [d for d in national_detections if d.confidence in ("HIGH", "MEDIUM")]
+                if high_conf and not violations_logged:
+                    if policy.Action == "Block":
+                        action_to_take = "Block"
+                    elif policy.Action == "Alert" and action_to_take != "Block":
+                        action_to_take = "Alert"
+                    first_det = high_conf[0]
+                    violation = DlpViolation(
+                        AgentId=agent_id,
+                        PolicyId=policy.Id,
+                        RuleId=rule_ids[0] if rule_ids else None,
+                        Channel=channel,
+                        MatchedContentObfuscated=f"[{first_det.identifier}] {first_det.sample_masked}",
+                        ActionTaken=policy.Action,
+                    )
+                    db.add(violation)
+                    violations_logged.append(violation)
+            except Exception:
+                pass
 
         if violations_logged:
             await db.commit()

@@ -16,14 +16,14 @@ router = APIRouter()
 class PolicyDto(BaseModel):
     id: Optional[int] = None
     name: str
-    rulesJson: str
-    actions: str
-    isActive: bool
-    tenantId: int
-    blockedAppsJson: str
-    blockedWebsitesJson: str
-    remediationJson: str
-    bandwidthJson: str = "{}"
+    rulesJson: Optional[str] = "{}"
+    actions: Optional[str] = ""
+    isActive: Optional[bool] = True
+    tenantId: Optional[int] = 1
+    blockedAppsJson: Optional[str] = "[]"
+    blockedWebsitesJson: Optional[str] = "[]"
+    remediationJson: Optional[str] = "{}"
+    bandwidthJson: Optional[str] = "{}"
     screenshotInterval: Optional[int] = 60
     screenshotQuality: Optional[int] = 80
     screenshotsEnabled: Optional[bool] = False
@@ -52,23 +52,24 @@ async def get_policies(
     return [
         PolicyDto(
             id=p.Id,
-            name=p.Name,
-            rulesJson=p.RulesJson,
-            actions=p.Actions,
-            isActive=p.IsActive,
-            blockedAppsJson=p.BlockedAppsJson,
-            blockedWebsitesJson=p.BlockedWebsitesJson,
-            remediationJson=p.RemediationJson,
-            bandwidthJson=p.BandwidthJson,
-            screenshotInterval=p.ScreenshotInterval,
-            screenshotQuality=p.ScreenshotQuality or 80,
-            screenshotsEnabled=p.ScreenshotsEnabled,
-            activityMonitorEnabled=p.ActivityMonitorEnabled,
-            geolocationEnabled=p.GeolocationEnabled,
-            autonomousRemediationEnabled=p.AutonomousRemediationEnabled,
-            threatScoreThreshold=p.ThreatScoreThreshold,
-            exclusionsJson=p.ExclusionsJson,
-            productivityJson=p.ProductivityJson
+            name=p.Name or "Default Policy",
+            rulesJson=p.RulesJson or "{}",
+            actions=p.Actions or "",
+            isActive=p.IsActive if p.IsActive is not None else True,
+            tenantId=p.TenantId or 1,
+            blockedAppsJson=p.BlockedAppsJson or "[]",
+            blockedWebsitesJson=p.BlockedWebsitesJson or "[]",
+            remediationJson=p.RemediationJson or "{}",
+            bandwidthJson=p.BandwidthJson or "{}",
+            screenshotInterval=getattr(p, "ScreenshotInterval", 60) or 60,
+            screenshotQuality=getattr(p, "ScreenshotQuality", 80) or 80,
+            screenshotsEnabled=getattr(p, "ScreenshotsEnabled", False) if getattr(p, "ScreenshotsEnabled", None) is not None else False,
+            activityMonitorEnabled=getattr(p, "ActivityMonitorEnabled", True) if getattr(p, "ActivityMonitorEnabled", None) is not None else True,
+            geolocationEnabled=getattr(p, "GeolocationEnabled", True) if getattr(p, "GeolocationEnabled", None) is not None else True,
+            autonomousRemediationEnabled=getattr(p, "AutonomousRemediationEnabled", False) if getattr(p, "AutonomousRemediationEnabled", None) is not None else False,
+            threatScoreThreshold=getattr(p, "ThreatScoreThreshold", 90) or 90,
+            exclusionsJson=getattr(p, "ExclusionsJson", "[]") or "[]",
+            productivityJson=getattr(p, "ProductivityJson", "{}") or "{}"
         ) for p in policies
     ]
 

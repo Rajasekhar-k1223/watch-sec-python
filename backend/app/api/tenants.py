@@ -13,8 +13,13 @@ from .deps import get_current_user # type: ignore
 router = APIRouter()
 
 class CreateTenantDto(BaseModel):
-    Name: str
-    Plan: Optional[str] = "Starter"
+    Name: Optional[str] = None
+    name: Optional[str] = None
+    Plan: Optional[str] = None
+    plan: Optional[str] = None
+    AgentLimit: Optional[int] = None
+    agent_limit: Optional[int] = None
+
 
 class MaintenanceWindowDto(BaseModel):
     enabled: bool = False
@@ -98,12 +103,17 @@ async def create_tenant(
     if current_user.Role != "SuperAdmin":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    if not dto.Name:
+    tenant_name = dto.Name or dto.name
+    if not tenant_name or not tenant_name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
 
+    tenant_plan = dto.Plan or dto.plan or "Starter"
+    agent_limit = dto.AgentLimit or dto.agent_limit or (500 if tenant_plan in ("Enterprise", "Sovereign") else 25 if tenant_plan == "Professional" else 5)
+
     new_tenant = Tenant(
-        Name=dto.Name,
-        Plan=dto.Plan,
+        Name=tenant_name.strip(),
+        Plan=tenant_plan,
+        AgentLimit=agent_limit,
         ApiKey=str(uuid.uuid4())
     )
     
@@ -237,3 +247,38 @@ async def toggle_tenant_agentless(
     tenant.AgentlessEnabled = enabled
     await db.commit()
     return {"status": "success", "AgentlessEnabled": enabled}
+
+
+@router.delete("/{tenant_id}")
+async def delete_tenant(
+    tenant_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if current_user.Role != "SuperAdmin":
+        raise HTTPException(status_code=403, detail="Not authorized to delete tenants")
+        
+    result = await db.execute(select(Tenant).where(Tenant.Id == tenant_id))
+    tenant = result.scalars().first()
+    
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+        
+    tenant_name = tenant.Name
+    
+    # Audit log
+    from datetime import datetime
+    from ..db.models import AuditLog
+    audit = AuditLog(
+        TenantId=tenant_id,
+        Actor=current_user.Username,
+        Action="Delete Tenant",
+        Target=tenant_name,
+        Details=f"Tenant #{tenant_id} permanently removed by {current_user.Username}",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    
+    await db.delete(tenant)
+    await db.commit()
+    return {"status": "success", "message": f"Tenant #{tenant_id} ({tenant_name}) successfully deleted"}

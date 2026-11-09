@@ -1,14 +1,19 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
 from app.db.session import get_db
-from app.db.models import DetectionRule, DetectionAlert, User
+from app.db.models import DetectionRule, DetectionAlert, User, AuditLog, Agent
 from app.services.detection_engine import detection_engine
 from app.api.deps import get_current_user, verify_agent_signature
 from pydantic import BaseModel
 
 router = APIRouter()
+
+RULE_ADMIN_ROLES = ["SuperAdmin", "Admin", "TenantAdmin"]
+ALERT_TRIAGE_ROLES = ["SuperAdmin", "Admin", "TenantAdmin", "Analyst"]
+RESERVED_SYSTEM_RULE_IDS = set(range(9001, 9009))
 
 class RuleRequest(BaseModel):
     name: str
@@ -31,13 +36,21 @@ class AlertStatusUpdate(BaseModel):
 @router.get("/rules")
 async def list_rules(tactic: str = None, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     query = select(DetectionRule)
+    if current_user.Role != "SuperAdmin" and current_user.TenantId is not None:
+        query = query.where(
+            (DetectionRule.TenantId == current_user.TenantId) | (DetectionRule.TenantId == None)
+        )
     if tactic:
         query = query.where(DetectionRule.MitreTactic == tactic)
     return (await db.execute(query)).scalars().all()
 
 @router.post("/rules")
 async def create_rule(request: RuleRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.Role not in RULE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions to create detection rules")
+    target_tenant_id = None if current_user.Role == "SuperAdmin" else current_user.TenantId
     rule = DetectionRule(
+        TenantId=target_tenant_id,
         Name=request.name,
         Type=request.rule_type,
         Category=request.category,
@@ -47,10 +60,116 @@ async def create_rule(request: RuleRequest, db: AsyncSession = Depends(get_db), 
         RuleContent=request.content
     )
     db.add(rule)
+    
+    # Security Audit Log
+    audit = AuditLog(
+        TenantId=target_tenant_id,
+        Actor=current_user.Username or str(current_user.Id),
+        Action="DetectionRuleCreated",
+        Target=f"Rule '{request.name}'",
+        Details=f"Created detection rule '{request.name}' ({request.severity}, Tactic: {request.mitre_tactic})",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
     await db.commit()
 
     await detection_engine.load_rules(db)
     return {"status": "success", "rule_id": rule.Id}
+
+@router.get("/rules/{rule_id}")
+async def get_rule_detail(rule_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    rule = (await db.execute(select(DetectionRule).where(DetectionRule.Id == rule_id))).scalars().first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Detection rule not found")
+    if current_user.Role != "SuperAdmin" and current_user.TenantId is not None:
+        if rule.TenantId is not None and rule.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=404, detail="Detection rule not found or access denied")
+    return rule
+
+@router.put("/rules/{rule_id}")
+async def update_rule(rule_id: int, request: RuleRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    rule = (await db.execute(select(DetectionRule).where(DetectionRule.Id == rule_id))).scalars().first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Detection rule not found")
+    
+    # Guard: System rules cannot be updated by tenant users
+    if rule.Id in RESERVED_SYSTEM_RULE_IDS or rule.TenantId is None:
+        if current_user.Role != "SuperAdmin" or current_user.TenantId is not None:
+            audit = AuditLog(
+                TenantId=current_user.TenantId,
+                Actor=current_user.Username or str(current_user.Id),
+                Action="SYSTEM_RULE_MODIFICATION_BLOCKED",
+                Target=f"Rule #{rule_id}",
+                Details=f"Unauthorized modification attempt on protected system rule #{rule_id} by {current_user.Username} (Role: {current_user.Role})",
+                Timestamp=datetime.utcnow()
+            )
+            db.add(audit)
+            await db.commit()
+            raise HTTPException(status_code=403, detail="System rules are managed globally and cannot be modified by tenant users")
+    else:
+        if current_user.Role not in RULE_ADMIN_ROLES:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to modify detection rules")
+        if current_user.Role != "SuperAdmin" and rule.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=404, detail="Detection rule not found or access denied")
+
+    rule.Name = request.name
+    rule.Type = request.rule_type
+    rule.Category = request.category
+    rule.MitreTactic = request.mitre_tactic
+    rule.MitreTechnique = request.mitre_technique
+    rule.Severity = request.severity
+    rule.RuleContent = request.content
+    
+    audit = AuditLog(
+        TenantId=rule.TenantId,
+        Actor=current_user.Username or str(current_user.Id),
+        Action="DetectionRuleUpdated",
+        Target=f"Rule #{rule.Id}",
+        Details=f"Updated detection rule #{rule.Id} ('{rule.Name}')",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    return {"status": "success", "rule_id": rule.Id}
+
+@router.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    rule = (await db.execute(select(DetectionRule).where(DetectionRule.Id == rule_id))).scalars().first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Detection rule not found")
+        
+    # Guard: System rules cannot be deleted by tenant users
+    if rule.Id in RESERVED_SYSTEM_RULE_IDS or rule.TenantId is None:
+        if current_user.Role != "SuperAdmin" or current_user.TenantId is not None:
+            audit = AuditLog(
+                TenantId=current_user.TenantId,
+                Actor=current_user.Username or str(current_user.Id),
+                Action="SYSTEM_RULE_DELETION_BLOCKED",
+                Target=f"Rule #{rule_id}",
+                Details=f"Unauthorized deletion attempt on protected system rule #{rule_id} by {current_user.Username} (Role: {current_user.Role})",
+                Timestamp=datetime.utcnow()
+            )
+            db.add(audit)
+            await db.commit()
+            raise HTTPException(status_code=403, detail="System rules are managed globally and cannot be deleted by tenant users")
+    else:
+        if current_user.Role not in RULE_ADMIN_ROLES:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to delete detection rules")
+        if current_user.Role != "SuperAdmin" and rule.TenantId != current_user.TenantId:
+            raise HTTPException(status_code=404, detail="Detection rule not found or access denied")
+
+    await db.delete(rule)
+    audit = AuditLog(
+        TenantId=rule.TenantId,
+        Actor=current_user.Username or str(current_user.Id),
+        Action="DetectionRuleDeleted",
+        Target=f"Rule #{rule.Id}",
+        Details=f"Deleted detection rule #{rule.Id} ('{rule.Name}')",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
+    await db.commit()
+    return {"status": "success", "deleted_rule_id": rule_id}
 
 @router.get("/alerts")
 async def get_alerts(status: str = "New", db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -58,6 +177,11 @@ async def get_alerts(status: str = "New", db: AsyncSession = Depends(get_db), cu
         select(DetectionAlert, DetectionRule)
         .outerjoin(DetectionRule, DetectionAlert.RuleId == DetectionRule.Id)
     )
+    if current_user.Role != "SuperAdmin" and current_user.TenantId is not None:
+        stmt = stmt.where(
+            (DetectionAlert.TenantId == current_user.TenantId) |
+            ((DetectionAlert.TenantId == None) & (DetectionAlert.AgentId.in_(select(Agent.AgentId).where(Agent.TenantId == current_user.TenantId))))
+        )
     if status and status != "All":
         stmt = stmt.where(DetectionAlert.Status == status)
     stmt = stmt.order_by(desc(DetectionAlert.Timestamp)).limit(100)
@@ -67,6 +191,7 @@ async def get_alerts(status: str = "New", db: AsyncSession = Depends(get_db), cu
     for alert, rule in rows:
         results.append({
             "Id": alert.Id,
+            "TenantId": getattr(alert, "TenantId", None),
             "AgentId": alert.AgentId,
             "RuleId": alert.RuleId,
             "MatchedContent": alert.MatchedContent,
@@ -82,12 +207,75 @@ async def get_alerts(status: str = "New", db: AsyncSession = Depends(get_db), cu
         })
     return results
 
+@router.get("/alerts/{alert_id}")
+async def get_alert_detail(alert_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    stmt = (
+        select(DetectionAlert, DetectionRule)
+        .outerjoin(DetectionRule, DetectionAlert.RuleId == DetectionRule.Id)
+        .where(DetectionAlert.Id == alert_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert, rule = row
+    if current_user.Role != "SuperAdmin" and current_user.TenantId is not None:
+        alert_tenant = getattr(alert, "TenantId", None)
+        if alert_tenant is not None:
+            if alert_tenant != current_user.TenantId:
+                raise HTTPException(status_code=404, detail="Alert not found or access denied")
+        else:
+            from app.db.models import Agent
+            agent = (await db.execute(select(Agent).where(Agent.AgentId == alert.AgentId))).scalars().first()
+            if not agent or agent.TenantId != current_user.TenantId:
+                raise HTTPException(status_code=404, detail="Alert not found or access denied")
+    return {
+        "Id": alert.Id,
+        "TenantId": getattr(alert, "TenantId", None),
+        "AgentId": alert.AgentId,
+        "RuleId": alert.RuleId,
+        "MatchedContent": alert.MatchedContent,
+        "Status": alert.Status,
+        "Timestamp": alert.Timestamp.isoformat() if alert.Timestamp else "",
+        "HitCount": getattr(alert, "HitCount", 1) or 1,
+        "LastSeenAt": alert.LastSeenAt.isoformat() if getattr(alert, "LastSeenAt", None) else (alert.Timestamp.isoformat() if alert.Timestamp else ""),
+        "RuleName": rule.Name if rule else f"Detection Rule #{alert.RuleId}",
+        "MitreTactic": rule.MitreTactic if rule else "Defense Evasion",
+        "MitreTechnique": rule.MitreTechnique if rule else "T1059",
+        "Severity": rule.Severity if rule else "Critical",
+        "Category": rule.Category if rule else "Threat Detection"
+    }
+
 @router.patch("/alerts/{alert_id}")
+@router.put("/alerts/{alert_id}")
 async def update_alert_status(alert_id: int, request: AlertStatusUpdate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if current_user.Role not in ALERT_TRIAGE_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions to modify alert status")
     alert = (await db.execute(select(DetectionAlert).where(DetectionAlert.Id == alert_id))).scalars().first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if current_user.Role != "SuperAdmin" and current_user.TenantId is not None:
+        alert_tenant = getattr(alert, "TenantId", None)
+        if alert_tenant is not None:
+            if alert_tenant != current_user.TenantId:
+                raise HTTPException(status_code=404, detail="Alert not found or access denied")
+        else:
+            from app.db.models import Agent
+            agent = (await db.execute(select(Agent).where(Agent.AgentId == alert.AgentId))).scalars().first()
+            if not agent or agent.TenantId != current_user.TenantId:
+                raise HTTPException(status_code=404, detail="Alert not found or access denied")
+    prev_status = alert.Status
     alert.Status = request.status
+    
+    # Security Audit Log
+    audit = AuditLog(
+        TenantId=current_user.TenantId,
+        Actor=current_user.Username or str(current_user.Id),
+        Action="DetectionAlertStatusChanged",
+        Target=f"Alert #{alert.Id}",
+        Details=f"Alert #{alert.Id} status transitioned from '{prev_status}' to '{request.status}'",
+        Timestamp=datetime.utcnow()
+    )
+    db.add(audit)
     await db.commit()
     return {"status": "success", "alert_id": alert.Id, "new_status": alert.Status}
 
@@ -188,52 +376,6 @@ async def get_detection_quality_metrics(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Calculates precision, recall, false positive rates, and rule health across all detection rules.
+    Calculates precision, recall, false positive rates, duplicate rates, and latency per detection rule.
     """
-    alerts_res = await db.execute(select(DetectionAlert))
-    alerts = alerts_res.scalars().all()
-    
-    rules_res = await db.execute(select(DetectionRule))
-    rules = rules_res.scalars().all()
-    
-    total_alerts = len(alerts)
-    fp_alerts = len([a for a in alerts if a.Status == "False Positive"])
-    tp_alerts = len([a for a in alerts if a.Status in ("Confirmed", "Resolved", "Investigating")])
-    new_alerts = len([a for a in alerts if a.Status == "New"])
-    
-    precision = round((tp_alerts / (tp_alerts + fp_alerts)) * 100, 1) if (tp_alerts + fp_alerts) > 0 else 94.2
-    fpr_pct = round((fp_alerts / total_alerts) * 100, 1) if total_alerts > 0 else 5.8
-    rule_health_score = round(max(0, 100.0 - (fpr_pct * 1.5)), 1)
-
-    # Per-rule quality breakdown
-    rule_metrics = []
-    for r in rules:
-        r_alerts = [a for a in alerts if a.RuleId == r.Id]
-        r_total = len(r_alerts)
-        r_fp = len([a for a in r_alerts if a.Status == "False Positive"])
-        r_fp_rate = round((r_fp / r_total) * 100, 1) if r_total > 0 else 0.0
-        r_health = "Excellent" if r_fp_rate < 10 else ("Fair" if r_fp_rate < 25 else "Needs Tuning")
-        rule_metrics.append({
-            "rule_id": r.Id,
-            "rule_name": r.Name,
-            "tactic": r.MitreTactic,
-            "severity": r.Severity,
-            "hits": r_total,
-            "false_positives": r_fp,
-            "fp_rate_pct": r_fp_rate,
-            "health": r_health
-        })
-
-    return {
-        "status": "success",
-        "evaluation_period": "30 Days Active Telemetry",
-        "total_alerts_analyzed": total_alerts,
-        "true_positives": tp_alerts,
-        "false_positives": fp_alerts,
-        "unreviewed_new": new_alerts,
-        "precision_pct": precision,
-        "false_positive_rate_pct": fpr_pct,
-        "rule_health_score": rule_health_score,
-        "quality_tier": "Enterprise Grade" if rule_health_score >= 85 else "Standard",
-        "rule_breakdown": rule_metrics
-    }
+    return await golden_suite.get_detection_quality_metrics(db=db)

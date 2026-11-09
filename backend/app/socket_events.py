@@ -266,9 +266,11 @@ async def on_join(sid: str, data: Dict[str, Any]):
 
     # 2. If Not User (e.g. Agent connecting/joining its own room?)
     elif session.get('is_agent'):
-         # Agents are allowed to join their own rooms (already handled in connect, but just in case)
-         if session.get('agent_id') == room:
+         # Agents are allowed to join their own rooms only after cryptographic verification
+         if session.get('is_verified') and session.get('agent_id') == room:
              await sio.enter_room(sid, room)
+         else:
+             print(f"[Socket.IO] Denied join attempt for room {room} from unverified agent {sid}")
     else:
         print(f"[Socket.IO] Unauthenticated join attempt for {room} from {sid}")
 

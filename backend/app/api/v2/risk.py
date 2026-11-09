@@ -82,7 +82,7 @@ async def get_unified_risk_posture(
 ):
     """
     [v2.5.0 Unified Risk Engine]
-    Correlates internal EDR fleet telemetry (Monitorix) with external attack surface posture (RedRainbow).
+    Correlates internal EDR fleet telemetry (Monitorix) with external attack surface posture (Monitorix Surface Recon).
     Returns unified risk index (0-100), risk tier distribution, external vs internal vector scores,
     and priority cross-correlated remediation targets.
     """
@@ -99,7 +99,7 @@ async def get_unified_risk_posture(
     # Internal Fleet Metrics
     internal_avg_score = round(sum([p.TotalRiskScore for p in profiles]) / max(len(profiles), 1), 1) if profiles else 35.0
     
-    # RedRainbow External Attack Surface Metrics (External horizon)
+    # Monitorix External Attack Surface Metrics (External horizon)
     external_cve_score = 88.0    # CVE-2024-3400 (CVSS 10.0), CVE-2023-44487
     external_exposure_score = 74.0 # Open perimeter ports (443, 8443, 500)
     external_risk_score = round((external_cve_score * 0.6) + (external_exposure_score * 0.4), 1)
@@ -133,7 +133,7 @@ async def get_unified_risk_posture(
             },
             "external_attack_surface_risk": {
                 "score": external_risk_score,
-                "label": "RedRainbow Attack Surface",
+                "label": "Monitorix External Attack Surface",
                 "cve_score": external_cve_score,
                 "exposure_score": external_exposure_score,
                 "subdomains_mapped": 14,

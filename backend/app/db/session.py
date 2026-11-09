@@ -32,13 +32,14 @@ class Settings(BaseSettings):
     ]
 
     # =========================
-    # Email Settings
+    # Email Settings (Injected via Environment)
     # =========================
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASS: str = ""
-    SMTP_FROM: str = "noreply@watch-sec.com"
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "mail.internal.net")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASS: str = os.getenv("SMTP_PASS", "")
+    SMTP_FROM: str = os.getenv("SMTP_FROM", "noreply@internal.net")
+
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.dev"),
@@ -59,7 +60,10 @@ class Settings(BaseSettings):
     @classmethod
     def strip_quotes(cls, v: str) -> str:
         if isinstance(v, str):
-            return v.strip('"').strip("'")
+            v_clean = v.strip('"').strip("'")
+            if not v_clean or "placeholder" in v_clean.lower() or "change_me" in v_clean.lower():
+                raise ValueError("[SECURITY ERROR] Mandatory persistence URL is missing or set to an insecure placeholder.")
+            return v_clean
         return v
 
 

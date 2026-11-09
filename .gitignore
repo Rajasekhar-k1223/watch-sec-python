@@ -57,6 +57,8 @@ agent/python-*.zip
 backend/celerybeat-schedule
 .env
 backend/.env
+.minio_creds
+*.bak
 
 # Diagnostic & Maintenance Scripts
 *.py.bak

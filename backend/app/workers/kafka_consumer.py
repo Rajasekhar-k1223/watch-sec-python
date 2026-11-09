@@ -1,8 +1,22 @@
+"""
+Monitorix High-Reliability Telemetry Kafka Consumer Worker
+==========================================================
+100% Sovereign Monitorix Architecture. Zero external dependencies.
+
+Features:
+1. Zero Data-Loss Invariant: Kafka offsets committed ONLY after durable storage.
+2. ClickHouse Micro-Batching: Flushes with size and time thresholds to avoid write thrashing.
+3. Durable Disk-Backed DLQ: Spools failed batches to disk with automatic background replay.
+4. Real-time Threat Intelligence, DLP Ingress Filtering, and FIM Correlation.
+"""
+
 import os
 import json
 import asyncio
 from datetime import datetime
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, TopicPartition
+from aiokafka.structs import OffsetAndMetadata
+from sqlalchemy import select
 
 from app.db.session import settings
 from app.db.clickhouse import clickhouse_db
@@ -10,8 +24,9 @@ from app.db.session import AsyncSessionLocal
 from app.services.threat_intel_pipeline import ti_pipeline
 from app.services.detection_engine import detection_engine
 from app.services.dlp_engine import dlp_engine
+from app.workers.dlq_manager import dlq_manager
 from app.socket_instance import sio
-from sqlalchemy import select
+from app.services.correlation_service import streaming_correlation_engine
 
 class KafkaConsumerWorker:
     def __init__(self):
@@ -20,13 +35,18 @@ class KafkaConsumerWorker:
         self.consumer = None
         
         # Batching for ClickHouse inserts
-        self.batch_size = 500
+        self.batch_size = 200
         self.flush_interval = 2.0  # seconds
         self.event_batch = []
+        self.pending_offsets = {}  # TopicPartition -> OffsetAndMetadata
         self.last_flush_time = datetime.utcnow()
+        self.worker_id = os.getenv("WORKER_ID", "consumer-node-01")
+        self.hostname = os.getenv("HOSTNAME", "monitorix-consumer-pod")
+        self.total_processed = 0
+        self._flush_lock = asyncio.Lock()
 
     async def start(self):
-        print(f"[Kafka Consumer] Starting consumer on {self.bootstrap_servers}")
+        print(f"[Kafka Consumer] Starting zero-data-loss consumer on {self.bootstrap_servers}")
         clickhouse_db.connect()
         
         # Prime Threat Intel cache before consuming messages
@@ -38,27 +58,55 @@ class KafkaConsumerWorker:
                 self.topic,
                 bootstrap_servers=self.bootstrap_servers,
                 group_id="monitorix_threat_engine",
+                enable_auto_commit=False,  # CRITICAL: Manual commit strictly upon durable write
+                auto_offset_reset="earliest",
                 value_deserializer=lambda m: json.loads(m.decode('utf-8'))
             )
             await self.consumer.start()
-            print(f"[Kafka Consumer] Listening on topic: {self.topic}")
+            print(f"[Kafka Consumer] Listening on topic: {self.topic} (Manual Commit Enforced)", flush=True)
         except Exception as e:
-            print(f"[Kafka Consumer] Failed to connect: {e}")
+            print(f"[Kafka Consumer] Failed to connect: {e}", flush=True)
             return
 
-        # Start a background task for periodic flushing
+        # Start background tasks: Periodic micro-batch flushing & DLQ recovery worker & cluster heartbeat
         asyncio.create_task(self._periodic_flush())
+        asyncio.create_task(dlq_manager.start_retry_worker(clickhouse_db, interval_seconds=5))
+        asyncio.create_task(self._periodic_heartbeat())
 
         try:
             async for msg in self.consumer:
                 event = msg.value
-                await self.process_event(event)
+                # Track pending offset for this message
+                tp = TopicPartition(msg.topic, msg.partition)
+                self.pending_offsets[tp] = OffsetAndMetadata(msg.offset + 1, '')
+                await self.process_event(event, partition=msg.partition)
         finally:
             await self.consumer.stop()
             print("[Kafka Consumer] Stopped")
 
-    async def process_event(self, event: dict):
+    async def _periodic_heartbeat(self):
+        """Periodically registers consumer worker node and active Kafka partition assignments with Redis cluster."""
+        while True:
+            try:
+                assigned_parts = []
+                if self.consumer:
+                    assigned_parts = [tp.partition for tp in self.consumer.assignment()]
+                if not assigned_parts:
+                    assigned_parts = [0]
+                streaming_correlation_engine.register_worker_heartbeat(
+                    worker_id=self.worker_id,
+                    partitions=assigned_parts,
+                    hostname=self.hostname,
+                    status="ACTIVE",
+                    processed_count=self.total_processed
+                )
+            except Exception as hb_err:
+                print(f"[Kafka Consumer] Non-fatal heartbeat warning: {hb_err}")
+            await asyncio.sleep(10)
+
+    async def process_event(self, event: dict, partition: int = 0):
         try:
+            self.total_processed += 1
             print(f"[DEBUG] Received EventType: {event.get('EventType')}", flush=True)
             async with AsyncSessionLocal() as db:
                 # 1. DLP Pipeline Scan
@@ -70,19 +118,25 @@ class KafkaConsumerWorker:
                     print(f"[DLP] Dropping event from Agent {agent_id} due to DLP Block Policy.")
                     return  # Drop the event entirely, do not insert into ClickHouse or run detections
 
-                # 2. Real-time Threat Detection
+                # 2. Real-time Threat Detection (Sigma Rules & SIEM Events)
+                if event.get("EventType") in ("ProcessExecution", "PROCESS_START", "process_creation"):
+                    try:
+                        from app.services.detection.streaming_detector import streaming_detection_engine
+                        await streaming_detection_engine.process_kafka_event(db, event, agent_id)
+                    except Exception as s_err:
+                        print(f"[StreamingDetection] Non-fatal evaluation error: {s_err}", flush=True)
+
                 await detection_engine.process_telemetry_event(db, event, agent_id)
 
                 # 3. Real-Time Threat Intelligence (IOC) Matching
                 indicators = []
-                # Extract potential IOCs from the dynamic JSON payload
                 if event.get("RemoteIp"): indicators.append(("IPv4", event.get("RemoteIp")))
                 if event.get("DestinationIp"): indicators.append(("IPv4", event.get("DestinationIp")))
                 if event.get("RemoteHost"): indicators.append(("Domain", event.get("RemoteHost")))
                 if event.get("Query"): indicators.append(("Domain", event.get("Query")))
                 if event.get("Sha256"): indicators.append(("SHA256", event.get("Sha256")))
                 if event.get("Md5"): indicators.append(("MD5", event.get("Md5")))
-                if event.get("hash"): indicators.append(("SHA256", event.get("hash"))) # generic hash field
+                if event.get("hash"): indicators.append(("SHA256", event.get("hash")))
                 
                 for ioc_type, val in indicators:
                     if await ti_pipeline.is_malicious(ioc_type, val):
@@ -97,7 +151,6 @@ class KafkaConsumerWorker:
                         }
                         # Broadcast alert to SIEM/WebSockets
                         await sio.emit('threat_alert', ti_alert, room=f"tenant_{event.get('TenantId')}")
-                        # Store the alert in ClickHouse buffer
                         import uuid
                         self.event_batch.append((
                             str(uuid.uuid4()), agent_id, ti_alert["TenantId"], 
@@ -107,7 +160,6 @@ class KafkaConsumerWorker:
             # 4. Real-time Dashboard Updates
             if event.get("EventType") == "ProcessSnapshot":
                 processes = event.get("Processes") or event.get("Payload", {}).get("Processes", [])
-                print(f"[DEBUG] Emitting agent_processes for {agent_id}. Count: {len(processes)}", flush=True)
                 await sio.emit('agent_processes', {
                     'agent_id': agent_id,
                     'processes': processes
@@ -126,7 +178,6 @@ class KafkaConsumerWorker:
                 try:
                     from app.db.models import EventLog, Agent  # type: ignore
                     async with AsyncSessionLocal() as fim_db:
-                        # Resolve TenantId from Agent if not present in event
                         tenant_id = event.get("TenantId")
                         if not tenant_id:
                             res = await fim_db.execute(select(Agent).where(Agent.AgentId == agent_id))
@@ -150,7 +201,6 @@ class KafkaConsumerWorker:
                         await fim_db.commit()
                         print(f"[FIM] Saved FileIntegrityAlert for Agent {agent_id}: {event.get('FilePath')}")
 
-                        # Real-time push to dashboard
                         await sio.emit('fim_alert', {
                             'agent_id': agent_id,
                             'file_path': event.get('FilePath'),
@@ -163,17 +213,79 @@ class KafkaConsumerWorker:
                 except Exception as fim_err:
                     print(f"[FIM] Error saving FIM event: {fim_err}")
 
-            # 3. Buffer for ClickHouse Data Lake
-            # tuple: (event_id, agent_id, tenant_id, event_type, timestamp, payload)
-            # Default missing event_id to a new uuid if not present
+            # 5b. [Streaming Threat Correlation] In-Flight Multi-Stage Threat Correlation Engine
+            try:
+                correlations = streaming_correlation_engine.evaluate_event(
+                    event, worker_id=self.worker_id, partition=partition
+                )
+                for corr in correlations:
+                    corr_tenant = event.get("TenantId", "1")
+                    print(
+                        f"[StreamingCorrelation] In-Flight Threat Detected: {corr.get('type')} on Agent {agent_id} "
+                        f"(Severity: {corr.get('severity')}, Tactic: {corr.get('mitre_tactic')})",
+                        flush=True
+                    )
+                    # Broadcast in-flight correlation to SOC & SIEM
+                    await sio.emit('streaming_threat_correlation', corr, room=f"tenant_{corr_tenant}")
+                    if corr.get("attack_chain"):
+                        await sio.emit('attack_chain_updated', corr.get("attack_chain"), room=f"tenant_{corr_tenant}")
+
+                    # Persist critical correlation in EventLog for SOC review & historical auditing
+                    try:
+                        from app.db.models import EventLog
+                        async with AsyncSessionLocal() as corr_db:
+                            ev_log = EventLog(
+                                AgentId=agent_id,
+                                TenantId=int(corr_tenant) if str(corr_tenant).isdigit() else None,
+                                Type=f"CorrelationAlert: {corr.get('type')}",
+                                Details=f"{corr.get('description', '')} | Evidence: {corr.get('evidence', '')}",
+                                Severity=corr.get("severity", "High"),
+                                IsAlert=True,
+                                Timestamp=datetime.utcnow()
+                            )
+                            corr_db.add(ev_log)
+                            await corr_db.commit()
+                    except Exception as db_err:
+                        print(f"[StreamingCorrelation] Non-fatal DB event log error: {db_err}")
+
+                    # Buffer correlation event into ClickHouse data lake
+                    import uuid
+                    corr_rec = (
+                        str(uuid.uuid4()),
+                        agent_id,
+                        str(corr_tenant),
+                        "StreamingCorrelationAlert",
+                        datetime.utcnow(),
+                        json.dumps(corr)
+                    )
+                    self.event_batch.append(corr_rec)
+            except Exception as corr_err:
+                print(f"[StreamingCorrelation] Error evaluating event in-flight: {corr_err}")
+
+            # 6. Buffer for ClickHouse Data Lake (Preserving historical client event timestamp)
             import uuid
-            
+            raw_ts = (
+                event.get("original_timestamp") or
+                event.get("Timestamp") or
+                event.get("timestamp") or
+                event.get("detected_at")
+            )
+            event_ts = datetime.utcnow()
+            if raw_ts:
+                try:
+                    if isinstance(raw_ts, str):
+                        event_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).replace(tzinfo=None)
+                    elif isinstance(raw_ts, (int, float)):
+                        event_ts = datetime.utcfromtimestamp(raw_ts)
+                except Exception:
+                    event_ts = datetime.utcnow()
+
             record = (
                 event.get("event_id", str(uuid.uuid4())),
                 event.get("AgentId", ""),
                 str(event.get("TenantId", "")),
                 event.get("EventType", "Unknown"),
-                datetime.utcnow(),
+                event_ts,
                 json.dumps(event)
             )
             self.event_batch.append(record)
@@ -186,16 +298,56 @@ class KafkaConsumerWorker:
             print(f"[Kafka Consumer] Error processing event: {e}")
 
     async def flush_batch(self):
-        if not self.event_batch:
-            return
+        """
+        Micro-batch flush with strict reliable delivery:
+        1. Attempt insert into ClickHouse
+        2. On success: clear batch and commit Kafka offsets
+        3. On failure: spool to durable disk DLQ, then commit Kafka offsets so stream doesn't deadlock
+        """
+        async with self._flush_lock:
+            if not self.event_batch:
+                return
 
-        print(f"[ClickHouse] Flushing {len(self.event_batch)} records to Data Lake...")
-        success = clickhouse_db.insert_telemetry(self.event_batch)
-        if success:
-            self.event_batch.clear()
-            self.last_flush_time = datetime.utcnow()
-        else:
-            print("[ClickHouse] Failed to flush batch")
+            records_to_flush = list(self.event_batch)
+            offsets_to_commit = dict(self.pending_offsets)
+            count = len(records_to_flush)
+
+            print(f"[ClickHouse Ingest] Flushing {count} records to Data Lake...")
+            success = False
+            try:
+                success = clickhouse_db.insert_telemetry(records_to_flush)
+            except Exception as ch_err:
+                print(f"[ClickHouse Ingest ERROR] Exception inserting {count} records: {ch_err}")
+                success = False
+
+            if success:
+                self.event_batch.clear()
+                self.last_flush_time = datetime.utcnow()
+                # Safely commit offsets strictly after durable write
+                if offsets_to_commit and self.consumer:
+                    try:
+                        await self.consumer.commit(offsets_to_commit)
+                        # Remove committed offsets from pending dict
+                        for tp in offsets_to_commit:
+                            if tp in self.pending_offsets and self.pending_offsets[tp] == offsets_to_commit[tp]:
+                                del self.pending_offsets[tp]
+                    except Exception as commit_err:
+                        print(f"[Kafka Consumer] Offset commit error: {commit_err}")
+            else:
+                # Failure path: Spool to disk DLQ to guarantee zero telemetry loss
+                print(f"[ClickHouse Ingest FAILURE] Spooling {count} records to durable Disk DLQ...")
+                await dlq_manager.spool_failed_batch(records_to_flush, reason="ClickHouse insertion rejected batch")
+                self.event_batch.clear()
+                self.last_flush_time = datetime.utcnow()
+                # Commit offset now that data is durably stored on disk in DLQ
+                if offsets_to_commit and self.consumer:
+                    try:
+                        await self.consumer.commit(offsets_to_commit)
+                        for tp in offsets_to_commit:
+                            if tp in self.pending_offsets and self.pending_offsets[tp] == offsets_to_commit[tp]:
+                                del self.pending_offsets[tp]
+                    except Exception as commit_err:
+                        print(f"[Kafka Consumer] Offset commit error: {commit_err}")
 
     async def _periodic_flush(self):
         while True:
