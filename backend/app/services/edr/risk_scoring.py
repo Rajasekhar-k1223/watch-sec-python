@@ -37,8 +37,19 @@ def calculate_endpoint_risk(
     high_alerts = 0
     med_alerts = 0
 
+    def _get_val(obj, *keys):
+        if isinstance(obj, dict):
+            for k in keys:
+                v = obj.get(k) or obj.get(k.lower())
+                if v: return str(v)
+            return ""
+        for k in keys:
+            v = getattr(obj, k, None)
+            if v: return str(v)
+        return ""
+
     for a in alerts:
-        sev = str(getattr(a, "Severity", "") or "").upper()
+        sev = _get_val(a, "Severity", "severity").upper()
         if "CRIT" in sev:
             crit_alerts += 1
         elif "HIGH" in sev:
@@ -56,19 +67,19 @@ def calculate_endpoint_risk(
 
     # Vector 3: Network Anomaly (0 - 100)
     network_score = 10.0
-    if any("C2" in str(getattr(a, "Title", "")) or "BEACON" in str(getattr(a, "Title", "")).upper() for a in alerts):
+    if any("C2" in _get_val(a, "Title", "title").upper() or "BEACON" in _get_val(a, "Title", "title").upper() for a in alerts):
         network_score = 85.0
         factors.append("+85.0 pts: Network C2 beaconing pattern identified")
-    elif any("NETWORK" in str(getattr(a, "RuleTitle", "")).upper() for a in alerts):
+    elif any("NETWORK" in _get_val(a, "RuleTitle", "rule_title", "title").upper() for a in alerts):
         network_score = 55.0
         factors.append("+55.0 pts: Suspicious outbound network egress detected")
 
     # Vector 4: Identity & Privilege Behavior (0 - 100)
     identity_score = 15.0
-    if any("LSASS" in str(getattr(a, "Description", "")).upper() or "CREDENTIAL" in str(getattr(a, "Title", "")).upper() for a in alerts):
+    if any("LSASS" in _get_val(a, "Description", "description", "title").upper() or "CREDENTIAL" in _get_val(a, "Title", "title", "category").upper() for a in alerts):
         identity_score = 90.0
         factors.append("+90.0 pts: Credential access attempt (LSASS/SAM memory read)")
-    elif any("PRIVILEGE" in str(getattr(a, "Title", "")).upper() for a in alerts):
+    elif any("PRIVILEGE" in _get_val(a, "Title", "title").upper() for a in alerts):
         identity_score = 60.0
         factors.append("+60.0 pts: Local privilege escalation attempt")
 
