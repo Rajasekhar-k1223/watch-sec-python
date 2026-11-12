@@ -1,3 +1,4 @@
+import os
 """
 [v18.7.0] Monitorix Sovereign Database Security & DAM Service Layer
 ===================================================================
@@ -209,7 +210,9 @@ class MonitorixDatabaseSecurityService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed initial Database Instances, Alerts, Rules, and Audit Logs."""
+        """Seed initial Database Instances, Alerts, Rules, and Audit Logs only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         res = await session.execute(select(func.count(DatabaseInstance.Id)))
         if res.scalar() == 0:
             for inst in DEFAULT_INSTANCES:

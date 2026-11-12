@@ -1,3 +1,4 @@
+import os
 """
 [v18.8.0] Monitorix Sovereign Kubernetes & Container Workload Security Service
 ==============================================================================
@@ -253,7 +254,9 @@ class MonitorixK8sSecurityService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed initial Kubernetes clusters, workloads, findings, and policies."""
+        """Seed initial Kubernetes clusters, workloads, findings, and policies only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         q = await session.execute(select(K8sCluster))
         if not q.scalars().first():
             for c in DEFAULT_CLUSTERS:

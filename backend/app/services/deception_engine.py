@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 class DeceptionEngine:
 
     async def ensure_seed_data(self, db: AsyncSession):
+        import os
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         from sqlalchemy import func
         from app.db.models import Agent
         camp_count = (await db.execute(select(func.count(DeceptionCampaign.Id)))).scalar()

@@ -13,6 +13,7 @@ Implements:
 - 12.10 Commercial Analytics (ARR, MRR, Endpoints, Churn, Expansion, Support Load)
 """
 
+import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import json
@@ -777,6 +778,8 @@ class MonitorixCommercialService:
     # 12.6 & 12.7 MDR Operations (24/7 Managed Detection & Response)
     # -----------------------------------------------------------------------
     async def seed_mdr_tickets_if_empty(self, db: AsyncSession, tenant_id: int):
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         tickets = (await db.execute(select(MdrTicketAssignment).where(MdrTicketAssignment.TenantId == tenant_id))).scalars().all()
         if not tickets:
             t1 = MdrTicketAssignment(

@@ -1,3 +1,4 @@
+import os
 """
 [v18.5.0] Monitorix Sovereign DSPM Service Layer (Data Security Posture Management)
 ===================================================================================
@@ -317,7 +318,9 @@ class MonitorixDspmService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed initial DSPM datastores, findings, and compliance postures."""
+        """Seed initial DSPM datastores, findings, and compliance postures only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         # 1. DataStores
         res = await session.execute(select(func.count(DspmDataStore.Id)))
         if res.scalar() == 0:

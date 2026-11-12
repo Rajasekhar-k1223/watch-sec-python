@@ -1,3 +1,4 @@
+import os
 """
 [v18.9.0] Monitorix Sovereign Software Supply-Chain Security & SBOM Service
 ==========================================================================
@@ -265,7 +266,9 @@ class MonitorixSupplyChainService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed initial projects, components, findings, and policies."""
+        """Seed initial projects, components, findings, and policies only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         q = await session.execute(select(SupplyChainProject))
         if not q.scalars().first():
             for p in DEFAULT_PROJECTS:

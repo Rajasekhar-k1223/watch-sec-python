@@ -1,3 +1,4 @@
+import os
 """
 [v18.3.0] Monitorix Sovereign ITDR Service Layer (Identity Threat Detection & Response)
 ========================================================================================
@@ -255,7 +256,9 @@ class MonitorixITDRService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed default ITDR accounts, threats, and attack graph paths if empty."""
+        """Seed default ITDR accounts, threats, and attack graph paths only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         try:
             # Check accounts
             res_acc = await session.execute(select(func.count(IdentityAccount.Id)))

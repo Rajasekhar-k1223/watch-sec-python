@@ -1,3 +1,4 @@
+import os
 """
 [v18.3.0] Monitorix Sovereign CNAPP & CSPM Service Layer
 =========================================================
@@ -286,7 +287,9 @@ class MonitorixCnappService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed default multi-cloud accounts, resources, misconfigurations, and threats."""
+        """Seed default multi-cloud accounts, resources, misconfigurations, and threats only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         try:
             # Seed accounts
             res_acc = await session.execute(select(func.count(CnappCloudAccount.Id)))

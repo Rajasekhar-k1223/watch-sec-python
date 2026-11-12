@@ -1,3 +1,4 @@
+import os
 """
 [v18.3.0] Monitorix Sovereign WAAP Service Layer (Web Application & API Protection)
 =====================================================================================
@@ -190,52 +191,104 @@ DEFAULT_ENDPOINTS = [
         "blocked_requests": 340
     },
     {
-        "endpoint_id": "EP-USERS-PROFILE",
-        "path": "/api/v1/users/{id}",
+        "endpoint_id": "EP-AGENT-TELEM",
+        "path": "/api/agent/telemetry",
+        "method": "POST",
+        "auth_type": "HMAC_OR_MTLS",
+        "is_public": False,
+        "has_schema_validation": True,
+        "risk_score": 25.0,
+        "rate_limit_per_min": 1000,
+        "total_requests": 25480,
+        "blocked_requests": 0
+    },
+    {
+        "endpoint_id": "EP-AGENT-HEART",
+        "path": "/api/agent/heartbeat",
+        "method": "POST",
+        "auth_type": "HMAC_OR_MTLS",
+        "is_public": False,
+        "has_schema_validation": True,
+        "risk_score": 20.0,
+        "rate_limit_per_min": 600,
+        "total_requests": 6860,
+        "blocked_requests": 0
+    },
+    {
+        "endpoint_id": "EP-AUTH-TOKEN",
+        "path": "/api/auth/token",
+        "method": "POST",
+        "auth_type": "NONE",
+        "is_public": True,
+        "has_schema_validation": True,
+        "risk_score": 85.0,
+        "rate_limit_per_min": 60,
+        "total_requests": 450,
+        "blocked_requests": 12
+    },
+    {
+        "endpoint_id": "EP-EASM-OVERVIEW",
+        "path": "/api/v2/easm/overview",
         "method": "GET",
         "auth_type": "BEARER_JWT",
         "is_public": False,
         "has_schema_validation": True,
-        "risk_score": 45.0,
-        "rate_limit_per_min": 120,
-        "total_requests": 49120,
-        "blocked_requests": 18
+        "risk_score": 20.0,
+        "rate_limit_per_min": 300,
+        "total_requests": 850,
+        "blocked_requests": 0
     },
     {
-        "endpoint_id": "EP-PAYMENTS-PROCESS",
-        "path": "/api/v1/payments/process",
+        "endpoint_id": "EP-EASM-ASSETS",
+        "path": "/api/v2/easm/assets",
         "method": "POST",
         "auth_type": "BEARER_JWT",
         "is_public": False,
         "has_schema_validation": True,
-        "risk_score": 75.0,
-        "rate_limit_per_min": 30,
-        "total_requests": 12500,
-        "blocked_requests": 5
+        "risk_score": 35.0,
+        "rate_limit_per_min": 120,
+        "total_requests": 140,
+        "blocked_requests": 0
     },
     {
-        "endpoint_id": "EP-WEBHOOK-INGEST",
-        "path": "/api/v1/webhook",
+        "endpoint_id": "EP-WAAP-OVERVIEW",
+        "path": "/api/v2/waap/overview",
+        "method": "GET",
+        "auth_type": "BEARER_JWT",
+        "is_public": False,
+        "has_schema_validation": True,
+        "risk_score": 20.0,
+        "rate_limit_per_min": 300,
+        "total_requests": 920,
+        "blocked_requests": 0
+    },
+    {
+        "endpoint_id": "EP-ATTACK-VAL",
+        "path": "/api/v2/attack-validation/execute",
         "method": "POST",
-        "auth_type": "NONE",
-        "is_public": True,
-        "has_schema_validation": False,
-        "risk_score": 92.0,
-        "rate_limit_per_min": 60,
-        "total_requests": 8400,
-        "blocked_requests": 31
+        "auth_type": "BEARER_JWT",
+        "is_public": False,
+        "has_schema_validation": True,
+        "risk_score": 60.0,
+        "rate_limit_per_min": 30,
+        "total_requests": 45,
+        "blocked_requests": 0
+    },
+    {
+        "endpoint_id": "EP-NOTIFICATIONS",
+        "path": "/api/notifications",
+        "method": "GET",
+        "auth_type": "BEARER_JWT",
+        "is_public": False,
+        "has_schema_validation": True,
+        "risk_score": 15.0,
+        "rate_limit_per_min": 300,
+        "total_requests": 1250,
+        "blocked_requests": 0
     }
 ]
 
 DEFAULT_IP_REPUTATION = [
-    {
-        "ip_address": "198.51.100.77",
-        "reputation_score": 98.0,
-        "is_blocked": True,
-        "reason": "Repeated SQLi injection attempts against search endpoint",
-        "country_code": "RU",
-        "threat_category": "EXPLOIT_SCANNER"
-    },
     {
         "ip_address": "185.220.101.9",
         "reputation_score": 95.0,
@@ -251,6 +304,14 @@ DEFAULT_IP_REPUTATION = [
         "reason": "Automated Mirai/Botnet RCE command prober",
         "country_code": "NL",
         "threat_category": "KNOWN_BOTNET"
+    },
+    {
+        "ip_address": "194.26.29.112",
+        "reputation_score": 90.0,
+        "is_blocked": True,
+        "reason": "Directory Traversal / LFI Prober",
+        "country_code": "RU",
+        "threat_category": "EXPLOIT_SCANNER"
     }
 ]
 
@@ -260,9 +321,9 @@ class MonitorixWaapService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed default WAAP rules, events, endpoints, and IP reputation if empty."""
+        """Seed default WAAP rules and active endpoints if empty. Mock events are only seeded if MONITORIX_ENABLE_MOCK_SEED is true."""
         try:
-            # Rules
+            # Rules - Always ensure baseline WAF inspection rules exist
             res_r = await session.execute(select(func.count(WaapRule.Id)))
             if (res_r.scalar() or 0) == 0:
                 logger.info("Seeding default WAAP inspection rules...")
@@ -279,29 +340,10 @@ class MonitorixWaapService:
                     )
                     session.add(r)
 
-            # Events
-            res_e = await session.execute(select(func.count(WaapSecurityEvent.Id)))
-            if (res_e.scalar() or 0) == 0:
-                logger.info("Seeding default WAAP security events...")
-                for item in DEFAULT_EVENTS:
-                    e = WaapSecurityEvent(
-                        EventId=item["event_id"],
-                        RuleId=item["rule_id"],
-                        AttackType=item["attack_type"],
-                        ClientIp=item["client_ip"],
-                        RequestMethod=item["request_method"],
-                        RequestUri=item["request_uri"],
-                        UserAgent=item["user_agent"],
-                        PayloadSample=item["payload_sample"],
-                        ActionTaken=item["action_taken"],
-                        MetadataJson=json.dumps(item["metadata"])
-                    )
-                    session.add(e)
-
-            # Endpoints
+            # Endpoints - Ensure real Monitorix API endpoints are tracked
             res_ep = await session.execute(select(func.count(WaapApiEndpoint.Id)))
             if (res_ep.scalar() or 0) == 0:
-                logger.info("Seeding default WAAP API endpoints...")
+                logger.info("Initializing Monitorix production API endpoints...")
                 for item in DEFAULT_ENDPOINTS:
                     ep = WaapApiEndpoint(
                         EndpointId=item["endpoint_id"],
@@ -317,20 +359,41 @@ class MonitorixWaapService:
                     )
                     session.add(ep)
 
-            # IP Reputation
-            res_ip = await session.execute(select(func.count(WaapIpReputation.Id)))
-            if (res_ip.scalar() or 0) == 0:
-                logger.info("Seeding default WAAP IP reputation list...")
-                for item in DEFAULT_IP_REPUTATION:
-                    ip = WaapIpReputation(
-                        IpAddress=item["ip_address"],
-                        ReputationScore=item["reputation_score"],
-                        IsBlocked=item["is_blocked"],
-                        Reason=item["reason"],
-                        CountryCode=item["country_code"],
-                        ThreatCategory=item["threat_category"]
-                    )
-                    session.add(ip)
+            # Check if mock event seeding is explicitly enabled (default is False in production)
+            if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() == "true":
+                # Events
+                res_e = await session.execute(select(func.count(WaapSecurityEvent.Id)))
+                if (res_e.scalar() or 0) == 0:
+                    logger.info("Seeding default WAAP security events...")
+                    for item in DEFAULT_EVENTS:
+                        e = WaapSecurityEvent(
+                            EventId=item["event_id"],
+                            RuleId=item["rule_id"],
+                            AttackType=item["attack_type"],
+                            ClientIp=item["client_ip"],
+                            RequestMethod=item["request_method"],
+                            RequestUri=item["request_uri"],
+                            UserAgent=item["user_agent"],
+                            PayloadSample=item["payload_sample"],
+                            ActionTaken=item["action_taken"],
+                            MetadataJson=json.dumps(item["metadata"])
+                        )
+                        session.add(e)
+
+                # IP Reputation
+                res_ip = await session.execute(select(func.count(WaapIpReputation.Id)))
+                if (res_ip.scalar() or 0) == 0:
+                    logger.info("Seeding default WAAP IP reputation list...")
+                    for item in DEFAULT_IP_REPUTATION:
+                        ip = WaapIpReputation(
+                            IpAddress=item["ip_address"],
+                            ReputationScore=item["reputation_score"],
+                            IsBlocked=item["is_blocked"],
+                            Reason=item["reason"],
+                            CountryCode=item["country_code"],
+                            ThreatCategory=item["threat_category"]
+                        )
+                        session.add(ip)
 
             await session.commit()
         except Exception as e:

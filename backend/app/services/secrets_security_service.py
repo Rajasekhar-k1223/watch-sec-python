@@ -1,3 +1,4 @@
+import os
 """
 [v18.6.0] Monitorix Sovereign Secrets Security Service Layer
 ============================================================
@@ -226,7 +227,9 @@ class MonitorixSecretsSecurityService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed initial Targets, Incidents, and Vault integrations if empty."""
+        """Seed initial Targets, Incidents, and Vault integrations only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         res = await session.execute(select(func.count(SecretScanTarget.Id)))
         if res.scalar() == 0:
             for target in DEFAULT_TARGETS:

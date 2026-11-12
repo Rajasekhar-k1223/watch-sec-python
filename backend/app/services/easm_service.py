@@ -1,3 +1,4 @@
+import os
 """
 [v18.3.0] Monitorix Sovereign EASM Service Layer (External Attack Surface Management)
 ======================================================================================
@@ -371,7 +372,9 @@ class MonitorixEasmService:
 
     @staticmethod
     async def ensure_seed_data(session: AsyncSession) -> None:
-        """Seed default perimeter assets, ports, certs, and findings if empty."""
+        """Seed default perimeter assets, ports, certs, and findings only if MONITORIX_ENABLE_MOCK_SEED is true."""
+        if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() != "true":
+            return
         try:
             # Seed assets
             res_a = await session.execute(select(func.count(EasmAsset.Id)))
