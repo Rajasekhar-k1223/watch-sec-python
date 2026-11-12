@@ -159,8 +159,10 @@ class CspmEngine:
         """
         probe = await self.verify_aws_connectivity(cred)
         if not probe["connected"]:
-            logger.info(f"[CSPM] AWS account {cred.AccountId} not live: {probe['status']}. Emitting explicit simulation event.")
-            return await self._emit_simulated_cloudtrail(cred, reason=probe["status"])
+            logger.info(f"[CSPM] AWS account {cred.AccountId} not live: {probe['status']}.")
+            if os.getenv("MONITORIX_ENABLE_MOCK_SEED", "false").lower() == "true":
+                return await self._emit_simulated_cloudtrail(cred, reason=probe["status"])
+            return {"status": "UNCONFIGURED_OR_OFFLINE", "events_ingested": 0, "connected": False}
 
         # Real Authenticated Ingestion
         key_id, secret_key, session_token, region = self._resolve_aws_credentials(cred)
