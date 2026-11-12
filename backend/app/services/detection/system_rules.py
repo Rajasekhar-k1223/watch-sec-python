@@ -24,7 +24,10 @@ from sqlalchemy import desc
 
 logger = logging.getLogger("monitorix.detection.system_rules")
 
-RESERVED_SYSTEM_RULE_IDS = {9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009}
+RESERVED_SYSTEM_RULE_IDS = {
+    9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009,
+    9101, 9102, 9103, 9104, 9105, 9106, 9107, 9108
+}
 
 SYSTEM_RULES_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -278,6 +281,230 @@ detection:
   condition: selection
 falsepositives:
   - Authorized developer terminal sessions launched from approved IDEs
+level: critical
+""",
+    },
+    {
+        "id": 9101,
+        "name": "AI Prompt Injection Attempt Detected",
+        "type": "Sigma",
+        "category": "Initial Access",
+        "mitre_tactic": "TA0001 (Initial Access)",
+        "mitre_technique": "T1190 (Exploit Public-Facing Application)",
+        "severity": "High",
+        "yaml_content": """title: AI Prompt Injection Attempt Detected
+id: 9101
+status: production
+description: Detects direct adversarial jailbreak patterns, system prompt override commands, or delimiter evasion injected into AI Agent ingress prompts.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.initial_access
+  - attack.t1190
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    prompt_injection_detected: true
+  condition: selection
+falsepositives:
+  - Internal AI security evaluation benchmarks and approved LLM red-teaming tests
+level: high
+""",
+    },
+    {
+        "id": 9102,
+        "name": "AI Indirect Prompt Poisoning via Document Retrieval",
+        "type": "Sigma",
+        "category": "Execution",
+        "mitre_tactic": "TA0002 (Execution)",
+        "mitre_technique": "T1059 (Command and Scripting Interpreter)",
+        "severity": "High",
+        "yaml_content": """title: AI Indirect Prompt Poisoning via Document Retrieval
+id: 9102
+status: production
+description: Detects hidden instructions, payload injection, or malicious system prompt hijacking embedded inside ingested RAG documents, web content, or tool responses.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.execution
+  - attack.t1059
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    indirect_poisoning_detected: true
+  condition: selection
+falsepositives:
+  - Security documentation discussing prompt injection patterns
+level: high
+""",
+    },
+    {
+        "id": 9103,
+        "name": "AI MCP Tool Manifest Tampering Detected",
+        "type": "Sigma",
+        "category": "Persistence",
+        "mitre_tactic": "TA0003 (Persistence)",
+        "mitre_technique": "T1554 (Compromise Host Software Binary)",
+        "severity": "Critical",
+        "yaml_content": """title: AI MCP Tool Manifest Tampering Detected
+id: 9103
+status: production
+description: Detects unauthorized modification or SHA-256 hash discrepancy in registered Model Context Protocol (MCP) server tool schemas.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.persistence
+  - attack.t1554
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    mcp_manifest_tampered: true
+  condition: selection
+falsepositives:
+  - Authorized developer schema updates without prior manifest pinning update
+level: critical
+""",
+    },
+    {
+        "id": 9104,
+        "name": "AI Unauthorized Tool Execution Attempt",
+        "type": "Sigma",
+        "category": "Privilege Escalation",
+        "mitre_tactic": "TA0004 (Privilege Escalation)",
+        "mitre_technique": "T1068 (Exploitation for Privilege Escalation)",
+        "severity": "High",
+        "yaml_content": """title: AI Unauthorized Tool Execution Attempt
+id: 9104
+status: production
+description: Detects an AI agent attempting to execute an MCP tool outside its tenant-assigned allowlist or invoking an unapproved high-privilege function.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.privilege_escalation
+  - attack.t1068
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    unauthorized_tool_execution: true
+  condition: selection
+falsepositives:
+  - Misconfigured tool mapping during staging environment deployment
+level: high
+""",
+    },
+    {
+        "id": 9105,
+        "name": "AI High-Consequence Action Human Approval Bypass Attempt",
+        "type": "Sigma",
+        "category": "Defense Evasion",
+        "mitre_tactic": "TA0005 (Defense Evasion)",
+        "mitre_technique": "T1562.001 (Disable or Modify Tools)",
+        "severity": "Critical",
+        "yaml_content": """title: AI High-Consequence Action Human Approval Bypass Attempt
+id: 9105
+status: production
+description: Detects an AI agent attempting to execute destructive write actions (database DROP/DELETE, file destruction, firewall changes) without passing through SOAR Human-in-the-Loop (HITL) approval queue.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.defense_evasion
+  - attack.t1562.001
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    hitl_bypass_detected: true
+  condition: selection
+falsepositives:
+  - Emergency manual override executed by authenticated SuperAdmin
+level: critical
+""",
+    },
+    {
+        "id": 9106,
+        "name": "AI Sensitive Credential or Secret Extraction in Response",
+        "type": "Sigma",
+        "category": "Credential Access",
+        "mitre_tactic": "TA0006 (Credential Access)",
+        "mitre_technique": "T1552 (Unsecured Credentials)",
+        "severity": "Critical",
+        "yaml_content": """title: AI Sensitive Credential or Secret Extraction in Response
+id: 9106
+status: production
+description: Detects cloud API keys, private keys, database passwords, or PII exposed in AI Agent output or tool return buffers.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.credential_access
+  - attack.t1552
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    ai_credential_leak_detected: true
+  condition: selection
+falsepositives:
+  - Masked or synthetic token demonstrations in security training
+level: critical
+""",
+    },
+    {
+        "id": 9107,
+        "name": "AI Runtime Recursion or Tool Denial-of-Service Loop",
+        "type": "Sigma",
+        "category": "Impact",
+        "mitre_tactic": "TA0040 (Impact)",
+        "mitre_technique": "T1499 (Endpoint Denial of Service)",
+        "severity": "Medium",
+        "yaml_content": """title: AI Runtime Recursion or Tool Denial-of-Service Loop
+id: 9107
+status: production
+description: Detects excessive recursive tool calls, infinite loop state transitions, or token surge anomalies exceeding safe execution limits.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.impact
+  - attack.t1499
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    recursion_anomaly_detected: true
+  condition: selection
+falsepositives:
+  - Long-running legitimate batch data aggregation processes
+level: medium
+""",
+    },
+    {
+        "id": 9108,
+        "name": "AI Agent Server-Side Request Forgery (SSRF) via Tool Call",
+        "type": "Sigma",
+        "category": "Lateral Movement",
+        "mitre_tactic": "TA0008 (Lateral Movement)",
+        "mitre_technique": "T1557 (Adversary-in-the-Middle)",
+        "severity": "Critical",
+        "yaml_content": """title: AI Agent Server-Side Request Forgery via Tool Call
+id: 9108
+status: production
+description: Detects an AI agent or MCP tool attempting network connections to internal loopback, private RFC-1918 subnets, or cloud metadata endpoints (169.254.169.254).
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.lateral_movement
+  - attack.t1557
+logsource:
+  category: ai_agent_telemetry
+  product: generic
+detection:
+  selection:
+    agent_ssrf_detected: true
+  condition: selection
+falsepositives:
+  - Explicitly allowlisted internal service proxies in development environments
 level: critical
 """,
     },

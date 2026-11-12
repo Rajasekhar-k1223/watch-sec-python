@@ -754,9 +754,10 @@ class DetectionAlert(Base):
     __tablename__ = "DetectionAlerts"
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=True, index=True)
-    AgentId = Column(String(50), ForeignKey("Agents.AgentId"), index=True)
+    AgentId = Column(String(64), nullable=True, index=True)
     RuleId = Column(Integer, ForeignKey("DetectionRules.Id"))
     TelemetryId = Column(Integer) # Link back to the ActivityLog or Network log
+    TestRunId = Column(String(64), nullable=True, index=True) # Unified trace correlation key
     MatchedContent = Column(Text) # The specific cmdline or file that triggered the rule
     Status = Column(String(50), default="New") # New, Investigating, False Positive, Confirmed
     Timestamp = Column(DateTime, default=datetime.utcnow)
@@ -3399,6 +3400,76 @@ AuditEvent = AuditLog
 Release = SoftwareRelease
 Update = UpdatePackage
 Organization = Tenant
+
+
+# ===========================================================================
+# [v19.2.0] SOVEREIGN AI AGENT SECURITY & MCP GOVERNANCE MODELS
+# ===========================================================================
+
+class AiModel(Base):
+    __tablename__ = "AiModels"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    Name = Column(String(128), nullable=False)
+    Provider = Column(String(64), nullable=False) # ollama, vllm, internal, openai_compatible
+    ModelVersion = Column(String(64), nullable=False)
+    EndpointUrl = Column(String(255), nullable=False)
+    MaxContextWindow = Column(Integer, default=8192)
+    MaxAllowedTemperature = Column(Float, default=0.7)
+    IsApproved = Column(Boolean, default=True)
+    RiskScore = Column(Integer, default=0)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+class AiAgent(Base):
+    __tablename__ = "AiAgents"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    AgentUuid = Column(String(64), unique=True, index=True, nullable=False)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=False, index=True)
+    Name = Column(String(128), nullable=False)
+    Description = Column(Text, nullable=True)
+    OwnerEmail = Column(String(255), nullable=False)
+    Environment = Column(String(64), default="production") # dev, staging, production
+    Status = Column(String(32), default="ACTIVE") # ACTIVE, QUARANTINED, REVOKED
+    ModelBindingId = Column(Integer, ForeignKey("AiModels.Id"), nullable=True)
+    SystemPromptHash = Column(String(64), nullable=True)
+    RateLimitPerMin = Column(Integer, default=30)
+    RequireHitlForHighImpact = Column(Boolean, default=True)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    model = relationship("AiModel", foreign_keys=[ModelBindingId], lazy="selectin")
+    tenant = relationship("Tenant", foreign_keys=[TenantId], lazy="selectin")
+
+class McpServer(Base):
+    __tablename__ = "McpServers"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=False, index=True)
+    ServerName = Column(String(128), nullable=False)
+    EndpointUrl = Column(String(255), nullable=False)
+    TransportType = Column(String(32), default="stdio") # stdio, sse, websocket
+    AuthType = Column(String(32), default="mtls") # mtls, bearer, none
+    Status = Column(String(32), default="ONLINE") # ONLINE, DEGRADED, QUARANTINED
+    ToolManifestHash = Column(String(64), nullable=False) # SHA-256 of tool schema JSON
+    LastVerifiedAt = Column(DateTime, default=datetime.utcnow)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+    tenant = relationship("Tenant", foreign_keys=[TenantId], lazy="selectin")
+
+class McpToolPolicy(Base):
+    __tablename__ = "McpToolPolicies"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    TenantId = Column(Integer, ForeignKey("Tenants.Id"), nullable=False, index=True)
+    AgentId = Column(Integer, ForeignKey("AiAgents.Id"), nullable=False, index=True)
+    McpServerId = Column(Integer, ForeignKey("McpServers.Id"), nullable=False, index=True)
+    ToolName = Column(String(128), nullable=False)
+    RiskTier = Column(String(32), default="MEDIUM") # LOW, MEDIUM, HIGH_IMPACT
+    AllowedParametersJson = Column(Text, nullable=True) # JSON Schema restrictions
+    IsAllowed = Column(Boolean, default=True)
+    RequiresHumanApproval = Column(Boolean, default=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+    agent = relationship("AiAgent", foreign_keys=[AgentId], lazy="selectin")
+    server = relationship("McpServer", foreign_keys=[McpServerId], lazy="selectin")
+
 
 
 

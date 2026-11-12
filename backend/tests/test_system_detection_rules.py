@@ -103,18 +103,21 @@ async def run_suite():
     print("=" * 80)
 
     # --------------------------------------------------------------------------
-    # TEST 01: System rule definitions completeness (9001-9009)
+    # TEST 01: System rule definitions completeness (9001-9009, 9101-9108)
     # --------------------------------------------------------------------------
     t0 = time.perf_counter()
     rules_defs = get_system_rules()
     ids_present = {r["id"] for r in rules_defs}
-    expected_ids = {9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009}
+    expected_ids = {
+        9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009,
+        9101, 9102, 9103, 9104, 9105, 9106, 9107, 9108
+    }
     d1 = (time.perf_counter() - t0) * 1000
-    p1 = (ids_present == expected_ids and len(rules_defs) == 9)
-    record_result(1, "System Rule Range Completeness (IDs 9001-9009)", p1, d1)
+    p1 = (ids_present == expected_ids and len(rules_defs) == 17)
+    record_result(1, "System Rule Range Completeness (IDs 9001-9009 & 9101-9108)", p1, d1)
 
     # --------------------------------------------------------------------------
-    # TEST 02: Valid Sigma YAML parsing across all 9 rules
+    # TEST 02: Valid Sigma YAML parsing across all 17 rules
     # --------------------------------------------------------------------------
     t0 = time.perf_counter()
     import yaml
@@ -127,7 +130,7 @@ async def run_suite():
         except Exception:
             all_yaml_valid = False
     d2 = (time.perf_counter() - t0) * 1000
-    record_result(2, "Valid Sigma YAML Parsing for All 9 System Rules", all_yaml_valid, d2)
+    record_result(2, "Valid Sigma YAML Parsing for All 17 System Rules", all_yaml_valid, d2)
 
     # --------------------------------------------------------------------------
     # TEST 03: Successful AST compilation into CompiledSigmaRule instances
@@ -153,7 +156,7 @@ async def run_suite():
             print(f"    Compilation error on rule {r['id']}: {e}")
             compilation_success = False
     d3 = (time.perf_counter() - t0) * 1000
-    p3 = compilation_success and len(compiled_rules) == 9
+    p3 = compilation_success and len(compiled_rules) == 17
     record_result(3, "Successful AST Compilation into CompiledSigmaRule Instances", p3, d3)
 
     # --------------------------------------------------------------------------
@@ -170,11 +173,19 @@ async def run_suite():
         9006: "high",
         9007: "critical",
         9008: "critical",
-        9009: "critical"
+        9009: "critical",
+        9101: "high",
+        9102: "high",
+        9103: "critical",
+        9104: "high",
+        9105: "critical",
+        9106: "critical",
+        9107: "medium",
+        9108: "critical"
     }
     p4 = (severities == expected_severities)
     d4 = (time.perf_counter() - t0) * 1000
-    record_result(4, "Rule Identifier and Severity Assignment Verification", p4, d4, f"(Severities={severities})")
+    record_result(4, "Rule Identifier and Severity Assignment Verification", p4, d4, f"(Severities count={len(severities)})")
 
     # --------------------------------------------------------------------------
     # TEST 05: Complete MITRE ATT&CK tactic and technique metadata preservation
@@ -190,7 +201,15 @@ async def run_suite():
         ("exfiltration" in str(tactics[9006]).lower()) and
         ("command and control" in str(tactics[9007]).lower() or "command_and_control" in str(tactics[9007]).lower()) and
         ("execution" in str(tactics[9008]).lower()) and
-        ("defense evasion" in str(tactics[9009]).lower() or "defense_evasion" in str(tactics[9009]).lower())
+        ("defense evasion" in str(tactics[9009]).lower() or "defense_evasion" in str(tactics[9009]).lower()) and
+        ("initial access" in str(tactics[9101]).lower() or "initial_access" in str(tactics[9101]).lower()) and
+        ("execution" in str(tactics[9102]).lower()) and
+        ("persistence" in str(tactics[9103]).lower()) and
+        ("privilege escalation" in str(tactics[9104]).lower() or "privilege_escalation" in str(tactics[9104]).lower()) and
+        ("defense evasion" in str(tactics[9105]).lower() or "defense_evasion" in str(tactics[9105]).lower()) and
+        ("credential access" in str(tactics[9106]).lower() or "credential_access" in str(tactics[9106]).lower()) and
+        ("impact" in str(tactics[9107]).lower()) and
+        ("lateral movement" in str(tactics[9108]).lower() or "lateral_movement" in str(tactics[9108]).lower())
     )
     d5 = (time.perf_counter() - t0) * 1000
     record_result(5, "MITRE ATT&CK Tactic & Technique Preservation", mitre_ok, d5)
@@ -242,7 +261,7 @@ async def run_suite():
     res1 = await seed_system_rules(mock_db)
     res2 = await seed_system_rules(mock_db)
     d8 = (time.perf_counter() - t0) * 1000
-    p8 = (res1["seeded"] == 9 and res2["seeded"] == 0 and res2["verified_existing"] == 9)
+    p8 = (res1["seeded"] == 17 and res2["seeded"] == 0 and res2["verified_existing"] == 17)
     record_result(8, "System Rule Idempotent Seeding (Zero Duplicate Rows)", p8, d8)
 
     # --------------------------------------------------------------------------
