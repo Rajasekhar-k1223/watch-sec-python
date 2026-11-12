@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
 from app.db.session import get_db
-from app.db.models import DlpRule, DlpPolicy, DlpPolicyRuleLink, DlpViolation, User
+from app.db.models import DlpRule, DlpPolicy, DlpPolicyRuleLink, DlpViolation, User, Tenant
 from app.services.dlp_engine import dlp_engine
 from app.api.deps import get_current_user
 from pydantic import BaseModel
@@ -16,6 +16,7 @@ async def get_caller_auth(
     request: Request,
     auth_header: Optional[str] = Header(None, alias="Authorization"),
     x_sig: Optional[str] = Header(None, alias="X-Signature"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     db: AsyncSession = Depends(get_db)
 ):
     if auth_header and auth_header.startswith("Bearer "):
@@ -26,7 +27,16 @@ async def get_caller_auth(
             pass
     if x_sig:
         return x_sig
-    return "authorized_caller"
+    if x_api_key:
+        res = await db.execute(select(Tenant).where(Tenant.ApiKey == x_api_key))
+        tenant = res.scalars().first()
+        if tenant and tenant.ActiveStatus:
+            return f"tenant_{tenant.Id}"
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication credentials required: Provide a valid Bearer token, X-Signature, or X-API-Key",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
 
 class RuleRequest(BaseModel):
     name: str

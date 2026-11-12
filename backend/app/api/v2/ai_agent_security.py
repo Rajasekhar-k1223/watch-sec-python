@@ -15,11 +15,12 @@ import json
 import hashlib
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc
+from jose import JWTError, jwt
 
 from app.db.session import get_db
 from app.db.models import (
@@ -28,16 +29,101 @@ from app.db.models import (
     McpServer,
     McpToolPolicy,
     DetectionAlert,
-    AuditLog
+    AuditLog,
+    User,
+    Tenant
 )
+from app.core.security import SECRET_KEY, ALGORITHM
 from app.services.mcp_security_gateway import McpSecurityGateway
 
 router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Pydantic Schemas
+# Authentication & Authorization Dependency (Zero-Trust Gatekeeper)
 # ---------------------------------------------------------------------------
+
+async def get_ai_auth_caller(
+    auth_header: Optional[str] = Header(None, alias="Authorization"),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_tenant_api_key: Optional[str] = Header(None, alias="X-Tenant-Api-Key"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Enforces strict identity validation for Sovereign AI & MCP Gateway endpoints.
+    Accepts Bearer JWT, internal SDK token, or validated Tenant API Key.
+    Rejects unauthenticated callers with HTTP 401.
+    """
+    # 1. Bearer JWT
+    if auth_header:
+        token = auth_header.split(" ")[1] if auth_header.startswith("Bearer ") else auth_header
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            username = payload.get("sub")
+            if username:
+                if username.startswith("sdk_"):
+                    return User(Id=None, Username=username, Role=payload.get("role", "TenantAdmin"), TenantId=payload.get("tenantId", 1))
+                res = await db.execute(select(User).where(User.Username == username))
+                user = res.scalars().first()
+                if user and getattr(user, "ActiveStatus", True):
+                    return user
+        except Exception:
+            pass
+
+    # 2. X-API-Key or X-Tenant-Api-Key
+    key = x_api_key or x_tenant_api_key
+    if key:
+        res = await db.execute(select(Tenant).where(Tenant.ApiKey == key))
+        tenant = res.scalars().first()
+        if tenant and tenant.ActiveStatus:
+            return User(Id=None, Username=f"apikey_{tenant.Name}", Role="TenantAdmin", TenantId=tenant.Id)
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required: Provide a valid Bearer token or X-API-Key",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Schemas & Sanitized Response Models
+# ---------------------------------------------------------------------------
+
+class TenantSummaryDto(BaseModel):
+    Id: int
+    Name: str
+    Plan: Optional[str] = None
+    ActiveStatus: Optional[bool] = None
+
+
+class AiModelSummaryDto(BaseModel):
+    Id: int
+    Name: str
+    Provider: str
+    ModelVersion: str
+    EndpointUrl: str
+    MaxContextWindow: int
+    MaxAllowedTemperature: float
+    IsApproved: bool
+    RiskScore: int
+
+
+class AiAgentResponseDto(BaseModel):
+    Id: int
+    AgentUuid: str
+    TenantId: int
+    Name: str
+    Description: Optional[str] = None
+    OwnerEmail: str
+    Status: str
+    Environment: str
+    ModelBindingId: Optional[int] = None
+    RateLimitPerMin: int
+    RequireHitlForHighImpact: bool
+    CreatedAt: Optional[datetime] = None
+    UpdatedAt: Optional[datetime] = None
+    tenant: Optional[TenantSummaryDto] = None
+    model: Optional[AiModelSummaryDto] = None
 
 class CreateAiModelRequest(BaseModel):
     name: str = Field(..., example="llama-3.3-70b-instruct")
@@ -102,7 +188,10 @@ class ValidateAiHarnessRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/models")
-async def list_ai_models(db: AsyncSession = Depends(get_db)):
+async def list_ai_models(
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """List all registered AI/LLM models and posture status."""
     res = await db.execute(select(AiModel).order_by(desc(AiModel.CreatedAt)))
     models = res.scalars().all()
@@ -110,7 +199,11 @@ async def list_ai_models(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/models", status_code=status.HTTP_201_CREATED)
-async def register_ai_model(req: CreateAiModelRequest, db: AsyncSession = Depends(get_db)):
+async def register_ai_model(
+    req: CreateAiModelRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """Register a new private or internal LLM model."""
     model = AiModel(
         Name=req.name,
@@ -133,15 +226,67 @@ async def register_ai_model(req: CreateAiModelRequest, db: AsyncSession = Depend
 # ---------------------------------------------------------------------------
 
 @router.get("/agents")
-async def list_ai_agents(tenant_id: int = Query(1), db: AsyncSession = Depends(get_db)):
-    """List all registered AI Agents with bound models, HITL settings, and posture."""
+async def list_ai_agents(
+    tenant_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
+    """
+    List all registered AI Agents with bound models, HITL settings, and posture.
+    Strictly sanitizes output to prevent leaking tenant ApiKeys or SCIM tokens.
+    """
     res = await db.execute(select(AiAgent).where(AiAgent.TenantId == tenant_id).order_by(desc(AiAgent.CreatedAt)))
-    agents = res.scalars().all()
-    return {"count": len(agents), "agents": agents}
+    raw_agents = res.scalars().all()
+    
+    sanitized_agents = []
+    for a in raw_agents:
+        t_summary = None
+        if a.tenant:
+            t_summary = TenantSummaryDto(
+                Id=a.tenant.Id,
+                Name=a.tenant.Name,
+                Plan=getattr(a.tenant, "Plan", "MDR-Premier"),
+                ActiveStatus=getattr(a.tenant, "ActiveStatus", True)
+            )
+        m_summary = None
+        if a.model:
+            m_summary = AiModelSummaryDto(
+                Id=a.model.Id,
+                Name=a.model.Name,
+                Provider=a.model.Provider,
+                ModelVersion=a.model.ModelVersion,
+                EndpointUrl=a.model.EndpointUrl,
+                MaxContextWindow=a.model.MaxContextWindow,
+                MaxAllowedTemperature=a.model.MaxAllowedTemperature,
+                IsApproved=a.model.IsApproved,
+                RiskScore=a.model.RiskScore
+            )
+        sanitized_agents.append(AiAgentResponseDto(
+            Id=a.Id,
+            AgentUuid=a.AgentUuid,
+            TenantId=a.TenantId,
+            Name=a.Name,
+            Description=a.Description,
+            OwnerEmail=a.OwnerEmail,
+            Status=a.Status,
+            Environment=a.Environment,
+            ModelBindingId=a.ModelBindingId,
+            RateLimitPerMin=a.RateLimitPerMin,
+            RequireHitlForHighImpact=a.RequireHitlForHighImpact,
+            CreatedAt=a.CreatedAt,
+            UpdatedAt=a.UpdatedAt,
+            tenant=t_summary,
+            model=m_summary
+        ))
+    return {"count": len(sanitized_agents), "agents": sanitized_agents}
 
 
 @router.post("/agents", status_code=status.HTTP_201_CREATED)
-async def register_ai_agent(req: CreateAiAgentRequest, db: AsyncSession = Depends(get_db)):
+async def register_ai_agent(
+    req: CreateAiAgentRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """Register a new autonomous AI Agent with unique agent_uuid."""
     agent_uuid = f"agt-{uuid.uuid4().hex[:12]}"
     agent = AiAgent(
@@ -158,11 +303,16 @@ async def register_ai_agent(req: CreateAiAgentRequest, db: AsyncSession = Depend
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
-    return {"message": "AI Agent registered successfully", "agent": agent}
+    return {"message": "AI Agent registered successfully", "agent_uuid": agent_uuid}
 
 
 @router.patch("/agents/{agent_uuid}/status")
-async def update_agent_status(agent_uuid: str, new_status: str = Query(..., regex="^(ACTIVE|QUARANTINED|REVOKED)$"), db: AsyncSession = Depends(get_db)):
+async def update_agent_status(
+    agent_uuid: str,
+    new_status: str = Query(..., regex="^(ACTIVE|QUARANTINED|REVOKED)$"),
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """Instant 1-click quarantine or revocation switch for compromised AI Agents."""
     res = await db.execute(select(AiAgent).where(AiAgent.AgentUuid == agent_uuid))
     agent = res.scalar_one_or_none()
@@ -175,7 +325,7 @@ async def update_agent_status(agent_uuid: str, new_status: str = Query(..., rege
 
     audit = AuditLog(
         TenantId=agent.TenantId,
-        Actor="SECURITY_ADMIN",
+        Actor=getattr(caller, "Username", "SECURITY_ADMIN"),
         Action="AI_AGENT_STATUS_CHANGE",
         Target=f"AiAgent:{agent_uuid}",
         Details=f"Status transitioned from {old_status} to {new_status}",
@@ -191,7 +341,11 @@ async def update_agent_status(agent_uuid: str, new_status: str = Query(..., rege
 # ---------------------------------------------------------------------------
 
 @router.get("/mcp/servers")
-async def list_mcp_servers(tenant_id: int = Query(1), db: AsyncSession = Depends(get_db)):
+async def list_mcp_servers(
+    tenant_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """List registered MCP servers with pinned SHA-256 tool manifest hashes."""
     res = await db.execute(select(McpServer).where(McpServer.TenantId == tenant_id))
     servers = res.scalars().all()
@@ -199,7 +353,11 @@ async def list_mcp_servers(tenant_id: int = Query(1), db: AsyncSession = Depends
 
 
 @router.post("/mcp/servers", status_code=status.HTTP_201_CREATED)
-async def register_mcp_server(req: CreateMcpServerRequest, db: AsyncSession = Depends(get_db)):
+async def register_mcp_server(
+    req: CreateMcpServerRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """Register an MCP server and cryptographically pin its tool schema manifest."""
     manifest_hash = McpSecurityGateway.compute_manifest_hash(req.tools_manifest_json)
     server = McpServer(
@@ -221,7 +379,11 @@ async def register_mcp_server(req: CreateMcpServerRequest, db: AsyncSession = De
 
 
 @router.post("/mcp/policies", status_code=status.HTTP_201_CREATED)
-async def create_tool_policy(req: CreateMcpToolPolicyRequest, db: AsyncSession = Depends(get_db)):
+async def create_tool_policy(
+    req: CreateMcpToolPolicyRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """Assign Zero-Trust tool execution policy, risk tier, and HITL requirements to an AI Agent."""
     res_existing = await db.execute(
         select(McpToolPolicy).where(
@@ -259,7 +421,11 @@ async def create_tool_policy(req: CreateMcpToolPolicyRequest, db: AsyncSession =
 # ---------------------------------------------------------------------------
 
 @router.post("/mcp/invoke")
-async def invoke_mcp_tool(req: InvokeToolRequest, db: AsyncSession = Depends(get_db)):
+async def invoke_mcp_tool(
+    req: InvokeToolRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """
     Sovereign Runtime Gateway: Intercepts and validates MCP tool invocations.
     Inspects parameters, verifies SHA-256 manifests, blocks SSRF, enforces HITL,
@@ -324,7 +490,11 @@ async def invoke_mcp_tool(req: InvokeToolRequest, db: AsyncSession = Depends(get
 # ---------------------------------------------------------------------------
 
 @router.post("/validate-harness")
-async def run_ai_validation_harness(req: ValidateAiHarnessRequest, db: AsyncSession = Depends(get_db)):
+async def run_ai_validation_harness(
+    req: ValidateAiHarnessRequest,
+    db: AsyncSession = Depends(get_db),
+    caller: Any = Depends(get_ai_auth_caller)
+):
     """
     Executes controlled attack simulations and verifies the 3 Success Contracts:
     1. Safety: Attack contained, zero real data touched.
