@@ -303,7 +303,16 @@ async def register_ai_agent(
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
-    return {"message": "AI Agent registered successfully", "agent_uuid": agent_uuid}
+    return {
+        "message": "AI Agent registered successfully",
+        "agent_uuid": agent_uuid,
+        "agent": {
+            "Id": agent.Id,
+            "AgentUuid": agent.AgentUuid,
+            "Name": agent.Name,
+            "Status": agent.Status
+        }
+    }
 
 
 @router.patch("/agents/{agent_uuid}/status")
