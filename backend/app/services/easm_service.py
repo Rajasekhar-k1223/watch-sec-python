@@ -1043,6 +1043,10 @@ class MonitorixEasmService:
         if not asset:
             raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found")
 
+        # Cascade-delete associated findings and port records
+        await session.execute(delete(EasmExposureFinding).where(EasmExposureFinding.AssetId == asset_id))
+        await session.execute(delete(EasmPortService).where(EasmPortService.AssetId == asset_id))
+
         await session.delete(asset)
         await session.commit()
         return {"success": True, "message": f"Asset {asset_id} removed from monitoring"}
