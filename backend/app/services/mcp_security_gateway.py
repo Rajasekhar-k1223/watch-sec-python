@@ -274,3 +274,4 @@ class McpSecurityGateway:
                         logger.warning(f"[McpSecurityGateway] ClickHouse trace insert status {resp.status}")
         except Exception as e:
             logger.debug(f"[McpSecurityGateway] Trace recording caught non-fatal: {e}")
+

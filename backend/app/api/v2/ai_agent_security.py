@@ -364,3 +364,4 @@ async def run_ai_validation_harness(req: ValidateAiHarnessRequest, db: AsyncSess
     await db.commit()
 
     return verdict_summary
+
