@@ -18,6 +18,7 @@ SYNTHETIC_RULES = {
     9006: {"Name": "WebMail DLP Violation",   "Severity": "High",     "MitreTactic": "Exfiltration",      "MitreTechnique": "T1048.003"},
     9007: {"Name": "ThreatIntel IOC Match",   "Severity": "Critical", "MitreTactic": "Command and Control","MitreTechnique": "T1071"},
     9008: {"Name": "Sandbox Threat Prevented","Severity": "Critical", "MitreTactic": "Execution",         "MitreTechnique": "T1204.002"},
+    9009: {"Name": "WSL Defense Evasion",     "Severity": "Critical", "MitreTactic": "Defense Evasion",   "MitreTechnique": "T1202"},
 }
 
 

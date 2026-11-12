@@ -871,8 +871,8 @@ class DlpPolicy(Base):
     Id = Column(Integer, primary_key=True, index=True)
     TenantId = Column(Integer, ForeignKey("Tenants.Id"), index=True, nullable=True)
     Name = Column(String(100), nullable=False)
-    TargetChannelsJson = Column(Text) # ["USB", "Clipboard", "Email"]
-    Action = Column(String(50), default="Alert") # Alert, Block, Audit
+    TargetChannelsJson = Column(Text) # ["USB", "Clipboard", "Email", "Browser", "CloudStorage", "Print", "Network"]
+    Action = Column(String(50), default="Alert") # Alert, Block, Warn
     IsActive = Column(Boolean, default=True)
 
 class DlpPolicyRuleLink(Base):
@@ -885,11 +885,11 @@ class DlpViolation(Base):
     __tablename__ = "DlpViolations"
     Id = Column(Integer, primary_key=True, index=True)
     AgentId = Column(String(50), index=True)
-    PolicyId = Column(Integer, ForeignKey("DlpPolicies.Id"))
-    RuleId = Column(Integer, ForeignKey("DlpRules.Id"))
-    Channel = Column(String(50)) # e.g. "USB"
+    PolicyId = Column(Integer, ForeignKey("DlpPolicies.Id"), nullable=True)
+    RuleId = Column(Integer, ForeignKey("DlpRules.Id"), nullable=True)
+    Channel = Column(String(50)) # e.g. "USB", "Browser", "Clipboard", "Email", "Print"
     MatchedContentObfuscated = Column(Text) # E.g., "4532 **** **** 1234"
-    ActionTaken = Column(String(50)) # Alerted, Blocked
+    ActionTaken = Column(String(50)) # Alert, Block, Overridden
     Timestamp = Column(DateTime, default=datetime.utcnow)
 
 class CloudMetadata(Base):

@@ -262,25 +262,25 @@ async def run_suite():
     record_result(13, "Retry Handling & Spooling to Durable Disk DLQ", p13, d13)
 
     # --------------------------------------------------------------------------
-    # TEST 14: System rule registration (idempotent seeding of 9001-9008)
+    # TEST 14: System rule registration (idempotent seeding of 9001-9009)
     # --------------------------------------------------------------------------
     t0 = time.perf_counter()
     rules_db = MockDB()
-    # First seed: should register all 8
+    # First seed: should register all 9
     seed_res_1 = await seed_system_rules(rules_db)
     
     # Second seed: should detect existing without duplicating
     seed_res_2 = await seed_system_rules(rules_db)
     d14 = (time.perf_counter() - t0) * 1000
     p14 = (
-        seed_res_1["seeded"] == 8 and
+        seed_res_1["seeded"] == 9 and
         seed_res_2["seeded"] == 0 and
-        seed_res_2["verified_existing"] == 8 and
-        len(rules_db.rules) == 8 and
+        seed_res_2["verified_existing"] == 9 and
+        len(rules_db.rules) == 9 and
         all(r.TenantId is None for r in rules_db.rules.values()) and
         all(r.IsActive is True for r in rules_db.rules.values())
     )
-    record_result(14, "System Rule Registration & Idempotent Seeding (9001-9008)", p14, d14)
+    record_result(14, "System Rule Registration & Idempotent Seeding (9001-9009)", p14, d14)
 
     # --------------------------------------------------------------------------
     # TEST 15: Existing rule ID collision handling & protection

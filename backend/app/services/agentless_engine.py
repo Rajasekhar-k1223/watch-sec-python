@@ -370,6 +370,8 @@ class AgentlessEngine:
                         executed_cmd = f"Stop-Process -Id '{safe_target}' -Force"
                     elif action == "delete_file":
                         executed_cmd = f"Remove-Item -Path '{safe_target}' -Force"
+                    elif action in ["terminate_wsl", "shutdown_wsl"]:
+                        executed_cmd = "wsl.exe --shutdown" if not target or target in ["all", "malicious_target", ""] else f"wsl.exe -t '{safe_target}'"
                     await self._run_winrm_command(target_ip, db, executed_cmd)
                     
             logger.info(f"[Agentless] Executed SOAR action: {executed_cmd}")

@@ -197,10 +197,10 @@ async def run_suite():
             assert seed_res2["seeded"] == 0, f"Expected 0 new rules seeded, got {seed_res2['seeded']}"
             assert seed_res2["verified_existing"] >= 7, "Expected at least 7 verified existing rules"
 
-            # Check total count of system rules in range 9001-9008
+            # Check total count of system rules in range 9001-9009
             q_cnt = select(DetectionRule).where(DetectionRule.Id.in_(RESERVED_SYSTEM_RULE_IDS))
             all_reserved = (await db.execute(q_cnt)).scalars().all()
-            assert len(all_reserved) == 8, f"Expected exactly 8 rows in range 9001-9008, got {len(all_reserved)}"
+            assert len(all_reserved) == len(RESERVED_SYSTEM_RULE_IDS), f"Expected exactly {len(RESERVED_SYSTEM_RULE_IDS)} rows in range 9001-9009, got {len(all_reserved)}"
             dt = (time.time() - t0) * 1000
             record_result(3, "Repeated Seeding Idempotency (Zero Duplicate Rows)", True, dt, "Seeded=0, verified=7")
         except Exception as e:

@@ -149,7 +149,40 @@ async def detonate_with_native_sandbox(file_bytes: bytes, filename: str, tenant_
         behavioral_iocs.append({"type": "win32_api", "indicator": "CreateRemoteThread / VirtualAllocEx"})
         risk_score += 45
 
-    risk_score = min(risk_score, 100)
+    # macOS Threats
+    if any(ind in file_str for ind in ["dump-keychain", "find-generic-password"]):
+        reasons.append("macOS Keychain Credential Harvesting")
+        mitre_tactics.append("T1555.001 (Credentials from Password Stores: Keychain)")
+        risk_score += 65
+    if "com.apple.quarantine" in file_str and ("xattr -d" in file_str or "xattr -c" in file_str):
+        reasons.append("macOS Gatekeeper Quarantine Bypass Attempt")
+        mitre_tactics.append("T1562.001 (Disable or Modify Tools)")
+        risk_score += 45
+
+    # Linux Threats
+    if any(ind in file_str for ind in ["/dev/tcp/", "nc -e", "/bin/sh -i", "/bin/bash -i"]):
+        reasons.append("Linux Reverse TCP Shell Payload")
+        mitre_tactics.append("T1059.004 (Unix Shell: Reverse TCP)")
+        risk_score += 65
+    if any(ind in file_str for ind in ["/etc/shadow", "chmod 4755", "chmod u+s"]):
+        reasons.append("Linux /etc/shadow or SUID Privilege Escalation")
+        mitre_tactics.append("T1003.008 (Unix Credential Access)")
+        risk_score += 55
+
+    # Cross-Platform Signature & Publisher Trust Verification
+    try:
+        from app.services.signature_trust_service import SignatureTrustService
+        sig_info = SignatureTrustService.evaluate_signature_and_trust(file_bytes, filename)
+        if sig_info["has_signature"] and sig_info["is_valid"]:
+            risk_score += sig_info["trust_score_delta"]
+            reasons.append(sig_info["details"])
+        elif sig_info["trust_tier"] in ["TIER_4_SUSPICIOUS_SIGNATURE", "TIER_5_REVOKED_OR_FORGED"]:
+            risk_score += sig_info["trust_score_delta"]
+            reasons.append(sig_info["details"])
+    except Exception:
+        pass
+
+    risk_score = max(0, min(risk_score, 100))
     is_malicious = (risk_score >= 60)
     is_suspicious = (not is_malicious and risk_score >= 30)
     status_str = "MALICIOUS" if is_malicious else ("SUSPICIOUS" if is_suspicious else "SAFE")
@@ -548,17 +581,20 @@ async def analyze_file(
     )
     db.add(sandbox_record)
     
-    if is_malicious:
-        existing_hash = (await db.execute(select(HashBank).where(HashBank.Hash == file_hash))).scalars().first()
-        if not existing_hash:
-            hb = HashBank(
-                Hash=file_hash,
-                Type="SHA256",
-                Reputation="Malicious",
-                Description=reason,
-                Source="Agent Auto-Detonation"
-            )
-            db.add(hb)
+    # Save or update HashBank verdict
+    existing_hash = (await db.execute(select(HashBank).where(HashBank.Hash == file_hash))).scalars().first()
+    if not existing_hash:
+        hb = HashBank(
+            Hash=file_hash,
+            Type="SHA256",
+            Reputation="Malicious" if is_malicious else "Safe",
+            Description=reason,
+            Source="Agent Auto-Detonation" if is_malicious else "Sandbox Clean Verification"
+        )
+        db.add(hb)
+    elif not is_malicious and existing_hash.Reputation == "Unknown":
+        existing_hash.Reputation = "Safe"
+        existing_hash.Description = reason
             
     await db.commit()
 
@@ -590,9 +626,16 @@ async def check_hash(
     # Check local HashBank
     existing = (await db.execute(select(HashBank).where(HashBank.Hash == file_hash))).scalars().first()
     if existing:
+        rep_lower = existing.Reputation.lower()
+        if rep_lower in ["malicious", "banned", "blacklisted"]:
+            ret_status = "MALICIOUS"
+        elif rep_lower in ["safe", "trusted", "approved", "allowlisted"]:
+            ret_status = "SAFE"
+        else:
+            ret_status = "HOLD"
         return {
-            "status": "MALICIOUS" if existing.Reputation == "Malicious" else "SAFE",
-            "reason": existing.Description,
+            "status": ret_status,
+            "reason": existing.Description or "Verdict from central HashBank",
             "hash": file_hash
         }
 
@@ -604,8 +647,9 @@ async def check_hash(
             "hash": file_hash
         }
 
+    # Unseen hash: Return UNKNOWN so agent triggers pre-execution static/dynamic analysis
     return {
-        "status": "SAFE",
-        "reason": "Hash not flagged in threat intelligence banks",
+        "status": "UNKNOWN",
+        "reason": "Hash not in threat database; requires pre-execution analysis",
         "hash": file_hash
     }

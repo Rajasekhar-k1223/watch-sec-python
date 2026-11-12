@@ -1,7 +1,7 @@
 """
 Monitorix Enterprise System Detection Rules Registry
 ====================================================
-Canonical definitions and idempotent registration for reserved system rule IDs 9001-9008.
+Canonical definitions and idempotent registration for reserved system rule IDs 9001-9009.
 
 Reserved System Rule IDs:
   9001 - VPNDetectionAudit: Unauthorized VPN Interface Detected
@@ -12,6 +12,7 @@ Reserved System Rule IDs:
   9006 - WebmailActivity: Sensitive Data Exfiltration via Webmail Session
   9007 - ThreatIntelMatch: Malicious C2 Communication Detected via Threat Intelligence
   9008 - SandboxThreatPrevented: Detonation Sandbox Threat Prevented
+  9009 - WSLEvasionAudit: WSL Defense Evasion & Abnormal Process Execution
 """
 
 import logging
@@ -23,7 +24,7 @@ from sqlalchemy import desc
 
 logger = logging.getLogger("monitorix.detection.system_rules")
 
-RESERVED_SYSTEM_RULE_IDS = {9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008}
+RESERVED_SYSTEM_RULE_IDS = {9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009}
 
 SYSTEM_RULES_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -252,6 +253,34 @@ falsepositives:
 level: critical
 """,
     },
+    {
+        "id": 9009,
+        "name": "WSL Defense Evasion & Abnormal Process Execution",
+        "type": "Sigma",
+        "category": "Defense Evasion",
+        "mitre_tactic": "TA0005 (Defense Evasion)",
+        "mitre_technique": "T1202 (Indirect Command Execution)",
+        "severity": "Critical",
+        "yaml_content": """title: WSL Defense Evasion & Abnormal Process Execution
+id: 9009
+status: production
+description: Detects abnormal execution of Windows Subsystem for Linux (WSL) binaries spawned by office applications, browsers, or suspicious command-line flags.
+author: Monitorix Sovereign Security Team
+tags:
+  - attack.defense_evasion
+  - attack.t1202
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    wsl_evasion_detected: true
+  condition: selection
+falsepositives:
+  - Authorized developer terminal sessions launched from approved IDEs
+level: critical
+""",
+    },
 ]
 
 
@@ -275,7 +304,7 @@ def get_system_rule_by_id(rule_id: int) -> Optional[Dict[str, Any]]:
 
 async def seed_system_rules(db: AsyncSession) -> Dict[str, Any]:
     """
-    Idempotently seeds canonical system detection rules 9001-9008 into the database.
+    Idempotently seeds canonical system detection rules 9001-9009 into the database.
     
     Guarantees:
     - Never overwrites existing user/tenant rules blindly.

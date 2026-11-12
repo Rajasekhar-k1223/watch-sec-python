@@ -52,13 +52,14 @@ PROMPT_INJECTION_PATTERNS = [
 DEFAULT_ALLOWED_ACTIONS = [
     "isolate_endpoint",
     "kill_process",
+    "terminate_wsl",
     "block_ioc",
     "disable_account",
     "revoke_session",
     "collect_evidence"
 ]
 
-HIGH_IMPACT_ACTIONS = ["isolate_endpoint", "disable_account", "kill_process"]
+HIGH_IMPACT_ACTIONS = ["isolate_endpoint", "disable_account", "kill_process", "terminate_wsl"]
 
 # In-memory Rate Limiting Tracker
 ACTION_TIMESTAMPS: List[datetime] = []
@@ -429,6 +430,7 @@ class AutonomousSecurityService:
         impact_map = {
             "isolate_endpoint": "Endpoint network isolated from LAN/WAN. Monitorix TLS command channel preserved.",
             "kill_process": "Target process and its child subprocess tree terminated immediately.",
+            "terminate_wsl": "WSL virtualized Linux instance terminated and hypervisor execution isolated.",
             "block_ioc": "Malicious IP/domain added to global DNS sinkhole and perimeter border ACL.",
             "disable_account": "User account locked in Active Directory/IdP. Active tickets invalidated.",
             "revoke_session": "User refresh tokens revoked across all authenticated services.",

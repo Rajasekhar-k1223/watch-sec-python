@@ -59,8 +59,14 @@ class SoarEngine:
                 agentless = (await db.execute(select(AgentlessEndpoint).where(AgentlessEndpoint.IpAddress == execution.TargetAgentId))).scalars().first()
                 if agentless:
                     # Universal Execution - Call Agentless Engine directly
-                    action_param_value = action_params.get("TargetPID", "malicious_target") if action_params else "malicious_target"
-                    res = await agentless_engine.remediate_threat(agentless.IpAddress, agentless.OsType, "kill_process" if "kill" in execution.ActionType.lower() else "delete_file", action_param_value)
+                    action_param_value = action_params.get("TargetPID", action_params.get("Distribution", "malicious_target")) if action_params else "malicious_target"
+                    if "kill" in execution.ActionType.lower():
+                        soar_action = "kill_process"
+                    elif "wsl" in execution.ActionType.lower():
+                        soar_action = "terminate_wsl"
+                    else:
+                        soar_action = "delete_file"
+                    res = await agentless_engine.remediate_threat(agentless.IpAddress, agentless.OsType, soar_action, action_param_value)
                     if res.get("status") == "remediated":
                         execution.Status = "Success"
                     else:

@@ -13,11 +13,13 @@ Provides endpoints for:
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Header, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import json
+import os
 
 from app.db.session import get_db
 from app.db.models import User
@@ -429,40 +431,152 @@ async def get_sdk_template(
     lang: str = Query("python"),
     current_user: User = Depends(get_current_user)
 ):
-    """Provides boilerplate starter SDK code for custom integration development"""
+    """Provides boilerplate starter SDK code for modular pick-and-choose enterprise integrations."""
     templates = {
-        "python": """# Monitorix Custom Connector SDK Example (Python)
-from app.services.connector_sdk import BaseConnectorClient, MonitorixEventSchema
+        "python": """# ==============================================================================
+# Monitorix Sovereign Enterprise — Python Modular Integration SDK
+# ==============================================================================
+# Demonstrates:
+# 1. Zero-Trust Handshake Authentication (mk_... key -> Session JWT)
+# 2. Standalone Module: YARA File Malware Scanning (/api/v1/yara/scan)
+# 3. Standalone Module: 1-Second EDR Endpoint Containment (/api/v1/endpoints/{id}/isolate)
+# 4. Standalone Module: Real-Time DLP & PCI-DSS Credit Card Sanitizer (/api/v1/dlp/scan)
+# 5. Standalone Module: Global Threat Intelligence Indicator Lookup (/api/v2/threat-intel/lookup)
+# 6. Incoming Event Webhook HMAC-SHA256 Cryptographic Verification
+# ==============================================================================
 
-class MyCustomSecurityConnector(BaseConnectorClient):
-    def __init__(self, api_key: str):
-        super().__init__(
-            connector_id="ext-my-custom-tool",
-            name="My Enterprise Tool",
-            config={"api_key": api_key}
-        )
+import hmac
+import hashlib
+import requests
 
-    def process_threat_alert(self, raw_alert: dict) -> MonitorixEventSchema:
-        return self.normalize_event(raw_alert)
+class MonitorixModularClient:
+    def __init__(self, base_url: str, sdk_key: str, webhook_secret: str = None):
+        self.base_url = base_url.rstrip("/")
+        self.sdk_key = sdk_key
+        self.webhook_secret = webhook_secret
+        self.session_token = None
+
+    def authenticate(self) -> str:
+        \"\"\"Exchange static SDK key for a short-lived Session JWT (Zero-Trust Handshake)\"\"\"
+        endpoint = f"{self.base_url}/api/auth/sdk-handshake"
+        payload = {"sdk_key": self.sdk_key}
+        res = requests.post(endpoint, json=payload, timeout=10)
+        res.raise_for_status()
+        self.session_token = res.json().get("access_token")
+        return self.session_token
+
+    def _auth_headers(self) -> dict:
+        if not self.session_token:
+            self.authenticate()
+        return {"Authorization": f"Bearer {self.session_token}"}
+
+    def scan_file_malware(self, file_path: str) -> dict:
+        \"\"\"Module 1: Malware Lab & YARA Scanner (SaaS file upload protection)\"\"\"
+        endpoint = f"{self.base_url}/api/v1/yara/scan"
+        with open(file_path, "rb") as f:
+            res = requests.post(endpoint, headers=self._auth_headers(), files={"file": f}, timeout=15)
+        res.raise_for_status()
+        return res.json()
+
+    def isolate_endpoint(self, hostname: str, reason: str = "IT Helpdesk Containment") -> dict:
+        \"\"\"Module 2: Cross-Platform EDR instant network quarantine\"\"\"
+        endpoint = f"{self.base_url}/api/v1/endpoints/{hostname}/isolate"
+        payload = {"reason": reason, "isolation_scope": "FULL_NETWORK_ISOLATION"}
+        res = requests.post(endpoint, headers=self._auth_headers(), json=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
+
+    def scan_dlp_text(self, text: str) -> dict:
+        \"\"\"Module 3: Real-Time DLP — Automatically masks Credit Cards (••••-••••-••••-••••) & PII\"\"\"
+        endpoint = f"{self.base_url}/api/v1/dlp/scan"
+        payload = {"content": text, "scan_type": "PCI_DSS_AND_PII"}
+        res = requests.post(endpoint, headers=self._auth_headers(), json=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
+
+    def query_threat_intel(self, indicator: str, indicator_type: str = "ipv4") -> dict:
+        \"\"\"Module 4: Live Threat Intelligence indicator query\"\"\"
+        endpoint = f"{self.base_url}/api/v2/threat-intel/lookup"
+        payload = {"indicator": indicator, "type": indicator_type}
+        res = requests.post(endpoint, headers=self._auth_headers(), json=payload, timeout=10)
+        res.raise_for_status()
+        return res.json()
+
+    def verify_webhook_signature(self, raw_body_bytes: bytes, received_signature: str) -> bool:
+        \"\"\"Verifies HMAC-SHA256 signature in X-Monitorix-Signature header\"\"\"
+        if not self.webhook_secret:
+            raise ValueError("webhook_secret is not configured")
+        expected_sig = "sha256=" + hmac.new(
+            self.webhook_secret.encode(), raw_body_bytes, hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected_sig, received_signature)
 """,
-        "nodejs": """// Monitorix Custom Connector SDK Example (Node.js)
-const crypto = require('crypto');
+        "nodejs": """// ==============================================================================
+// Monitorix Sovereign Enterprise — Node.js / TypeScript Integration SDK
+// ==============================================================================
+// Demonstrates Zero-Trust Handshake & Standalone Modular Consumption
+// ==============================================================================
 
-class MonitorixConnector {
-  constructor(apiKey, webhookSecret) {
-    this.apiKey = apiKey;
+const crypto = require('crypto');
+const axios = require('axios');
+
+class MonitorixModularClient {
+  constructor(baseUrl, sdkKey, webhookSecret = null) {
+    this.baseUrl = baseUrl.replace(/\\/+$/, '');
+    this.sdkKey = sdkKey;
     this.webhookSecret = webhookSecret;
+    this.sessionToken = null;
   }
 
-  verifySignature(payload, signature) {
-    const expected = crypto
+  async authenticate() {
+    const res = await axios.post(`${this.baseUrl}/api/auth/sdk-handshake`, {
+      sdk_key: this.sdkKey
+    });
+    this.sessionToken = res.data.access_token;
+    return this.sessionToken;
+  }
+
+  async getHeaders() {
+    if (!this.sessionToken) {
+      await this.authenticate();
+    }
+    return {
+      Authorization: `Bearer ${this.sessionToken}`,
+      'Content-Type': 'application/json'
+    };
+  }
+
+  async isolateEndpoint(hostname, reason = 'Automated IT Quarantine') {
+    const headers = await this.getHeaders();
+    const res = await axios.post(
+      `${this.baseUrl}/api/v1/endpoints/${hostname}/isolate`,
+      { reason, isolation_scope: 'FULL_NETWORK_ISOLATION' },
+      { headers }
+    );
+    return res.data;
+  }
+
+  async scanDlpText(text) {
+    const headers = await this.getHeaders();
+    const res = await axios.post(
+      `${this.baseUrl}/api/v1/dlp/scan`,
+      { content: text, scan_type: 'PCI_DSS_AND_PII' },
+      { headers }
+    );
+    return res.data;
+  }
+
+  verifyWebhookSignature(rawBody, signature) {
+    if (!this.webhookSecret) throw new Error('webhookSecret not set');
+    const expected = 'sha256=' + crypto
       .createHmac('sha256', this.webhookSecret)
-      .update(JSON.stringify(payload))
+      .update(typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))
       .digest('hex');
-    return expected === signature.replace('sha256=', '');
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
   }
 }
-module.exports = MonitorixConnector;
+
+module.exports = MonitorixModularClient;
 """
     }
     return {
@@ -470,6 +584,76 @@ module.exports = MonitorixConnector;
         "template_code": templates.get(lang.lower(), templates["python"]),
         "documentation_url": "https://monitorix.elsea.co.in/developers"
     }
+
+# ---------------------------------------------------------------------------
+# 11.8 Architecture & Integration Guides Catalog & Secure Download
+# ---------------------------------------------------------------------------
+
+GUIDE_DIR = "/app/storage/reports"
+
+@router.get("/developers/guides")
+async def list_integration_guides(
+    current_user: User = Depends(get_current_user)
+):
+    """Lists all enterprise deep-dive architectural and modular integration guides."""
+    guides = [
+        {
+            "id": "modular-pick-and-choose",
+            "title": "Modular 'Pick-and-Choose' Architecture & Enterprise Integration Guide",
+            "description": "Comprehensive blueprint covering standalone module consumption, Zero-Trust SDK key handshakes, PCI-DSS transaction protection, and HMAC-SHA256 webhooks.",
+            "docx_filename": "MONITORIX_MODULAR_INTEGRATION_AND_PICK_AND_CHOOSE_GUIDE.docx",
+            "md_filename": "MONITORIX_MODULAR_INTEGRATION_AND_PICK_AND_CHOOSE_GUIDE.md",
+            "version": "v4.2.0-SOVEREIGN",
+            "classification": "ENTERPRISE SPECIFICATION"
+        },
+        {
+            "id": "reseller-partner-ecosystem",
+            "title": "Reseller & Commercial Partner Network Deep-Dive Guide",
+            "description": "Operational manual for MSPs, MSSPs, VARs, sub-tenant creation, dynamic 20% margin quoting, white-labeling, and commission settlement.",
+            "docx_filename": "MONITORIX_RESELLER_AND_PARTNER_ECOSYSTEM_DEEP_DIVE_GUIDE.docx",
+            "md_filename": "MONITORIX_RESELLER_AND_PARTNER_ECOSYSTEM_DEEP_DIVE_GUIDE.md",
+            "version": "v4.2.0-SOVEREIGN",
+            "classification": "COMMERCIAL SPECIFICATION"
+        },
+        {
+            "id": "command-center-deep-dive",
+            "title": "Command Center & SOC Telemetry Deep-Dive Guide",
+            "description": "High-throughput ingestion pipeline, event correlation, and live alert state machines.",
+            "docx_filename": "MONITORIX_COMMAND_CENTER_DEEP_DIVE_GUIDE.docx",
+            "version": "v4.2.0-SOVEREIGN",
+            "classification": "SOC OPERATIONS"
+        },
+        {
+            "id": "threat-intelligence-deep-dive",
+            "title": "Threat Intelligence, YARA & Malware Lab Deep-Dive Guide",
+            "description": "YARA scanning, global threat network, honeypots, and attack chain correlations.",
+            "docx_filename": "MONITORIX_THREAT_INTELLIGENCE_DEEP_DIVE_GUIDE.docx",
+            "version": "v4.2.0-SOVEREIGN",
+            "classification": "THREAT RESEARCH"
+        }
+    ]
+    return {"status": "success", "total_guides": len(guides), "guides": guides}
+
+@router.get("/developers/guides/download/{filename}")
+async def download_integration_guide(
+    filename: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Directly downloads architectural and modular guides in .docx or .md format."""
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename format")
+
+    file_path = os.path.join(GUIDE_DIR, filename)
+    if not os.path.exists(file_path):
+        # Fallback to /opt/projects/monitorix/docs if running on host
+        fallback_path = os.path.join("/opt/projects/monitorix/docs", filename)
+        if os.path.exists(fallback_path):
+            file_path = fallback_path
+        else:
+            raise HTTPException(status_code=404, detail="Requested guide file not found")
+
+    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if filename.endswith(".docx") else "text/markdown"
+    return FileResponse(path=file_path, filename=filename, media_type=media_type)
 
 # ---------------------------------------------------------------------------
 # 11.9 Partner Extensions Submission

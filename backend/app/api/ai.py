@@ -207,6 +207,18 @@ async def simulate_incident(
 class AssistantChatRequest(BaseModel):
     query: str
 
+class DocsChatRequest(BaseModel):
+    query: str
+
+@router.post("/docs/chat")
+async def docs_assistant_chat(
+    req: DocsChatRequest
+):
+    """[v4.3.0] Public, unauthenticated Documentation AI Assistant.
+    Provides technical documentation, modular integration architecture, 
+    Zero-Trust SDK handshake, and PCI-DSS compliance guidance without exposing any private tenant data."""
+    return await ai_service.generate_public_docs_response(req.query)
+
 @router.post("/assistant/chat")
 async def security_assistant_chat(
     req: AssistantChatRequest,
