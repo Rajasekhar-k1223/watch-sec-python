@@ -223,17 +223,32 @@ async def register_mcp_server(req: CreateMcpServerRequest, db: AsyncSession = De
 @router.post("/mcp/policies", status_code=status.HTTP_201_CREATED)
 async def create_tool_policy(req: CreateMcpToolPolicyRequest, db: AsyncSession = Depends(get_db)):
     """Assign Zero-Trust tool execution policy, risk tier, and HITL requirements to an AI Agent."""
-    policy = McpToolPolicy(
-        TenantId=req.tenant_id,
-        AgentId=req.agent_id,
-        McpServerId=req.mcp_server_id,
-        ToolName=req.tool_name,
-        RiskTier=req.risk_tier,
-        AllowedParametersJson=req.allowed_parameters_json,
-        IsAllowed=req.is_allowed,
-        RequiresHumanApproval=req.requires_human_approval
+    res_existing = await db.execute(
+        select(McpToolPolicy).where(
+            McpToolPolicy.TenantId == req.tenant_id,
+            McpToolPolicy.AgentId == req.agent_id,
+            McpToolPolicy.ToolName == req.tool_name
+        ).order_by(desc(McpToolPolicy.Id))
     )
-    db.add(policy)
+    policy = res_existing.scalars().first()
+    if policy:
+        policy.McpServerId = req.mcp_server_id
+        policy.RiskTier = req.risk_tier
+        policy.AllowedParametersJson = req.allowed_parameters_json
+        policy.IsAllowed = req.is_allowed
+        policy.RequiresHumanApproval = req.requires_human_approval
+    else:
+        policy = McpToolPolicy(
+            TenantId=req.tenant_id,
+            AgentId=req.agent_id,
+            McpServerId=req.mcp_server_id,
+            ToolName=req.tool_name,
+            RiskTier=req.risk_tier,
+            AllowedParametersJson=req.allowed_parameters_json,
+            IsAllowed=req.is_allowed,
+            RequiresHumanApproval=req.requires_human_approval
+        )
+        db.add(policy)
     await db.commit()
     await db.refresh(policy)
     return {"message": "MCP Tool Policy configured", "policy": policy}
@@ -262,9 +277,9 @@ async def invoke_mcp_tool(req: InvokeToolRequest, db: AsyncSession = Depends(get
             McpToolPolicy.TenantId == req.tenant_id,
             McpToolPolicy.AgentId == agent.Id,
             McpToolPolicy.ToolName == req.tool_name
-        )
+        ).order_by(desc(McpToolPolicy.Id))
     )
-    policy = res_p.scalar_one_or_none()
+    policy = res_p.scalars().first()
 
     # 3. Evaluate Security Gate
     verdict = McpSecurityGateway.validate_tool_execution(
