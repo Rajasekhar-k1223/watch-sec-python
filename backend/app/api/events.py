@@ -73,7 +73,7 @@ async def get_all_security_logs(
             "AgentId": log.AgentId,
             "Type": log.Type,
             "Details": log.Details,
-            "Timestamp": log.Timestamp.isoformat() if log.Timestamp else "",
+            "Timestamp": ((log.Timestamp.isoformat() + "Z") if log.Timestamp and not log.Timestamp.isoformat().endswith("Z") else (log.Timestamp.isoformat() if log.Timestamp else "")),
             "Status": log.Status or "Open",
             "Severity": log.Severity or "Medium",
             "IsAlert": log.IsAlert or False,

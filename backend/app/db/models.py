@@ -313,6 +313,9 @@ class Policy(Base):
     RemediationJson = Column(Text, default="[]") # [NEW] Automated response playbooks
     BandwidthJson = Column(Text, default="{}") # [NEW] Policy-Based Bandwidth Control
     ScreenshotInterval = Column(Integer, default=60) # [NEW] v1.8.20
+    ScreenshotQuality = Column(Integer, default=80)
+    ScreenshotsEnabled = Column(Boolean, default=False)
+    ActivityMonitorEnabled = Column(Boolean, default=True)
     GeolocationEnabled = Column(Boolean, default=True) # [NEW] v1.8.27
     CreatedAt = Column(DateTime, default=datetime.utcnow)
 

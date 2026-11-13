@@ -192,8 +192,14 @@ async def keyset_page(
             prev_cursor = first_id if cursor is not None else None
 
     if as_dict:
+        from datetime import datetime as _dt
+        def _serialize_col_val(v):
+            if isinstance(v, _dt):
+                s = v.isoformat()
+                return s if (s.endswith("Z") or "+" in s or ("-" in s[10:])) else s + "Z"
+            return v
         items = [
-            {c.key: getattr(row, c.key) for c in row.__table__.columns}
+            {c.key: _serialize_col_val(getattr(row, c.key)) for c in row.__table__.columns}
             for row in items
         ]
 

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta # type: ignore
 _policy_cache: dict = {}  # key: PolicyId, value: (policy_obj, cached_at)
 
 from ..db.session import get_db # type: ignore
-from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog, LocationHistory, AgentEnrollmentToken # type: ignore
+from ..db.models import Agent, User, ShadowedFile, EventLog, Policy, Tenant, AuditLog, LocationHistory, AgentEnrollmentToken, Notification # type: ignore
 from .deps import get_current_user, get_tenant_by_key, get_current_user_flexible, check_role, get_current_active_user # type: ignore
 from ..socket_instance import sio # type: ignore
 from ..schemas import AgentUpdateFailedRequest, AgentHeartbeat, AgentSettingsUpdate, AgentFimUpdateRequest # type: ignore
@@ -1714,6 +1714,9 @@ async def agent_heartbeat(
         geolocation_enabled = getattr(agent, 'GeolocationEnabled', True)
         
         # Check for Policy-specific overrides — cached to avoid a DB hit every heartbeat
+        policy = None
+        policy_blocked_apps = None
+        policy_blocked_websites = None
         if hasattr(agent, 'PolicyId') and agent.PolicyId:
             policy_id = agent.PolicyId
             now_ts = datetime.utcnow()
@@ -1737,6 +1740,10 @@ async def agent_heartbeat(
                     screenshot_interval = policy.ScreenshotInterval
                 if hasattr(policy, 'GeolocationEnabled') and policy.GeolocationEnabled is not None:
                     geolocation_enabled = policy.GeolocationEnabled
+                if policy.BlockedAppsJson and policy.BlockedAppsJson != "[]":
+                    policy_blocked_apps = policy.BlockedAppsJson
+                if policy.BlockedWebsitesJson and policy.BlockedWebsitesJson != "[]":
+                    policy_blocked_websites = policy.BlockedWebsitesJson
 
         # 4. Check for Remote Updates
         update_required = False
@@ -2106,7 +2113,7 @@ async def agent_heartbeat(
                 "DataLossPreventionEnabled": check_feat_final("FileDlpEnabled", agent.DataLossPreventionEnabled),
                 "InputAuditEnabled": check_feat_final("KeyloggerEnabled", agent.InputAuditEnabled),
                 "ClipboardAuditEnabled": check_feat_final("ClipboardMonitorEnabled", agent.ClipboardAuditEnabled),
-                "AppEnforcementEnabled": check_feat_final("AppBlockerEnabled", agent.AppEnforcementEnabled),
+                "AppEnforcementEnabled": check_feat_final("AppBlockerEnabled", agent.AppEnforcementEnabled or (bool(policy) and (policy_blocked_apps is not None))),
                 "BrowserComplianceEnabled": check_feat_final("BrowserEnforcerEnabled", agent.BrowserComplianceEnabled),
                 "PrintAuditEnabled": check_feat_final("PrinterMonitorEnabled", agent.PrintAuditEnabled),
                 "ShadowAuditEnabled": check_feat_final("ShadowMonitorEnabled", agent.ShadowAuditEnabled),
@@ -2127,7 +2134,7 @@ async def agent_heartbeat(
                 "ScreenshotResolution": agent.ScreenshotResolution,
                 "MaxScreenshotSize": agent.MaxScreenshotSize,
                 "ScreenshotInterval": screenshot_interval,
-                "BlockedApps": agent.BlockedAppsJson or "[]",
+                "BlockedApps": agent.BlockedAppsJson if (agent.BlockedAppsJson and agent.BlockedAppsJson != "[]") else (policy_blocked_apps or "[]"),
                 "ShadowPaths": agent.ShadowPathsJson or "[]",
                 "BandwidthConfig": bandwidth_config
             }
@@ -3741,6 +3748,64 @@ async def ingest_process_snapshot(
         'processes': processes
     }, room=agent_id)
 
+    # Check for blocked applications in the snapshot
+    blocked_list = []
+    if agent.BlockedAppsJson and agent.BlockedAppsJson != "[]":
+        try: blocked_list = json.loads(agent.BlockedAppsJson)
+        except Exception: pass
+    if not blocked_list and agent.PolicyId:
+        cached_pol = _policy_cache.get(agent.PolicyId)
+        if cached_pol and cached_pol[0] and cached_pol[0].BlockedAppsJson:
+            try: blocked_list = json.loads(cached_pol[0].BlockedAppsJson)
+            except Exception: pass
+        if not blocked_list:
+            p_res = await db.execute(select(Policy).where(Policy.Id == agent.PolicyId))
+            pol = p_res.scalars().first()
+            if pol and pol.BlockedAppsJson and pol.BlockedAppsJson != "[]":
+                try: blocked_list = json.loads(pol.BlockedAppsJson)
+                except Exception: pass
+
+    if blocked_list:
+        for p in processes:
+            p_name = p.get("name", "").lower()
+            for banned in blocked_list:
+                if banned.lower() in p_name:
+                    evt = EventLog(
+                        TenantId=agent.TenantId,
+                        AgentId=agent_id,
+                        Type="AppControlViolation",
+                        Severity="Critical",
+                        Status="Open",
+                        IsAlert=True,
+                        Details=f"Application Policy Violation: Banned process {p.get('name')} was detected and terminated on {agent.Hostname} (Rule: {banned}).",
+                        Timestamp=datetime.utcnow()
+                    )
+                    db.add(evt)
+                    notif = Notification(
+                        TenantId=agent.TenantId,
+                        AgentId=agent_id,
+                        Title=f"Application Blocked: {p.get('name')}",
+                        Message=f"Banned application {p.get('name')} was detected and terminated on {agent.Hostname}.",
+                        Type="AppControlViolation",
+                        IsRead=False,
+                        CreatedAt=datetime.utcnow()
+                    )
+                    db.add(notif)
+                    await db.commit()
+                    try:
+                        await sio.emit('new_event', {
+                            'AgentId': agent_id,
+                            'Type': 'AppControlViolation',
+                            'Severity': 'Critical',
+                            'Details': evt.Details,
+                            'Timestamp': datetime.utcnow().isoformat()
+                        }, room=f"tenant_{agent.TenantId}")
+                    except Exception: pass
+                    break
+
+    monitorix_procs = [p for p in processes if "monitorix" in p.get("name", "").lower() or "agent" in p.get("name", "").lower()]
+    if monitorix_procs:
+        print(f"[AGENT PROCESS DEBUG] {agent_id}: {monitorix_procs}", flush=True)
     return {"status": "ok", "count": len(processes)}
 
 
