@@ -1,10 +1,11 @@
 from .socket_instance import sio # type: ignore
 from jose import JWTError, jwt # type: ignore
 from sqlalchemy.future import select # type: ignore
-from .core.security import SECRET_KEY, ALGORITHM # type: ignore
+from .core.security import SECRET_KEY, ALGORITHM, generate_agent_command_signature # type: ignore
 from .db.session import AsyncSessionLocal # type: ignore
 from .db.models import Agent, Tenant # type: ignore
 from typing import Any, Dict, Optional, List # type: ignore
+from datetime import datetime
 import httpx # type: ignore
 import secrets 
 import hmac 
@@ -350,7 +351,7 @@ async def _validate_agent_access(session: Dict, agent_id: str) -> bool:
 
 @sio.on('start_stream')
 async def on_start_stream(sid: str, data: Dict[str, Any]):
-    """Relay user request to agent"""
+    """Relay user request to agent with cryptographic signature"""
     session = await sio.get_session(sid)
     agent_id = data.get('agentId')
     if agent_id:
@@ -359,30 +360,52 @@ async def on_start_stream(sid: str, data: Dict[str, Any]):
             return
 
         print(f"[DEBUG] Signaling start_stream to room: {agent_id} | Data: {data}")
-        
-        # 1. Standard Redis Broadcast (High Availability)
-        await sio.emit('StartStream', data, room=agent_id)
+
+        # Fetch Agent & Tenant for command signing
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent:
+                print(f"[ERROR] Agent {agent_id} not found for stream start")
+                return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant:
+                print(f"[ERROR] Tenant {agent.TenantId} not found for agent {agent_id}")
+                return
+
+            timestamp = datetime.utcnow().isoformat()
+            signature = generate_agent_command_signature(
+                api_key=tenant.ApiKey,
+                machine_id=agent.MachineId or "",
+                action="StartStream",
+                params={"Action": "Start"},
+                timestamp=timestamp
+            )
+            payload = {
+                "Action": "Start",
+                "timestamp": timestamp,
+                "signature": signature
+            }
+
+        # 1. Standard Socket.IO Broadcast with Signed Payload
+        await sio.emit('StartStream', payload, room=agent_id)
         
         # 2. [OPTIMIZED] Internal Bridge Relay (Shared Client)
         try:
-            # Use internal Docker service name
-            gateway_url = f"http://watch-sec-agent-gateway:8005/api/agent/internal/relay-stream/{agent_id}"
-            
-            # Payload matches RelayStreamRequest schema
+            gateway_url = f"http://watch-sec-load-balancer:8005/api/agent/internal/relay-stream/{agent_id}"
             relay_data = {
                 "width": data.get("width", 1280),
                 "quality": data.get("quality", 80),
                 "agentId": agent_id
             }
-            
-            response = await _bridge_client.post(gateway_url, json=relay_data)
-            # print(f"[RELAY_STATUS] Gateway responded: {response.status_code}")
-        except Exception as e:
-            print(f"[RELAY_FAILED] Internal bridge unreachable: {e}")
+            await _bridge_client.post(gateway_url, json=relay_data)
+        except Exception:
+            pass
 
 @sio.on('stop_stream')
 async def on_stop_stream(sid: str, data: Dict[str, Any]):
-    """Relay 'stop_stream' from Frontend to Agent as 'StopStream'"""
+    """Relay 'stop_stream' from Frontend to Agent as 'StopStream' with cryptographic signature"""
     session = await sio.get_session(sid)
     agent_id = data.get('agentId')
     if agent_id:
@@ -390,7 +413,31 @@ async def on_stop_stream(sid: str, data: Dict[str, Any]):
             return
 
         print(f"[Socket.IO] Signaling: stop_stream -> Agent {agent_id}")
-        await sio.emit('StopStream', data, room=agent_id)
+        async with AsyncSessionLocal() as db:
+            res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+            agent = res_a.scalars().first()
+            if not agent:
+                return
+            res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+            tenant = res_t.scalars().first()
+            if not tenant:
+                return
+
+            timestamp = datetime.utcnow().isoformat()
+            signature = generate_agent_command_signature(
+                api_key=tenant.ApiKey,
+                machine_id=agent.MachineId or "",
+                action="StopStream",
+                params={"Action": "Stop"},
+                timestamp=timestamp
+            )
+            payload = {
+                "Action": "Stop",
+                "timestamp": timestamp,
+                "signature": signature
+            }
+
+        await sio.emit('StopStream', payload, room=agent_id)
 
 @sio.on('ice_candidate')
 async def on_ice_candidate(sid: str, data: Dict[str, Any]):
@@ -439,9 +486,13 @@ async def on_stream_frame(sid: str, data: Dict[str, Any]):
         image_data = data.get('image')
         if not image_data: return
         
-        # [v1.8.34] Isolated Relay: Only users authorized for THIS agent see the frame
+        tenant_id = session.get('tenantId')
+        # [v1.8.34] Isolated Relay: Emit to agent room and tenant room
         await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id)
         await sio.emit('stream_frame', data, room=agent_id)
+        if tenant_id:
+            await sio.emit('ReceiveScreen', (agent_id, image_data), room=f"tenant_{tenant_id}")
+            await sio.emit('stream_frame', data, room=f"tenant_{tenant_id}")
 
 @sio.on('webrtc_offer')
 async def on_webrtc_offer(sid: str, data: Dict[str, Any]):
