@@ -378,8 +378,17 @@ try {
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $Description -User "SYSTEM" -RunLevel Highest | Out-Null
     Write-Host "    [+] Persistent Scheduled Task (SYSTEM Mode) registered." -ForegroundColor Green
 
-    # C. User Session Persistence (HKLM Run Key)
-    Write-Host "    [*] Configuring User Session Persistence..."
+    # C. User Session Scheduled Task (AtLogOn - Interactive Desktop Helper for Behavioral Audit)
+    Write-Host "    [*] Configuring User Session Desktop Helper (Behavioral Audit)..."
+    try { Unregister-ScheduledTask -TaskName "MonitorixUserSession" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+    $UserTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $UserAction = New-ScheduledTaskAction -Execute $ExePath -WorkingDirectory $InstallDir
+    $UserSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+    Register-ScheduledTask -TaskName "MonitorixUserSession" -Action $UserAction -Trigger $UserTrigger -Settings $UserSettings -RunLevel Highest | Out-Null
+    Write-Host "    [+] Persistent User Session Task registered for Behavioral Audit." -ForegroundColor Green
+
+    # D. User Session Persistence (HKLM Run Key fallback)
+    Write-Host "    [*] Configuring User Session Registry Fallback..."
     $regPath = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
     $regName = "MonitorixAgentUser"
     $regValue = "`"$ExePath`"" 
@@ -413,7 +422,13 @@ try {
     Write-Host "    [+] Windows Defender Exclusions added." -ForegroundColor Green
 } catch {}
 
-# Also launch user session instance immediately using WMI to avoid ShellExecute popups (Smart App Control / Defender)
+# Launch user session instance immediately for Behavioral Audit
+try {
+    Start-ScheduledTask -TaskName "MonitorixUserSession" -ErrorAction SilentlyContinue
+} catch {}
+try {
+    Start-Process -FilePath $ExePath -WorkingDirectory $InstallDir -ErrorAction SilentlyContinue
+} catch {}
 try {
     Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList "`"$ExePath`"" | Out-Null
 } catch {}
