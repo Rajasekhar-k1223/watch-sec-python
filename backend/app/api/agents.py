@@ -3647,6 +3647,8 @@ async def receive_agent_events(
             for ev in enriched_events:
                 await detection_engine.process_telemetry_event(db, ev, payload.agent_id)
                 if ev.get("EventType") == "ProcessSnapshot":
+                    mon_procs = [p for p in ev.get("Processes", []) if 'monitor' in str(p.get("name", "")).lower() or 'agent' in str(p.get("name", "")).lower()]
+                    print(f"[PROCESS SNAPSHOT] {payload.agent_id}: total={len(ev.get('Processes', []))} monitor_procs={mon_procs}", flush=True)
                     from ..socket_instance import sio
                     await sio.emit('agent_processes', {
                         'agent_id': payload.agent_id,
@@ -3739,7 +3741,6 @@ async def ingest_process_snapshot(
         'processes': processes
     }, room=agent_id)
 
-    print(f"[ProcessMonitor] REST push for {agent_id}: {len(processes)} processes → emitted to room")
     return {"status": "ok", "count": len(processes)}
 
 
