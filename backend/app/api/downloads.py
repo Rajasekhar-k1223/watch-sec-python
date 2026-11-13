@@ -930,7 +930,7 @@ $ApiKey = "{api_key_val}"
 $BackendUrl = "{backend_url}"
 $DownloadUrl = "$BackendUrl/api/downloads/exe/windows?key=$ApiKey&t=$(Get-Date -UFormat %s)"
 $InstallDir = "C:\\Program Files\\Monitorix"
-$ExeName = "monitorix-monitorix-agent.exe"
+$ExeName = "monitorix-agent.exe"
 $VersionCheckUrl = ""
 """
     
@@ -1003,7 +1003,7 @@ async def download_exe_windows(key: str, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         exe_path,
         media_type="application/vnd.microsoft.portable-executable",
-        filename="monitorix-monitorix-agent.exe",
+        filename="monitorix-agent.exe",
         headers={"Cache-Control": "no-cache"}
     )
 

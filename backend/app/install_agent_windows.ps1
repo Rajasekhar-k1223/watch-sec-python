@@ -23,7 +23,7 @@ param (
     [string]$DownloadUrl = "",
     [string]$VersionCheckUrl = "",
     [string]$InstallDir = "C:\Program Files\Monitorix",
-    [string]$ExeName = "MonitorixAgent.exe",
+    [string]$ExeName = "monitorix-agent.exe",
     [string]$BackendUrl = ""
 )
 
