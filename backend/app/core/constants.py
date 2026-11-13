@@ -8,7 +8,7 @@ from typing import Optional
 
 # [v1.7.0] UX & Reliability Hardening
 # The exact version string to match. When agents check in, if they report a lower version
-LATEST_AGENT_VERSION = "v4.2.0"
+LATEST_AGENT_VERSION = "v4.2.1"
 
 FEATURE_TIERS = {
     "ActivityMonitorEnabled": 1,

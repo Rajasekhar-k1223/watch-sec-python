@@ -51,6 +51,19 @@ async def get_latest_binary_for_audit(current_user: User = Depends(get_current_u
         headers={"Cache-Control": "no-cache"}
     )
 
+@router.get("/helper/screencapture")
+async def get_screencapture_binary():
+    """Serves the monitorix-screencapture helper binary for Windows live streaming."""
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate/win-x64/monitorix-screencapture.exe")),
+        "/opt/projects/monitorix/watch-sec-rust/target/x86_64-pc-windows-gnu/release/monitorix-screencapture.exe",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return FileResponse(p, media_type="application/vnd.microsoft.portable-executable", filename="monitorix-screencapture.exe")
+    raise HTTPException(status_code=404, detail="Screen capture helper not found")
+
 # --- Helper Logic ---
 
 def _get_backend_url(request: Request) -> str:

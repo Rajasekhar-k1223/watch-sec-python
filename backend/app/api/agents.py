@@ -48,7 +48,7 @@ async def agent_update_progress(
 
 
 from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, resolve_plan_level, LATEST_AGENT_VERSION # type: ignore
-LATEST_AGENT_VERSION = "v4.2.0"
+LATEST_AGENT_VERSION = "v4.2.1"
 from ..core import trial_manager # type: ignore
 from ..tasks.security import scan_vulnerabilities_background # type: ignore
 from ..tasks.general import staggered_bulk_patch # type: ignore

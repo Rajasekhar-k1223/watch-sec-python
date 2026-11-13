@@ -485,6 +485,7 @@ async def on_stream_frame(sid: str, data: Dict[str, Any]):
     if agent_id:
         image_data = data.get('image')
         if not image_data: return
+        print(f"[STREAM] Frame received from agent {agent_id} (len={len(image_data)})")
         
         tenant_id = session.get('tenantId')
         # [v1.8.34] Isolated Relay: Emit to agent room and tenant room
