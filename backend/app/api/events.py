@@ -627,25 +627,46 @@ async def get_activity_logs(
         as_dict=True
     )
 
-    return [
-        {
-            "AgentId": l["AgentId"],
-            "ActivityType": l["ActivityType"],
-            "WindowTitle": l["WindowTitle"],
-            "ProcessName": l["ProcessName"],
-            "Url": l["Url"],
-            "DurationSeconds": l["DurationSeconds"] or 0.0,
-            "IdleSeconds": l["IdleSeconds"] or 0.0,
-            "Category": l["Category"],
-            "ProductivityScore": l["ProductivityScore"],
-            "RiskLevel": l["RiskLevel"],
-            "Timestamp": l["Timestamp"],
-            # [FIX] Derived start/end timestamps so the frontend can show a real time range
-            "StartTime": l["Timestamp"].isoformat() if l["Timestamp"] else None,
-            "EndTime": (l["Timestamp"] + __import__('datetime').timedelta(seconds=l["DurationSeconds"] or 0)).isoformat() if l["Timestamp"] else None,
-        }
-        for l in page.items
-    ]
+    results = []
+    for l in page.items:
+        ts = l.get("Timestamp")
+        if isinstance(ts, str):
+            start_iso = ts
+            try:
+                ts_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            except Exception:
+                ts_dt = None
+        elif isinstance(ts, datetime):
+            start_iso = ts.isoformat() + ('Z' if not ts.tzinfo else '')
+            ts_dt = ts
+        else:
+            start_iso = None
+            ts_dt = None
+
+        dur = l.get("DurationSeconds") or 0.0
+        if ts_dt:
+            end_iso = (ts_dt + timedelta(seconds=dur)).isoformat()
+            if not end_iso.endswith('Z') and ('+' not in end_iso and '-' not in end_iso[10:]):
+                end_iso += 'Z'
+        else:
+            end_iso = start_iso
+
+        results.append({
+            "AgentId": l.get("AgentId"),
+            "ActivityType": l.get("ActivityType"),
+            "WindowTitle": l.get("WindowTitle"),
+            "ProcessName": l.get("ProcessName"),
+            "Url": l.get("Url"),
+            "DurationSeconds": dur,
+            "IdleSeconds": l.get("IdleSeconds") or 0.0,
+            "Category": l.get("Category"),
+            "ProductivityScore": l.get("ProductivityScore"),
+            "RiskLevel": l.get("RiskLevel"),
+            "Timestamp": start_iso,
+            "StartTime": start_iso,
+            "EndTime": end_iso,
+        })
+    return results
 
 @router.get("/activity/{agent_id}/stats")
 async def get_activity_stats(

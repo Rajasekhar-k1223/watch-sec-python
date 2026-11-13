@@ -104,6 +104,30 @@ async def update_plan_direct(
     tenant.AgentLimit = tier_limits.get(plan_name, 50)
     tenant.SubscriptionStatus = "active"
 
+    # [SYNC] Automatically cascade plan upgrade features to all tenant agents
+    from ..core.constants import FEATURE_TIERS, resolve_plan_level
+    new_level = resolve_plan_level(plan_name)
+    from ..db.models import Agent
+    agents_res = await db.execute(select(Agent).where(Agent.TenantId == tenant.Id))
+    for ag in agents_res.scalars().all():
+        ag.ActivityMonitorEnabled = True
+        ag.InputAuditEnabled = (new_level >= FEATURE_TIERS.get("KeyloggerEnabled", 2))
+        ag.ClipboardAuditEnabled = (new_level >= FEATURE_TIERS.get("ClipboardMonitorEnabled", 2))
+        ag.AppEnforcementEnabled = (new_level >= FEATURE_TIERS.get("AppBlockerEnabled", 2))
+        ag.BrowserComplianceEnabled = (new_level >= FEATURE_TIERS.get("BrowserEnforcerEnabled", 1))
+        ag.PrintAuditEnabled = (new_level >= FEATURE_TIERS.get("PrinterMonitorEnabled", 2))
+        ag.ShadowAuditEnabled = (new_level >= FEATURE_TIERS.get("ShadowMonitorEnabled", 3))
+        ag.SessionForensicEnabled = (new_level >= FEATURE_TIERS.get("LiveStreamEnabled", 3))
+        ag.RemoteRemediationEnabled = (new_level >= FEATURE_TIERS.get("RemoteShellEnabled", 3))
+        ag.MailIntelligenceEnabled = (new_level >= FEATURE_TIERS.get("MailMonitorEnabled", 3))
+        ag.VoiceIntelligenceEnabled = (new_level >= FEATURE_TIERS.get("SpeechMonitorEnabled", 3))
+        ag.VulnerabilityIntelligenceEnabled = (new_level >= FEATURE_TIERS.get("VulnerabilityIntelligenceEnabled", 3))
+        ag.VisualActivityEnabled = (new_level >= FEATURE_TIERS.get("ScreenshotsEnabled", 1))
+        ag.LocationAuditEnabled = (new_level >= FEATURE_TIERS.get("LocationTrackingEnabled", 2))
+        ag.UsbComplianceEnabled = (new_level >= FEATURE_TIERS.get("UsbBlockingEnabled", 2))
+        ag.NetworkAuditEnabled = (new_level >= FEATURE_TIERS.get("NetworkMonitoringEnabled", 3))
+        ag.DataLossPreventionEnabled = (new_level >= FEATURE_TIERS.get("FileDlpEnabled", 3))
+
     # Audit log
     from datetime import datetime
     from ..db.models import AuditLog

@@ -47,14 +47,14 @@ async def agent_update_progress(
     return {"status": "ok"}
 
 
-from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, LATEST_AGENT_VERSION # type: ignore
+from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, resolve_plan_level, LATEST_AGENT_VERSION # type: ignore
 LATEST_AGENT_VERSION = "v4.2.0"
 from ..core import trial_manager # type: ignore
 from ..tasks.security import scan_vulnerabilities_background # type: ignore
 from ..tasks.general import staggered_bulk_patch # type: ignore
 
 def verify_feature_access(tenant_plan: str, feature_key: str):
-    plan_level = PLAN_LEVELS.get(tenant_plan, 1) # Default to Starter
+    plan_level = resolve_plan_level(tenant_plan) # Default to Starter
     required_level = FEATURE_TIERS.get(feature_key, 3) # Default to Enterprise if unknown
     
     if plan_level < required_level:
@@ -79,7 +79,7 @@ async def verify_feature_access_with_trial(
             "trial": FeatureTrial or None
         }
     """
-    plan_level = PLAN_LEVELS.get(tenant_plan, 1)
+    plan_level = resolve_plan_level(tenant_plan)
     required_level = FEATURE_TIERS.get(feature_key, 3)
     
     # Check if tenant has access via their plan
@@ -1482,7 +1482,7 @@ async def agent_heartbeat(
 
             
             # Helper to check feature tier vs tenant plan
-            plan_level = PLAN_LEVELS.get(tenant.Plan, 1)
+            plan_level = resolve_plan_level(tenant.Plan)
             def check_feat(key, default_val):
                 req_level = FEATURE_TIERS.get(key, 3)
                 return default_val if plan_level >= req_level else False
@@ -2050,7 +2050,7 @@ async def agent_heartbeat(
             return {"status": "uninstall", "Uninstall": True}
 
         # 7. Prepare Response with updated Configuration
-        plan_level = PLAN_LEVELS.get(tenant.Plan, 1)
+        plan_level = resolve_plan_level(tenant.Plan)
         def check_feat_final(key, db_val):
             req_level = FEATURE_TIERS.get(key, 3)
             return db_val if plan_level >= req_level else False
