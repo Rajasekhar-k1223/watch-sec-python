@@ -54,19 +54,24 @@ async def get_latest_binary_for_audit(current_user: User = Depends(get_current_u
 # --- Helper Logic ---
 
 def _get_backend_url(request: Request) -> str:
-    # 1. Direct Env Var (Specific for Agent Gateway)
+    # 1. Prefer public host from incoming request (handles reverse proxies & custom domains)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+    if host and "localhost" not in host and "127.0.0.1" not in host:
+        return f"{proto}://{host}".rstrip("/")
+    
+    # 2. Direct Env Var (Specific for Agent Gateway, if not localhost)
     env_url = os.getenv("AGENT_BACKEND_URL")
-    if env_url:
+    if env_url and "localhost" not in env_url and "127.0.0.1" not in env_url:
         return env_url.rstrip("/")
     
-    # 2. General Base URL (Standard across the app)
+    # 3. General Base URL (Standard across the app, if not localhost)
     base_url = os.getenv("MONITORIX_BASE_URL")
-    if base_url:
+    if base_url and "localhost" not in base_url and "127.0.0.1" not in base_url:
         return base_url.rstrip("/")
     
-    # 3. Fallback to current request domain (Robust)
-    # Using request.url.scheme + netloc ensures it works behind proxies if ProxyHeadersMiddleware is active
-    return f"{request.url.scheme}://{request.url.netloc}"
+    # 4. Fallback to public domain or request domain
+    return f"{proto}://{host}".rstrip("/")
 
 def _serve_agent_package(os_type: str, tenant: Tenant, backend_url: str, serve_payload: bool = False, format_type: Optional[str] = None):
     """

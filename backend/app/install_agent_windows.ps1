@@ -59,8 +59,13 @@ try {
     $response = Invoke-RestMethod @validateParams
     Write-Host "    [+] PIN Verified Successfully!" -ForegroundColor Green
 } catch {
-    Write-Error "INSTALLATION ABORTED: Invalid or Expired PIN!"
-    exit 1
+    Write-Host ""
+    Write-Host "[!] INSTALLATION ABORTED: Failed to validate PIN with server ($($_.Exception.Message))" -ForegroundColor Red
+    Write-Host "    Target Backend: $BackendUrl" -ForegroundColor Yellow
+    Write-Host "    Please ensure you have generated a fresh 6-digit PIN in the Monitorix Dashboard." -ForegroundColor Yellow
+    Write-Host ""
+    Read-Host "Press Enter to exit"
+    return
 }
 if ([string]::IsNullOrEmpty($DownloadUrl) -and -not [string]::IsNullOrEmpty($DownloadBaseUrl)) {
     $DownloadUrl = "${DownloadBaseUrl}${ApiKey}"
@@ -436,3 +441,13 @@ try {
 # Cleanup temp files silently
 try { if (Test-Path $TempFile)    { Remove-Item $TempFile    -Force } } catch {}
 try { if (Test-Path $ExtractPath) { Remove-Item $ExtractPath -Recurse -Force } } catch {}
+
+Write-Host ""
+Write-Host "==========================================================" -ForegroundColor Green
+Write-Host " [+] MONITORIX AGENT INSTALLED AND RUNNING SUCCESSFULLY!" -ForegroundColor Green
+Write-Host "     Agent Path:   $ExePath" -ForegroundColor Cyan
+Write-Host "     Tasks:        SYSTEM Background Service & Interactive Desktop Helper" -ForegroundColor Cyan
+Write-Host "     Status:       Active & Communicating with Backend" -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Green
+Write-Host ""
+Read-Host "Installation Complete. Press Enter to finish"
