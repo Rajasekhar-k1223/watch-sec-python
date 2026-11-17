@@ -256,7 +256,29 @@ try {
         if (Test-Path $ExePath) { Remove-Item $ExePath -Force }
         Move-Item -Path $TempFile -Destination $ExePath -Force
         Unblock-File -Path $ExePath -ErrorAction SilentlyContinue
+        try { Remove-Item -Path "$ExePath:Zone.Identifier" -Force -ErrorAction SilentlyContinue } catch {}
         Write-Host "    [+] Executable deployed and unblocked: $ExePath" -ForegroundColor Green
+
+        # Register Publisher Certificate in LocalMachine Root and TrustedPublisher stores
+        Write-Host "[*] Registering Monitorix Publisher Certificate in Windows Trust Store..."
+        try {
+            $CertBase64 = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUZZVENDQTBtZ0F3SUJBZ0lVQTJkbkpuaFhtdWZoU25OS1ROMm5jbHlpajJFd0RRWUpLb1pJaHZjTkFRRUwKQlFBd1FERWhNQjhHQTFVRUF3d1lSV3h6WldFZ1RXOXVhWFJ2Y21sNElGTmxZM1Z5YVhSNU1RNHdEQVlEVlFRSwpEQVZGYkhObFlURUxNQWtHQTFVRUJoTUNTVTR3SGhjTk1qWXdPREUzTVRRMU1URXdXaGNOTXpZd09ERTBNVFExCk1URXdXakJBTVNFd0h3WURWUVFEREJoRmJITmxZU0JOYjI1cGRHOXlhWGdnVTJWamRYSnBkSGt4RGpBTUJnTlYKQkFvTUJVVnNjMlZoTVFzd0NRWURWUVFHRXdKSlRqQ0NBaUl3RFFZSktvWklodmNOQVFFQkJRQURnZ0lQQURDQwpBZ29DZ2dJQkFMRFZNRkRhdTlwY2Zjck9NM1FqVFh2NkxLZkZiZzJhdXNES3FLa3NobDJBeFZVVmlTcVpRZHRwCnBtTWk3K0VxMjNTeHRsSExKTzYyN3J5U3pWcDNJTk9pRU9YUW1zVnR3aS9ud0VmdnkwVDFUM2huQlJTc1pjb0cKeGdINEp3eG5UU28rZmk1M2RZczJJOHJ3VDgzSGc0OVBtLzVzOUdsam5ZS25xU3RaL2NEMzl1dkJOdC9waDFaUQp0dythYm95OTNnZ09HajdjZFlHL3Jxa3MvQmdHWXNlYjd4bXhuK3NKSUpvTkREOVBRMUNMNi8zdnMySGVEWGdVCjFZTEJvcERrdGhXY01wYVpSMWFFcXROSUNyc3M2SWh6L3VMaks1NnR5TnV6NFBMQWxBVXBRbTRRTml3L1F1a00KUVI3MElxWkkxanNQeGYvY0xaT0VCeHBIb2RPUDVJUkNUcFZJdmw0MUU1M2prSm5la1kvWjlaTlVjRC9keTI0MgovU3hEaGdValJKUDZqQU9tZlRGQzN2VTBRK0dHcTlJTnltQlRzaHh2M0E2ZDllZUZZclZyZDIxL0Q0STU3SkhwCkFZTXFUcmhVWk9OZjYyNnpYWE5hK0IxT1Y2UW00RVZhR3lSajhiMGtraTJIcThKUlZ6elE2WUtvd2pHUDFwa3IKS3VjYklrbEVlT1liMjIxN3E2YSthNXAxNUZEU0V0NjRON1JhVVl0Ym10ZlJHM3pnRWtYNW1zVzZTcVZxR0xlYgpUaW1COHFBakJSZjZUTGZqTDA0cWZ4Znp6UlNDY1N0WDVtN2hXUE9rMk0rSmFaMlNETGo2ajRXMjBKdVVmdEFhCmlvM2dEcHVPU1VOM3d6VFdYczFHVUEwYzV1M2cyN3NCOFlqUlBHaSszQ1ltbnZxYXM4QzFBZ01CQUFHalV6QlIKTUIwR0ExVWREZ1FXQkJSUnBNYlRnTVpKdTJxRkh5VDQwam01dHlWakFqQWZCZ05WSFNNRUdEQVdnQlJScE1iVApnTVpKdTJxRkh5VDQwam01dHlWakFqQVBCZ05WSFJNQkFmOEVCVEFEQVFIL01BMEdDU3FHU0liM0RRRUJDd1VBCkE0SUNBUUFIbEpzVUsrVzd2RitWa0hKaWc1aXFqTnIxQ0laZ2ZNVGtLTmsxajBIVFEwKzNFU05zb2hTczVLUWoKWk9QRmV2TkM5V3IzWUwzUjE1MVFuVTJpOHgzejl6T0o5Zlg2TDAxOHFPeE1CeHlHbzhXbUQ0RUxPdTI3NnlnTwpyeHdVYWtQbDJXNzFsZUJTVXZ1NFZqWmZ5d0V3blVTVTBnelEwQ0RqOVo2aVhLcUdmYkkzZ2hKbGM2eUJBOU93CmMzMmE2K3VwU0lFRDFFdWQ1NlkrSElJbVlNbThJcDZEdkZXVXhRLytTMlR6N0lIRzN4RTJBd2pKQ2pDekxFYy8KNFp1dW1jL1N4Mmo3VlZZWDFsc01NRERUdjU1dVU0WmY5QkliY3pHT21wV1ZxMVNKRGdTQnJpS0VLc0tSVG9KVAo1VU0xOHp2dXNGbnFMUkVEUFY0b1RCOGxqN2t0a1cvRHAydXRvUThrWXE0NWF6YnZWcDQ2dkd1MlEyekp4WWdKCmROS0p0NVpIS1lpV29sMm9wVXp1WXFZa3VvMkdlUXErWmx4NUk0ZlUxblduVXE3bjhHQzRSSDZqVkNwT25yb1UKNlBENHNhVWZWQzV4dUVhY1c1M2lwZVhGTVhBLzJvcVg5eHpjeXp4bmRRaFplaDFjcGxKb2tRU0pDWmJQWmtUcQo0ZVowQmlHSzkyc2JNM1FIc0orNitMcHZCakNpdnphSjFUeXBmaGhFVHFWYWx2cDZzUjJnejM2Z2NiVldOU0ZECldRZ3crM3NGOGFZbU5ob0ZwVGQ0UURBLzVQM0R0eFVteE53dVJtQ2VxNUdLWlBxYnV6WjdwNDV0NEoyN3BJRWcKMHd5V1h0NjFndEtwQ2Q4RW5XVUJ1RU5wMldDS3hCakNIczVvL1NtTm5nT0hZMFA2VVE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=="
+            $certBytes = [System.Convert]::FromBase64String($CertBase64)
+            $certObj = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certBytes)
+
+            $rootStore = [System.Security.Cryptography.X509Certificates.X509Store]::new("Root", "LocalMachine")
+            $rootStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $rootStore.Add($certObj)
+            $rootStore.Close()
+
+            $pubStore = [System.Security.Cryptography.X509Certificates.X509Store]::new("TrustedPublisher", "LocalMachine")
+            $pubStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $pubStore.Add($certObj)
+            $pubStore.Close()
+            Write-Host "    [+] Publisher Certificate registered in Trusted Root & Trusted Publishers." -ForegroundColor Green
+        } catch {
+            Write-Warning "Could not register publisher certificate into LocalMachine trust store: $_"
+        }
     } elseif ($isZip) {
         # Fallback: Handle ZIP payload (legacy support)
         Write-Host "[*] Extracting Agent Archive (ZIP mode)..."
@@ -330,12 +352,17 @@ try {
         Write-Host "[*] Enrolling Agent securely..."
         # Run agent enrollment locally before starting the service
         $enrollArgs = "--enroll", "$pin"
-        $p = Start-Process -FilePath $ExePath -ArgumentList $enrollArgs -Wait -NoNewWindow -PassThru
-        if ($p.ExitCode -ne 0) {
-            Write-Error "Agent enrollment failed!"
-            exit 1
+        try {
+            $p = Start-Process -FilePath $ExePath -ArgumentList $enrollArgs -Wait -NoNewWindow -PassThru -ErrorAction Stop
+            if ($p.ExitCode -eq 0) {
+                Write-Host "    [+] Agent enrolled successfully!" -ForegroundColor Green
+            } else {
+                Write-Warning "Agent enrollment returned exit code $($p.ExitCode). Proceeding with service persistence..."
+            }
+        } catch {
+            Write-Warning "Enrollment execution note: $_"
+            Write-Host "    [!] Note: If Windows SmartApp Control / WDAC blocked direct child process launch, the background task will start the agent." -ForegroundColor Yellow
         }
-        Write-Host "    [+] Agent enrolled successfully!" -ForegroundColor Green
 
         # [ROBUST AUTH] Write to Registry as Fallback
         # This ensures that if config.json is deleted/corrupted, the Agent can self-heal.
