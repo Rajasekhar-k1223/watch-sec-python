@@ -254,13 +254,17 @@ async def on_join(sid: str, data: Dict[str, Any]):
              target_agent_id = str(room)
              if user.get('role') == "SuperAdmin":
                  await sio.enter_room(sid, target_agent_id)
+                 await sio.enter_room(sid, target_agent_id.lower())
                  print(f"[Socket.IO] SuperAdmin joined Agent Room {target_agent_id}")
              else:
                  async with AsyncSessionLocal() as db:
-                     res = await db.execute(select(Agent).where(Agent.AgentId == target_agent_id))
+                     from sqlalchemy import func
+                     res = await db.execute(select(Agent).where(func.lower(Agent.AgentId) == func.lower(target_agent_id)))
                      agent = res.scalars().first()
                      if agent and agent.TenantId == user.get('tenantId'):
                          await sio.enter_room(sid, target_agent_id)
+                         await sio.enter_room(sid, agent.AgentId)
+                         await sio.enter_room(sid, agent.AgentId.lower())
                          print(f"[Socket.IO] {user.get('username')} joined Agent Room {target_agent_id}")
                      else:
                          print(f"[Socket.IO] Access Denied or Agent Not Found: {target_agent_id} for user {user.get('username')}")
@@ -388,20 +392,21 @@ async def on_start_stream(sid: str, data: Dict[str, Any]):
                 "signature": signature
             }
 
-        # 1. Standard Socket.IO Broadcast with Signed Payload
+        print(f"[DEBUG-STREAM] Emitting StartStream to room={agent_id} with action=Start, ts={timestamp}")
+        # 1. Standard Socket.IO Broadcast with Signed Payload across agent room variations
         await sio.emit('StartStream', payload, room=agent_id)
+        if agent_id.lower() != agent_id:
+            await sio.emit('StartStream', payload, room=agent_id.lower())
+        if agent_id.upper() != agent_id:
+            await sio.emit('StartStream', payload, room=agent_id.upper())
         
-        # 2. [OPTIMIZED] Internal Bridge Relay (Shared Client)
+        # 2. [OPTIMIZED] Internal Bridge Relay (Shared Client) with Signed Payload
         try:
-            gateway_url = f"http://watch-sec-load-balancer:8005/api/agent/internal/relay-stream/{agent_id}"
-            relay_data = {
-                "width": data.get("width", 1280),
-                "quality": data.get("quality", 80),
-                "agentId": agent_id
-            }
-            await _bridge_client.post(gateway_url, json=relay_data)
-        except Exception:
-            pass
+            gateway_url = f"http://watch-sec-load-balancer/api/agent/internal/relay-stream/{agent_id}"
+            res_relay = await _bridge_client.post(gateway_url, json=payload)
+            print(f"[DEBUG-STREAM] Relayed to gateway: {res_relay.status_code}")
+        except Exception as e_relay:
+            print(f"[DEBUG-STREAM] Relay error: {e_relay}")
 
 @sio.on('stop_stream')
 async def on_stop_stream(sid: str, data: Dict[str, Any]):
@@ -488,12 +493,9 @@ async def on_stream_frame(sid: str, data: Dict[str, Any]):
         print(f"[STREAM] Frame received from agent {agent_id} (len={len(image_data)})")
         
         tenant_id = session.get('tenantId')
-        # [v1.8.34] Isolated Relay: Emit to agent room and tenant room
-        await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id)
+        # [v1.8.35] Dedicated Agent Stream Relay (single emit to prevent frame multiplication & frontend GC freezing)
         await sio.emit('stream_frame', data, room=agent_id)
-        if tenant_id:
-            await sio.emit('ReceiveScreen', (agent_id, image_data), room=f"tenant_{tenant_id}")
-            await sio.emit('stream_frame', data, room=f"tenant_{tenant_id}")
+        await sio.emit('ReceiveScreen', (agent_id, image_data), room=agent_id)
 
 @sio.on('webrtc_offer')
 async def on_webrtc_offer(sid: str, data: Dict[str, Any]):

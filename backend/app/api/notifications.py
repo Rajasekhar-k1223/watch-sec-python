@@ -20,8 +20,10 @@ async def list_notifications(
 ):
     query = select(Notification).order_by(Notification.CreatedAt.desc()).limit(limit)
     
-    if current_user.Role != "SuperAdmin":
+    if current_user.Role not in ("SuperAdmin", "ProductHead"):
         query = query.where(Notification.TenantId == current_user.TenantId)
+        query = query.where(~Notification.Title.contains("[INTERNAL_PRI]"))
+        query = query.where(~Notification.Message.contains("[INTERNAL_PRI]"))
         
     if only_unread:
         query = query.where(Notification.IsRead == False)
@@ -37,8 +39,10 @@ async def mark_all_as_read(
     current_user: User = Depends(get_current_user)
 ):
     query = update(Notification).where(Notification.IsRead == False)
-    if current_user.Role != "SuperAdmin":
+    if current_user.Role not in ("SuperAdmin", "ProductHead"):
         query = query.where(Notification.TenantId == current_user.TenantId)
+        query = query.where(~Notification.Title.contains("[INTERNAL_PRI]"))
+        query = query.where(~Notification.Message.contains("[INTERNAL_PRI]"))
         
     await db.execute(query.values(IsRead=True))
     await db.commit()
@@ -50,8 +54,10 @@ async def clear_notifications(
     current_user: User = Depends(get_current_user)
 ):
     query = delete(Notification)
-    if current_user.Role != "SuperAdmin":
+    if current_user.Role not in ("SuperAdmin", "ProductHead"):
         query = query.where(Notification.TenantId == current_user.TenantId)
+        query = query.where(~Notification.Title.contains("[INTERNAL_PRI]"))
+        query = query.where(~Notification.Message.contains("[INTERNAL_PRI]"))
         
     await db.execute(query)
     await db.commit()

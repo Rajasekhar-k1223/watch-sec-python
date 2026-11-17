@@ -247,6 +247,19 @@ async def report_event(
 
     ts_naive = dto.Timestamp.replace(tzinfo=None) if dto.Timestamp.tzinfo else dto.Timestamp
     
+    # Filter out empty, inaccessible, or non-actionable clipboard placeholders
+    if dto.Type in ["ClipboardCapture", "ClipboardAuditReport"]:
+        details_str = (dto.Details or "").strip()
+        lower_d = details_str.lower()
+        if (
+            not details_str
+            or "[clipboard contains non-text data or is inaccessible]" in lower_d
+            or "[clipboard is empty]" in lower_d
+            or "no active display" in lower_d
+            or "xclip missing" in lower_d
+        ):
+            return {"status": "ignored", "message": "Non-actionable clipboard state filtered"}
+
     # Prevent duplicate events from being stored multiple times for the same agent and date/time
     existing = await db.execute(select(EventLog).where(
         EventLog.AgentId == dto.AgentId,
@@ -408,7 +421,23 @@ async def report_event(
 
     # Broadcast
     target_room = str(dto.AgentId)
-    await sio.emit('ReceiveEvent', {'agentId': dto.AgentId, 'type': dto.Type, 'details': dto.Details, 'timestamp': dto.Timestamp.isoformat()}, room=target_room)
+    broadcast_evt = {
+        'agentId': dto.AgentId,
+        'AgentId': dto.AgentId,
+        'type': dto.Type,
+        'Type': dto.Type,
+        'details': dto.Details,
+        'Details': dto.Details,
+        'timestamp': dto.Timestamp.isoformat(),
+        'Timestamp': dto.Timestamp.isoformat(),
+        'Severity': getattr(event, 'Severity', 'Medium'),
+        'Status': getattr(event, 'Status', 'Open'),
+        'IsAlert': getattr(event, 'IsAlert', False)
+    }
+    await sio.emit('ReceiveEvent', broadcast_evt, room=target_room)
+    await sio.emit('ReceiveEvent', broadcast_evt, room=f"tenant_{tenant.Id}")
+    await sio.emit('new_event', broadcast_evt, room=target_room)
+    await sio.emit('new_event', broadcast_evt, room=f"tenant_{tenant.Id}")
     
     return {"status": "Logged"}
 

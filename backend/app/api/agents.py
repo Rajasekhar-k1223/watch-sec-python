@@ -1,10 +1,10 @@
 import fastapi # type: ignore # pyre-ignore
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, Header # type: ignore
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query, Header, Body # type: ignore
 from fastapi.responses import FileResponse, JSONResponse # type: ignore
 from sqlalchemy.ext.asyncio import AsyncSession # type: ignore
 from sqlalchemy.future import select # type: ignore
 from pydantic import BaseModel # type: ignore
-from typing import Optional, List, Any # type: ignore
+from typing import Optional, List, Any, Dict # type: ignore
 import os # type: ignore
 import asyncio # type: ignore
 import hashlib # type: ignore
@@ -48,7 +48,7 @@ async def agent_update_progress(
 
 
 from ..core.constants import FEATURE_TIERS, PLAN_LEVELS, resolve_plan_level, LATEST_AGENT_VERSION # type: ignore
-LATEST_AGENT_VERSION = "v4.2.1"
+LATEST_AGENT_VERSION = "v4.2.5"
 from ..core import trial_manager # type: ignore
 from ..tasks.security import scan_vulnerabilities_background # type: ignore
 from ..tasks.general import staggered_bulk_patch # type: ignore
@@ -434,10 +434,9 @@ async def trigger_agent_update(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
         
-    # For now, we set it to our latest build version (v1.5.0).
-    # [v1.8.2] Set Update Status
+    # Set to scheduled update mode (will only trigger during maintenance window)
     agent.TargetVersion = LATEST_AGENT_VERSION
-    agent.UpdateStatus = "pending_manual_push"
+    agent.UpdateStatus = "pending_scheduled"
     agent.UpdateFailureReason = None
     agent.LastUpdateAttempt = datetime.utcnow()
     await db.commit()
@@ -446,10 +445,11 @@ async def trigger_agent_update(
     await sio.emit('agent_list_update', {
         'agentId': agent.AgentId,
         'targetVersion': agent.TargetVersion,
+        'updateStatus': agent.UpdateStatus,
         'updatePending': True
     }, room=f"tenant_{agent.TenantId}")
     
-    return {"status": "success", "message": f"Target version set to {agent.TargetVersion}"}
+    return {"status": "success", "message": f"Update scheduled to {agent.TargetVersion} during maintenance window."}
 
 class AgentRollbackRequest(BaseModel):
     target_version: Optional[str] = "v2.4.0"
@@ -1101,23 +1101,42 @@ class AgentEvent(BaseModel):
     Timestamp: Optional[str] = None
 
 
-class RelayStreamRequest(BaseModel):
-    width: int = 1280
-    quality: int = 80
-    agentId: str
-
-
 @agent_router.post("/internal/relay-stream/{agent_id}")
 async def internal_relay_stream(
     agent_id: str,
-    payload: RelayStreamRequest,
+    payload: Dict[str, Any] = Body(...),
     db: AsyncSession = Depends(get_db)
 ):
-    """Internal Bridge: Emits StartStream directly to current gateway clients."""
+    """Internal Bridge: Emits StartStream directly to current gateway clients with cryptographic verification."""
     print(f"[RELAY_RECEIVED] Internal signal for {agent_id}. Data: {payload}")
     try:
-        # 1. Emit StartStream directly to the room
-        await sio.emit('StartStream', payload.dict(), room=agent_id)
+        if "signature" in payload and "timestamp" in payload:
+            await sio.emit('StartStream', payload, room=agent_id)
+            return {"status": "relayed"}
+
+        res_a = await db.execute(select(Agent).where(Agent.AgentId == agent_id))
+        agent = res_a.scalars().first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        res_t = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+        tenant = res_t.scalars().first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        timestamp = datetime.utcnow().isoformat()
+        signature = generate_agent_command_signature(
+            api_key=tenant.ApiKey,
+            machine_id=agent.MachineId or "",
+            action="StartStream",
+            params={"Action": "Start"},
+            timestamp=timestamp
+        )
+        signed_payload = {
+            "Action": "Start",
+            "timestamp": timestamp,
+            "signature": signature
+        }
+        await sio.emit('StartStream', signed_payload, room=agent_id)
         return {"status": "relayed"}
     except Exception as e:
         print(f"[RELAY_ERROR] {e}")
@@ -1604,28 +1623,12 @@ async def agent_heartbeat(
                 
                 agent.Version = payload.Version
 
-                # [v1.8.21] Automated Update Logic:
-                # If agent version is lagging behind LATEST, set TargetVersion to trigger update
-                # except if a custom TargetVersion is already set (and isn't LATEST).
-                # [v1.8.40] Scheduled Patching: Mode Check
-                data_mw = {}
-                try: 
-                    data_mw = json.loads(tenant.MaintenanceWindowJson or "{}")
-                except: pass
-                
-                auto_patch = data_mw.get("mode", "manual") == "automatic"
-                print(f"[DEBUG] Auto-patch mode: {auto_patch}")
-                
-                if agent.Version != LATEST_AGENT_VERSION:
-                    if agent.TargetVersion != LATEST_AGENT_VERSION:
-                        # Only auto-target if not already in a custom update state AND in Auto-Patch mode
-                        if (not agent.TargetVersion or agent.TargetVersion == agent.Version) and auto_patch:
-                            agent.TargetVersion = LATEST_AGENT_VERSION
-                else:
-                    # If already at latest, ensure TargetVersion matches
-                    if agent.TargetVersion != LATEST_AGENT_VERSION:
-                        agent.TargetVersion = LATEST_AGENT_VERSION
-                        agent.UpdateStatus = "idle"
+                # [STRICT ZERO AUTO-SYNC]
+                # Agents must NEVER auto-sync or auto-target a new version on heartbeat.
+                # TargetVersion is strictly controlled by explicit client action (Patch Now or Scheduled Window).
+                if agent.Version == agent.TargetVersion:
+                    agent.UpdateStatus = "idle"
+                    agent.UpdateFailureReason = None
             
             # [v1.8.37] Cryptographic Sync: Record MachineId only if unset
             if payload.MachineSecret and not agent.MachineId:
@@ -1750,10 +1753,35 @@ async def agent_heartbeat(
         print(f"[DEBUG-UPDATE] Version={agent.Version} Target={agent.TargetVersion} Status={agent.UpdateStatus}")
         update_url = ""
         if agent.Version != agent.TargetVersion:
-            # [v1.8.58] Manual-only updates to prevent server saturation
-            if agent.UpdateStatus in ["pending_manual_push", "dispatching_update"]:
+            # [STRICT ZERO AUTO-SYNC] Only push updates when explicitly approved:
+            # 1. "pending_manual_push" -> immediate push from "Patch Now" (bypasses window)
+            # 2. "pending_scheduled" -> scheduled push (only during verified maintenance window)
+            # 3. "dispatching_update" -> active in-flight update
+            # Any agent in 'idle' or unapproved state will NEVER update automatically.
+            if agent.UpdateStatus == "pending_manual_push":
                 update_required = True
-                backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
+                print(f"[PATCH-NOW] Executing approved manual patch for {agent.AgentId} -> {agent.TargetVersion}")
+            elif agent.UpdateStatus == "pending_scheduled":
+                if is_in_maintenance_window(tenant):
+                    update_required = True
+                    print(f"[MAINTENANCE] Agent {agent.AgentId} inside maintenance window. Dispatching scheduled update to {agent.TargetVersion}.")
+                else:
+                    update_required = False
+                    print(f"[MAINTENANCE] Agent {agent.AgentId} is outside maintenance window. Holding scheduled update.")
+            elif agent.UpdateStatus == "dispatching_update":
+                update_required = True
+            else:
+                update_required = False
+
+            if update_required:
+                backend_url = os.getenv("AGENT_BACKEND_URL")
+                if not backend_url or "localhost" in backend_url or "127.0.0.1" in backend_url:
+                    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+                    proto = request.headers.get("x-forwarded-proto") or "https"
+                    if host and "localhost" not in host and "127.0.0.1" not in host:
+                        backend_url = f"{proto}://{host}"
+                    else:
+                        backend_url = "https://monitorix.elsea.co.in"
                 hostname_lower = agent.Hostname.lower() if agent.Hostname else ""
                 # --- v1.8.41+: Precision Architecture Detection ---
                 os_type = "windows"
@@ -1834,6 +1862,7 @@ async def agent_heartbeat(
                 # Use format=exe for Windows so agent receives a raw EXE it can move+run directly
                 fmt_param = "&format=exe" if os_type == "windows" else ""
                 update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}{fmt_param}"
+                print(f"[DEBUG-UPDATE] Generated update_url: {update_url}")
                 
                 # --- v1.8.41: HMAC Update Handshake ---
                 update_hash = ""
@@ -1873,45 +1902,11 @@ async def agent_heartbeat(
                     
                     bin_path = os.path.join(base_path, fname)
                     if os.path.exists(bin_path):
-                        update_hash = None  # Omit hash for legacy compat
-
-                        # 3. RSA-SHA256 Publisher Signature [v2.3.8]
-                        # Prefer reading the pre-built .sig file generated by build_agent.sh.
-                        # Falls back to live signing if .sig is missing (e.g. first run).
-                        try:
-                            import subprocess
-                            from packaging import version as pkg_version
-                            sig_file = bin_path + ".sig"
-                            key_path = "/opt/projects/monitorix/certs/monitorix-publisher.key"
-
-                            if os.path.exists(sig_file):
-                                # Fast path: read pre-computed hex signature from disk
-                                with open(sig_file, "r") as sf:
-                                    update_signature = sf.read().strip()
-                                print(f"[PATCH] Loaded pre-built RSA sig from {sig_file} ({len(update_signature)} chars)")
-                            elif os.path.exists(key_path):
-                                # Slow path: sign on-the-fly with openssl
-                                result = subprocess.run(
-                                    ["openssl", "dgst", "-sha256", "-sign", key_path, bin_path],
-                                    capture_output=True, timeout=30
-                                )
-                                if result.returncode == 0:
-                                    update_signature = result.stdout.hex()
-                                    # Cache it as .sig so next call is instant
-                                    with open(sig_file, "w") as sf:
-                                        sf.write(update_signature)
-                                    print(f"[PATCH] RSA-SHA256 signed on-the-fly and cached: {sig_file}")
-                                else:
-                                    print(f"[PATCH] openssl sign failed: {result.stderr.decode()}")
-                                    update_signature = ""
-                            else:
-                                print(f"[PATCH] Publisher key not found at {key_path}")
-                                update_signature = ""
-
-                            agent.UpdateStatus = "dispatching_update"
-                        except Exception as sig_err:
-                            print(f"[PATCH] RSA signature error: {sig_err}")
-                            update_signature = ""
+                        with open(bin_path, "rb") as bf:
+                            update_hash = hashlib.sha256(bf.read()).hexdigest()
+                        update_signature = ""
+                        print(f"[PATCH] Computed SHA-256 update hash: {update_hash} for {bin_path}")
+                        agent.UpdateStatus = "dispatching_update"
                     else:
                         print(f"[PATCH] Binary not found at {bin_path}. Update will fail on agent.")
                 except Exception as e:
@@ -2028,6 +2023,26 @@ async def agent_heartbeat(
             }
             await sio.emit('agent_list_update', update_data, room=f"tenant_{tenant.Id}")
             await sio.emit('agent_list_update', update_data, room="superadmin")
+
+            # Live Heartbeat Event for modal Recent Activity & Security Logs
+            heartbeat_evt = {
+                'agentId': agent.AgentId,
+                'AgentId': agent.AgentId,
+                'type': 'System Heartbeat',
+                'Type': 'System Heartbeat',
+                'details': f"Status: {payload.Status} | CPU: {round(payload.CpuUsage, 1)}% | MEM: {round(payload.MemoryUsage, 1)}MB",
+                'Details': f"Status: {payload.Status} | CPU: {round(payload.CpuUsage, 1)}% | MEM: {round(payload.MemoryUsage, 1)}MB",
+                'timestamp': report_ts.isoformat(),
+                'Timestamp': report_ts.isoformat(),
+                'isMetric': True,
+                'cpu': round(payload.CpuUsage, 1),
+                'mem': round(payload.MemoryUsage, 1),
+                'status': payload.Status
+            }
+            await sio.emit('agent_heartbeat', heartbeat_evt, room=str(agent.AgentId))
+            await sio.emit('agent_heartbeat', heartbeat_evt, room=f"tenant_{tenant.Id}")
+            await sio.emit('ReceiveEvent', heartbeat_evt, room=str(agent.AgentId))
+            await sio.emit('ReceiveEvent', heartbeat_evt, room=f"tenant_{tenant.Id}")
         except: pass
         
         if agent.IsPendingUninstall:
@@ -2221,6 +2236,25 @@ async def agent_telemetry(
         }
         await sio.emit('dashboard_stats_update', stats_data, room=f"tenant_{agent.TenantId}")
         await sio.emit('dashboard_stats_update', stats_data, room="superadmin")
+
+        telemetry_evt = {
+            'agentId': agent.AgentId,
+            'AgentId': agent.AgentId,
+            'type': 'System Heartbeat',
+            'Type': 'System Heartbeat',
+            'details': f"Status: Online | CPU: {round(cpu, 1)}% | MEM: {round(mem, 1)}MB",
+            'Details': f"Status: Online | CPU: {round(cpu, 1)}% | MEM: {round(mem, 1)}MB",
+            'timestamp': now.isoformat(),
+            'Timestamp': now.isoformat(),
+            'isMetric': True,
+            'cpu': round(cpu, 1),
+            'mem': round(mem, 1),
+            'status': 'Online'
+        }
+        await sio.emit('agent_telemetry', telemetry_evt, room=str(agent.AgentId))
+        await sio.emit('agent_telemetry', telemetry_evt, room=f"tenant_{agent.TenantId}")
+        await sio.emit('ReceiveEvent', telemetry_evt, room=str(agent.AgentId))
+        await sio.emit('ReceiveEvent', telemetry_evt, room=f"tenant_{agent.TenantId}")
 
         # [NEW] Buffer data in Redis for Postgres batch insert
         try:
@@ -3424,7 +3458,9 @@ async def patch_now(
         tenant_result = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
         tenant = tenant_result.scalars().first()
         if tenant:
-            backend_url = os.getenv("AGENT_BACKEND_URL") or "https://agent-api.monitorix.co.in"
+            backend_url = os.getenv("AGENT_BACKEND_URL")
+            if not backend_url or "localhost" in backend_url or "127.0.0.1" in backend_url:
+                backend_url = "https://monitorix.elsea.co.in"
             
             if needs_bypass_windows:
                 update_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type=windows&format=exe"
@@ -3517,9 +3553,44 @@ echo [%date% %time%] Scheduled task registered >> "%LOGFILE%"
             except Exception as e:
                 print(f"[PATCH-NOW] Error deploying patch payload: {e}")
     else:
-        print(f"[PATCH-NOW] Fallback to standard push for agent {agent.AgentId} (not broken or not windows)")
+        print(f"[PATCH-NOW] Dispatching direct Socket.IO TriggerAgentUpdate for agent {agent.AgentId}")
+        tenant_result = await db.execute(select(Tenant).where(Tenant.Id == agent.TenantId))
+        tenant = tenant_result.scalars().first()
+        if tenant:
+            backend_url = os.getenv("AGENT_BACKEND_URL")
+            if not backend_url or "localhost" in backend_url or "127.0.0.1" in backend_url:
+                backend_url = "https://monitorix.elsea.co.in"
+            
+            fmt_param = "&format=exe" if os_type == "windows" else ""
+            update_os_type = f"{os_type}-{arch}" if os_type != "windows" else "windows"
+            download_url = f"{backend_url.rstrip('/')}/api/downloads/public/payload?key={tenant.ApiKey}&os_type={update_os_type}{fmt_param}"
+            
+            exec_params = {
+                "Action": "TriggerAgentUpdate",
+                "DownloadUrl": download_url,
+                "ExpectedHash": "",
+                "PublisherSignature": ""
+            }
+            try:
+                # Immediate UI progress indicator
+                await sio.emit('agent_update_progress', {'agentId': agent.AgentId, 'progress': 10, 'status': 'Downloading Update...'}, room=f"tenant_{tenant.Id}")
+                await sio.emit('agent_update_progress', {'agentId': agent.AgentId, 'progress': 10, 'status': 'Downloading Update...'}, room="superadmin")
+
+                machine_id = agent.MachineId or agent.AgentId
+                key = hashlib.sha256(tenant.ApiKey.encode() + machine_id.encode()).digest()
+                timestamp_ex = datetime.utcnow().isoformat()
+                msg_parts_ex = ["Remediation", json.dumps(exec_params, sort_keys=True), timestamp_ex]
+                sig_ex = hmac.new(key, "|".join(msg_parts_ex).encode('utf-8'), hashlib.sha256).hexdigest()
+                await sio.emit('Remediation', {
+                    "signature": sig_ex,
+                    "timestamp": timestamp_ex,
+                    **exec_params
+                }, room=agent.AgentId)
+                print(f"[PATCH-NOW] Dispatched immediate TriggerAgentUpdate to agent {agent.AgentId} over Socket.IO")
+            except Exception as e:
+                print(f"[PATCH-NOW] Failed to emit TriggerAgentUpdate: {e}")
     
-    return {"status": "success", "TargetVersion": target, "Message": "Agent will update on next heartbeat."}
+    return {"status": "success", "TargetVersion": target, "Message": "Agent patch dispatched."}
 
 @router.post("/patch-batch")
 async def patch_agents_batch(

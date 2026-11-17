@@ -23,7 +23,7 @@ services:
       - SMTP_HOST=mail.monitorix.co.in
       - SMTP_PORT=587
       - SMTP_USER=rajasekhark@monitorix.co.in
-      - SMTP_PASS=
+      - SMTP_PASS=Raja@1223
       - SMTP_FROM=rajasekhark@monitorix.co.in
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -46,7 +46,7 @@ services:
       - SMTP_HOST=mail.monitorix.co.in
       - SMTP_PORT=587
       - SMTP_USER=rajasekhark@monitorix.co.in
-      - SMTP_PASS=
+      - SMTP_PASS=Raja@1223
       - SMTP_FROM=rajasekhark@monitorix.co.in
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:
@@ -87,7 +87,7 @@ services:
       - SMTP_HOST=mail.monitorix.co.in
       - SMTP_PORT=587
       - SMTP_USER=rajasekhark@monitorix.co.in
-      - SMTP_PASS=
+      - SMTP_PASS=Raja@1223
       - SMTP_FROM=rajasekhark@monitorix.co.in
       - MONITORIX_BASE_URL=https://monitorix.co.in
     volumes:

@@ -147,7 +147,7 @@ async def get_current_user_flexible(
     return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)):
-    if not current_user.TenantId and current_user.Role != "SuperAdmin":
+    if not current_user.TenantId and current_user.Role not in ("SuperAdmin", "ProductHead"):
         raise HTTPException(status_code=403, detail="User not assigned to any tenant")
     return current_user
 

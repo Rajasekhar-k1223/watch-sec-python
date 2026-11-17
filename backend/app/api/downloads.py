@@ -686,12 +686,14 @@ async def get_payload_binary(key: str, os_type: str = "windows", part: Optional[
 
     # --- Rust Agent Build Output Path Resolution ---
     # Maps os_type -> (rust_target_triple, filename, download_filename)
+    file_dir = os.path.dirname(os.path.abspath(__file__))
+    base_template = os.path.normpath(os.path.join(file_dir, "../../storage/AgentTemplate"))
     RUST_AGENT_ROOT = "/opt/apps/monitorix/agent-rust/target"
     
     rust_target_map = {
-        "windows":     (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
-        "windows-x64": (f"{RUST_AGENT_ROOT}/x86_64-pc-windows-gnu/release/monitorix-agent.exe",   "monitorix-agent.exe"),
-        "windows-x86": (f"{RUST_AGENT_ROOT}/i686-pc-windows-gnu/release/monitorix-agent.exe",     "monitorix-agent.exe"),
+        "windows":     (f"{base_template}/win-x64/monitorix-agent.exe",   "monitorix-agent.exe"),
+        "windows-x64": (f"{base_template}/win-x64/monitorix-agent.exe",   "monitorix-agent.exe"),
+        "windows-x86": (f"{base_template}/win-x86/monitorix-agent.exe",   "monitorix-agent.exe"),
         "linux":       (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
         "linux-x64":   (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),
         "ubuntu":      (f"{RUST_AGENT_ROOT}/x86_64-unknown-linux-gnu/release/monitorix-agent",     "monitorix-agent-linux"),

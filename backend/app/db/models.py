@@ -3474,6 +3474,420 @@ class McpToolPolicy(Base):
     server = relationship("McpServer", foreign_keys=[McpServerId], lazy="selectin")
 
 
+# ===========================================================================
+# [v20.0.0] PREDICTIVE RELIABILITY INTELLIGENCE (PRI) — PI-01 TO PI-18 MODELS
+# ===========================================================================
+
+class ProductHeadAssignment(Base):
+    """ABAC scope mapping for Authorized Product Heads (PI-18)."""
+    __tablename__ = "ProductHeadAssignments"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    UserId = Column(Integer, ForeignKey("Users.Id"), nullable=False, index=True)
+    Username = Column(String(150), nullable=False, index=True)
+    ProductScope = Column(String(128), nullable=False, index=True)  # e.g., monitorix-core, monitorix-xdr, monitorix-siem
+    EnvironmentScope = Column(String(64), default="production", index=True)  # production, staging, dr
+    AllowedTenantIdsJson = Column(Text, default="[1]")  # JSON array of integers
+    IsActive = Column(Boolean, default=True, index=True)
+    MfaVerified = Column(Boolean, default=True)
+    AssignedBy = Column(String(150), default="superadmin")
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PredictionModelVersion(Base):
+    """Registry of predictive statistical & ML models, horizons, calibration, and drift state (PI-03..PI-05, PI-10, PI-17)."""
+    __tablename__ = "PredictionModelVersions"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    ModelCode = Column(String(100), nullable=False, index=True)
+    ModelVersion = Column(String(64), unique=True, nullable=False, index=True)
+    AlgorithmFamily = Column(String(100), nullable=False)  # OLS_Forecast, IsolationForest, CalibratedRandomForest, GradientBoosting
+    PredictionTarget = Column(String(150), nullable=False)
+    PredictionHorizonMinutes = Column(Integer, default=120)
+    FeatureDefinitionsJson = Column(Text, default="[]")
+    TrainingMethodology = Column(String(255), default="Temporal Train/Calibration/Test Split with Platt/Isotonic Calibration")
+    ExplainabilityMethod = Column(String(128), default="Gini Feature Importance + Slope Decomposition")
+    PrecisionScore = Column(Float, default=0.0)
+    RecallScore = Column(Float, default=0.0)
+    F1Score = Column(Float, default=0.0)
+    RocAuc = Column(Float, default=0.0)
+    PrAuc = Column(Float, default=0.0)
+    BrierScore = Column(Float, default=0.0)
+    ExpectedCalibrationError = Column(Float, default=0.0)
+    MeanLeadTimeMinutes = Column(Float, default=0.0)
+    DriftScorePsi = Column(Float, default=0.0)
+    DriftStatus = Column(String(50), default="STABLE", index=True)  # STABLE, WARNING, DRIFT_DETECTED, ROLLED_BACK
+    Status = Column(String(50), default="ACTIVE", index=True)  # ACTIVE, SHADOW, DEPRECATED, ROLLED_BACK
+    RollbackVersion = Column(String(64), nullable=True)
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PredictionRecord(Base):
+    """Internal privileged failure prediction record (PI-03..PI-08, PI-15, PI-18). Restricted strictly to SuperAdmin & scoped ProductHead."""
+    __tablename__ = "PredictionRecords"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    PredictionId = Column(String(100), unique=True, nullable=False, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    Environment = Column(String(64), default="production", index=True)
+    AssetOrService = Column(String(200), nullable=False, index=True)
+    FailureCategory = Column(String(100), nullable=False, index=True)  # STORAGE, MEMORY, NETWORK, ISP, SECURITY_TLS, API_GATEWAY, KAFKA, WORKER, DATABASE, EXTERNAL_SAAS
+    ScenarioCode = Column(String(50), nullable=True, index=True)  # e.g., DB-005, KFK-005
+    PredictionType = Column(String(64), default="ADVANCE_PREDICTION", index=True)  # ADVANCE_PREDICTION, EARLY_WARNING, ACTIVE_FAILURE_DETECTION
+    RiskSeverity = Column(String(50), nullable=False, index=True)  # LOW, MEDIUM, HIGH, CRITICAL
+    LifecycleState = Column(String(50), default="ADVISORY", index=True)  # INFORMATIONAL, ADVISORY, ACTION_REQUIRED, SERVICE_DEGRADED, INCIDENT_CONFIRMED, SERVICE_RECOVERED
+    Probability = Column(Float, nullable=False)  # 0.0 to 1.0
+    CalibratedProbability = Column(Float, nullable=False)  # 0.0 to 1.0
+    ConfidenceScore = Column(Float, default=0.85)
+    PredictionHorizonMinutes = Column(Integer, default=120)
+    PredictedFailureWindowStart = Column(DateTime, nullable=True)
+    PredictedFailureWindowEnd = Column(DateTime, nullable=True)
+    TimeToExhaustionMinutes = Column(Float, nullable=True)
+    ModelVersion = Column(String(64), nullable=False, index=True)
+    LikelyRootCause = Column(Text, nullable=False)
+    AttributionType = Column(String(64), default="LIKELY_CAUSE")  # CONFIRMED_OBSERVATION, LIKELY_CAUSE, UNRESOLVED_ATTRIBUTION
+    SupportingEvidenceSummary = Column(Text, default="{}")
+    BusinessImpactEstimate = Column(Text, default="{}")
+    RecommendedInvestigation = Column(Text, default="")
+    CustomerCommunicationIssued = Column(Boolean, default=False)
+    RetentionDays = Column(Integer, default=365)
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PredictionEvidence(Base):
+    """Feature snapshots, derivatives, anomaly scores, and hop telemetry backing a PredictionRecord (PI-02, PI-06)."""
+    __tablename__ = "PredictionEvidences"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    EvidenceId = Column(String(100), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), index=True, nullable=False)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    MetricName = Column(String(150), nullable=False, index=True)
+    ObservedValue = Column(Float, nullable=False)
+    BaselineValue = Column(Float, default=0.0)
+    FirstDerivativeSlope = Column(Float, default=0.0)
+    SecondDerivativeAccel = Column(Float, default=0.0)
+    ZScore = Column(Float, default=0.0)
+    FeatureContributionWeight = Column(Float, default=0.0)
+    RawSnapshotJson = Column(Text, default="{}")
+    CapturedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PredictionEvaluation(Base):
+    """Reconciled prediction outcome record for calibration, precision/recall, Brier score, and lead-time measurement (PI-17)."""
+    __tablename__ = "PredictionEvaluations"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    EvaluationId = Column(String(100), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), index=True, nullable=False)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    AssetOrService = Column(String(200), nullable=False)
+    FailureCategory = Column(String(100), nullable=False, index=True)
+    PredictionTimestamp = Column(DateTime, nullable=False, index=True)
+    Probability = Column(Float, nullable=False)
+    PredictionHorizonMinutes = Column(Integer, nullable=False)
+    ModelVersion = Column(String(64), nullable=False, index=True)
+    FeatureSnapshotRef = Column(String(100), nullable=True)
+    ActualIncidentRef = Column(String(100), nullable=True)
+    ActualFailureTimestamp = Column(DateTime, nullable=True)
+    OutcomeStatus = Column(String(64), nullable=False, index=True)  # TRUE_POSITIVE, FALSE_POSITIVE, TRUE_NEGATIVE, FALSE_NEGATIVE, UNRESOLVED_CENSORED, PREVENTED_BY_INTERVENTION
+    LeadTimeMinutes = Column(Float, nullable=True)
+    BrierContribution = Column(Float, nullable=True)
+    EvaluatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TelemetryTransaction(Base):
+    """End-to-end 13-stage telemetry batch journey tracking record (PI-16)."""
+    __tablename__ = "TelemetryTransactions"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    BatchId = Column(String(128), unique=True, nullable=False, index=True)
+    AgentId = Column(String(128), nullable=False, index=True)
+    TenantId = Column(Integer, nullable=False, index=True, default=1)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    PayloadSha256 = Column(String(64), nullable=False, index=True)
+    GeneratedCount = Column(Integer, default=0)
+    QueuedCount = Column(Integer, default=0)
+    ReceivedCount = Column(Integer, default=0)
+    ProcessedCount = Column(Integer, default=0)
+    PersistedCount = Column(Integer, default=0)
+    DuplicateCount = Column(Integer, default=0)
+    MissingCount = Column(Integer, default=0)
+    DelayedCount = Column(Integer, default=0)
+    CurrentStage = Column(Integer, default=1, index=True)  # 1..13
+    CurrentStageName = Column(String(100), default="TELEMETRY_GENERATED")
+    Status = Column(String(50), default="IN_TRANSIT", index=True)  # IN_TRANSIT, ACKNOWLEDGED, BUFFERED_OFFLINE, FAILED, RETRYING, RECOVERED
+    RetryCount = Column(Integer, default=0)
+    MaxRetries = Column(Integer, default=5)
+    RetryExhausted = Column(Boolean, default=False)
+    EndToEndLatencyMs = Column(Float, default=0.0)
+    KafkaConsumerLag = Column(Integer, default=0)
+    WorkerBacklogCount = Column(Integer, default=0)
+    DatabaseWriteLatencyMs = Column(Float, default=0.0)
+    AgentOfflineDurationSec = Column(Float, default=0.0)
+    BacklogDrainTimeSec = Column(Float, default=0.0)
+    NetworkDiagnosticsJson = Column(Text, default="{}")
+    StartedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    CompletedAt = Column(DateTime, nullable=True)
+
+
+class TelemetryStageAcknowledgement(Base):
+    """Individual stage acknowledgement for Stages 1 through 13 of a TelemetryTransaction (PI-16)."""
+    __tablename__ = "TelemetryStageAcknowledgements"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    BatchId = Column(String(128), nullable=False, index=True)
+    StageNumber = Column(Integer, nullable=False, index=True)  # 1..13
+    StageName = Column(String(100), nullable=False)
+    ComponentName = Column(String(128), nullable=False)
+    Status = Column(String(50), default="COMPLETED", index=True)  # COMPLETED, FAILED, SKIPPED, BUFFERED
+    StageLatencyMs = Column(Float, default=0.0)
+    ItemCountAtStage = Column(Integer, default=0)
+    DiagnosticDetail = Column(Text, default="{}")
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TelemetryDeliveryFailure(Base):
+    """Evidence-based failure localization record when a telemetry batch stalls or fails at a specific hop (PI-16)."""
+    __tablename__ = "TelemetryDeliveryFailures"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    FailureId = Column(String(100), unique=True, nullable=False, index=True)
+    BatchId = Column(String(128), nullable=False, index=True)
+    AgentId = Column(String(128), nullable=False, index=True)
+    TenantId = Column(Integer, nullable=False, index=True, default=1)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    FailureStageNumber = Column(Integer, nullable=False, index=True)
+    FailureStageName = Column(String(100), nullable=False)
+    ScenarioCode = Column(String(50), nullable=True, index=True)
+    FailureCategory = Column(String(100), nullable=False, index=True)
+    ConfirmedObservation = Column(Text, nullable=False)
+    LikelyCause = Column(Text, nullable=False)
+    AttributionStatus = Column(String(64), default="CONFIRMED_OBSERVATION", index=True)  # CONFIRMED_OBSERVATION, LIKELY_CAUSE, UNRESOLVED_ATTRIBUTION
+    HopTelemetryJson = Column(Text, default="{}")
+    RetryAttempt = Column(Integer, default=0)
+    BackoffDelayMs = Column(Integer, default=1000)
+    Recovered = Column(Boolean, default=False, index=True)
+    DetectedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    RecoveredAt = Column(DateTime, nullable=True)
+
+
+class RootCauseFinding(Base):
+    """Multi-layer root-cause correlation finding separating confirmed observations from likely hypotheses (PI-06)."""
+    __tablename__ = "RootCauseFindings"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    FindingId = Column(String(100), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), nullable=True, index=True)
+    BatchId = Column(String(128), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    FaultLayer = Column(String(100), nullable=False, index=True)  # AGENT, LOCAL_NET, SENDER_ISP, TRANSIT, FIREWALL_DNS_TLS, API_GATEWAY, KAFKA, WORKER, DATABASE, EXTERNAL_SAAS
+    ConfirmedObservationsJson = Column(Text, default="[]")
+    LikelyCausesJson = Column(Text, default="[]")
+    UnresolvedFactorsJson = Column(Text, default="[]")
+    AttributionConfidenceType = Column(String(64), default="CONFIRMED_OBSERVATION", index=True)
+    ConfidenceScore = Column(Float, default=0.90)
+    CorrelatedSignalsJson = Column(Text, default="{}")
+    RecommendedRemediation = Column(Text, default="")
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ServiceDependency(Base):
+    """Directed dependency graph mapping internal services, databases, ISPs, and external SaaS providers (PI-11..PI-14)."""
+    __tablename__ = "ServiceDependencies"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    DependencyId = Column(String(100), unique=True, nullable=False, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    UpstreamService = Column(String(150), nullable=False, index=True)
+    UpstreamType = Column(String(64), nullable=False)  # DATABASE, MESSAGE_BUS, EXTERNAL_SAAS, CLOUD_REGION, DNS_PROVIDER, IDENTITY_PROVIDER, ISP_ASN
+    DownstreamService = Column(String(150), nullable=False, index=True)
+    CriticalityTier = Column(String(50), default="CRITICAL")  # CRITICAL, HIGH, MEDIUM, LOW
+    HardDependency = Column(Boolean, default=True)
+    CurrentHealthStatus = Column(String(50), default="HEALTHY", index=True)  # HEALTHY, DEGRADED, OUTAGE
+    LastCheckedAt = Column(DateTime, default=datetime.utcnow)
+
+
+class BusinessImpactAssessment(Base):
+    """Quantified operational and business impact prediction (PI-15)."""
+    __tablename__ = "BusinessImpactAssessments"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    AssessmentId = Column(String(100), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), nullable=True, index=True)
+    IncidentId = Column(String(100), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    ImpactSeverity = Column(String(50), default="HIGH", index=True)  # LOW, MODERATE, HIGH, SEVERE_SLA_RISK
+    AffectedServicesJson = Column(Text, default="[]")
+    AffectedTenantCount = Column(Integer, default=1)
+    EstimatedAffectedEndpoints = Column(Integer, default=0)
+    SlaBreachRiskPct = Column(Float, default=0.0)
+    EstimatedTimeToSlaBreachMinutes = Column(Integer, default=120)
+    OperationalSummary = Column(Text, default="")
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PriNotificationPolicy(Base):
+    """Governance policy controlling internal predictive notifications vs. customer operational notices (PI-18, Section 6)."""
+    __tablename__ = "PriNotificationPolicies"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    PolicyCode = Column(String(100), unique=True, nullable=False, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    AudienceType = Column(String(50), nullable=False, index=True)  # INTERNAL_PRIVILEGED, CUSTOMER_OPERATIONAL
+    AllowedRolesJson = Column(Text, default='["SuperAdmin", "ProductHead"]')
+    AllowedLifecycleStatesJson = Column(Text, default='["ADVISORY", "ACTION_REQUIRED", "SERVICE_DEGRADED", "INCIDENT_CONFIRMED", "SERVICE_RECOVERED"]')
+    EnableEmail = Column(Boolean, default=True)
+    EnableInApp = Column(Boolean, default=True)
+    AllowCustomerAdvisoryOnVerifiedRisk = Column(Boolean, default=False)
+    DeduplicationWindowMinutes = Column(Integer, default=30)
+    MaxRetries = Column(Integer, default=3)
+    EscalationMinutes = Column(Integer, default=15)
+    UpdatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PriNotificationTemplate(Base):
+    """Sanitized templates for internal predictive alerts vs. customer-safe service health communications (Section 6.4)."""
+    __tablename__ = "PriNotificationTemplates"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    TemplateCode = Column(String(100), unique=True, nullable=False, index=True)
+    AudienceType = Column(String(50), nullable=False, index=True)  # INTERNAL_PRIVILEGED, CUSTOMER_OPERATIONAL
+    LifecycleState = Column(String(50), nullable=False, index=True)
+    SubjectTemplate = Column(String(255), nullable=False)
+    BodyHtmlTemplate = Column(Text, nullable=False)
+    InAppPreviewTemplate = Column(String(500), nullable=False)
+    ForbidsPredictiveProbabilities = Column(Boolean, default=True)
+    CreatedAt = Column(DateTime, default=datetime.utcnow)
+
+
+class PriNotificationDelivery(Base):
+    """Centralized notification delivery tracking with idempotency, retries, DLQ, and access verification (Section 6.4)."""
+    __tablename__ = "PriNotificationDeliveries"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    DeliveryId = Column(String(100), unique=True, nullable=False, index=True)
+    IdempotencyKey = Column(String(150), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), nullable=True, index=True)
+    IncidentId = Column(String(100), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    AudienceType = Column(String(50), nullable=False, index=True)  # INTERNAL_PRIVILEGED, CUSTOMER_OPERATIONAL
+    LifecycleState = Column(String(50), nullable=False, index=True)
+    Channel = Column(String(50), nullable=False)  # EMAIL, IN_APP, BOTH
+    RecipientUserId = Column(Integer, nullable=True, index=True)
+    RecipientRole = Column(String(64), nullable=False)
+    RecipientEmail = Column(String(255), nullable=True, index=True)
+    Subject = Column(String(255), nullable=False)
+    BodySafeText = Column(Text, nullable=False)
+    DeliveryStatus = Column(String(50), default="DELIVERED", index=True)  # QUEUED, DELIVERED, RETRYING, DEAD_LETTER, SUPPRESSED_DUPLICATE, BLOCKED_UNAUTHORIZED
+    RetryCount = Column(Integer, default=0)
+    NextRetryAt = Column(DateTime, nullable=True)
+    FailureReason = Column(Text, nullable=True)
+    IsRead = Column(Boolean, default=False)
+    CreatedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    DeliveredAt = Column(DateTime, nullable=True)
+
+
+class PriNotificationAudit(Base):
+    """Immutable audit trail for notification eligibility checks, redaction validation, and delivery outcomes (Section 6.4)."""
+    __tablename__ = "PriNotificationAudits"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    AuditId = Column(String(100), unique=True, nullable=False, index=True)
+    DeliveryId = Column(String(100), nullable=False, index=True)
+    RecipientEmail = Column(String(255), nullable=True)
+    RecipientRole = Column(String(64), nullable=False)
+    AudienceType = Column(String(50), nullable=False)
+    EligibilityVerified = Column(Boolean, default=True)
+    RedactionVerified = Column(Boolean, default=True)
+    PolicyApplied = Column(String(100), nullable=False)
+    ActionTaken = Column(String(100), nullable=False)  # DISPATCHED, BLOCKED_ROLE, DEDUPLICATED, MOVED_TO_DLQ, ESCALATED
+    AuditDetailsJson = Column(Text, default="{}")
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PriIncidentRecord(Base):
+    """Confirmed operational incident record separated from unconfirmed predictions (Section 6.2 & 10)."""
+    __tablename__ = "PriIncidentRecords"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    IncidentId = Column(String(100), unique=True, nullable=False, index=True)
+    OriginPredictionId = Column(String(100), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    AffectedService = Column(String(200), nullable=False)
+    FailureCategory = Column(String(100), nullable=False)
+    LifecycleState = Column(String(50), default="INCIDENT_CONFIRMED", index=True)  # SERVICE_DEGRADED, INCIDENT_CONFIRMED, SERVICE_RECOVERED
+    Severity = Column(String(50), default="HIGH", index=True)
+    OperationalEvidenceVerified = Column(Boolean, default=True)
+    CustomerVisibleImpact = Column(Boolean, default=True)
+    InternalTechnicalSummary = Column(Text, nullable=False)
+    CustomerSafeSummary = Column(Text, nullable=False)
+    RecommendedCustomerAction = Column(Text, nullable=True)
+    IncidentOwner = Column(String(150), default="Monitorix SRE Command")
+    RecoveryVerified = Column(Boolean, default=False)
+    DetectedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    RecoveredAt = Column(DateTime, nullable=True)
+
+
+class IncidentCommunication(Base):
+    """Customer-safe operational communication log (Section 5.3 & 6.2)."""
+    __tablename__ = "IncidentCommunications"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    CommunicationId = Column(String(100), unique=True, nullable=False, index=True)
+    IncidentId = Column(String(100), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=False, index=True)
+    LifecycleState = Column(String(50), nullable=False, index=True)
+    Title = Column(String(255), nullable=False)
+    CustomerSafeMessage = Column(Text, nullable=False)
+    RecommendedAction = Column(Text, nullable=True)
+    ContainsZeroPredictiveDataVerified = Column(Boolean, default=True)
+    ApprovedBy = Column(String(150), default="NotificationGovernancePolicy")
+    PublishedAt = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class RemediationApproval(Base):
+    """Human-in-the-loop approval record for preventive or high-impact remediation actions (PI-09, Section 10)."""
+    __tablename__ = "RemediationApprovals"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    ApprovalId = Column(String(100), unique=True, nullable=False, index=True)
+    PredictionId = Column(String(100), nullable=True, index=True)
+    TenantId = Column(Integer, nullable=True, index=True)
+    ProductScope = Column(String(128), default="monitorix-core", index=True)
+    TargetAsset = Column(String(200), nullable=False)
+    ProposedAction = Column(String(150), nullable=False)  # e.g., PruneDockerCache, RestartService, DatabaseFailover, UpdateFirewallRule
+    RiskTier = Column(String(50), nullable=False, index=True)  # LOW_RISK_AUTO, HIGH_IMPACT_APPROVAL_REQUIRED
+    RequiresExplicitApproval = Column(Boolean, default=True)
+    ApprovalStatus = Column(String(50), default="PENDING_APPROVAL", index=True)  # PENDING_APPROVAL, APPROVED, REJECTED, AUTO_EXECUTED, EXECUTED_VERIFIED, ROLLED_BACK
+    RequestedBy = Column(String(150), default="PredictiveReliabilityEngine")
+    ApprovedBy = Column(String(150), nullable=True)
+    ExecutionResult = Column(Text, nullable=True)
+    PostActionVerified = Column(Boolean, default=False)
+    RequestedAt = Column(DateTime, default=datetime.utcnow, index=True)
+    DecidedAt = Column(DateTime, nullable=True)
+    ExecutedAt = Column(DateTime, nullable=True)
+
+
+class PredictionAccessAudit(Base):
+    """Security audit trail recording all allowed and denied attempts to access predictive intelligence (PI-18, Section 13)."""
+    __tablename__ = "PredictionAccessAudits"
+    Id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    AuditUuid = Column(String(100), unique=True, nullable=False, index=True)
+    UserId = Column(Integer, nullable=True, index=True)
+    Username = Column(String(150), nullable=False, index=True)
+    UserRole = Column(String(64), nullable=False, index=True)
+    UserTenantId = Column(Integer, nullable=True, index=True)
+    RequestedEndpoint = Column(String(255), nullable=False)
+    RequestedProductScope = Column(String(128), nullable=True)
+    RequestedTenantScope = Column(Integer, nullable=True)
+    AccessDecision = Column(String(32), nullable=False, index=True)  # ALLOW, DENY
+    DenialReason = Column(String(255), nullable=True)
+    ClientIp = Column(String(64), default="127.0.0.1")
+    Timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# Canonical Entity Aliases (Section 11 Requirement)
+NotificationPolicy = PriNotificationPolicy
+NotificationDelivery = PriNotificationDelivery
+NotificationTemplate = PriNotificationTemplate
+NotificationAudit = PriNotificationAudit
+IncidentRecord = PriIncidentRecord
+
+
+
 
 
 

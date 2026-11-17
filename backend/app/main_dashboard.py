@@ -21,7 +21,7 @@ from .api import ( # type: ignore
 from .api.v2 import ( # type: ignore
     agentless, agentless_receiver, cloud_visibility, compliance, threat_intel, # type: ignore
     hunting, ransomware, risk, lineage, copilot, detection, dlp, # type: ignore
-    ueba, deception, vault, soar, pki, federation, remote as remote_v2, xdr, correlation, cyber_range, performance_scale, agent_reliability, ha_cluster, security_validation, ai_soc, analyst_console, enterprise_iam_scim, marketplace, soc_ops, saas_global, commercial, commercial_lifecycle, global_platform, autonomous_security, security_intelligence, security_research, global_mdr_mssp, continuous_evolution, itdr, cnapp, easm, waap, dspm, secrets_security, database_security, k8s_security, supply_chain, ndr, platform_protection, malware_analysis, attack_validation, ai_agent_security # type: ignore
+    ueba, deception, vault, soar, pki, federation, remote as remote_v2, xdr, correlation, cyber_range, performance_scale, agent_reliability, ha_cluster, security_validation, ai_soc, analyst_console, enterprise_iam_scim, marketplace, soc_ops, saas_global, commercial, commercial_lifecycle, global_platform, autonomous_security, security_intelligence, security_research, global_mdr_mssp, continuous_evolution, itdr, cnapp, easm, waap, dspm, secrets_security, database_security, k8s_security, supply_chain, ndr, platform_protection, malware_analysis, attack_validation, ai_agent_security, predictive_reliability # type: ignore
 ) # type: ignore
 import asyncio # type: ignore
 
@@ -345,6 +345,7 @@ app.include_router(platform_protection.router, prefix="/api/v2/platform-protecti
 app.include_router(malware_analysis.router, prefix="/api/v2/malware-analysis", tags=["Advanced Malware Analysis & Detonation Sandbox"])
 app.include_router(attack_validation.router, prefix="/api/v2/attack-validation", tags=["Attack-Path Validation & Automated Breach Emulation"])
 app.include_router(ai_agent_security.router, prefix="/api/v2/ai", tags=["Sovereign AI Agent Security & MCP Governance"])
+app.include_router(predictive_reliability.router, prefix="/api/v2/pri", tags=["Predictive Reliability Intelligence (PI-01..PI-18)"])
 
 
 from .core.sanitizer import sanitize_raw_body # type: ignore

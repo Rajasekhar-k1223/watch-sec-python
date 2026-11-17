@@ -482,7 +482,7 @@ plugin_manager.load_api_plugins("app.api.v2")
 
 # [FIX] Manually mount the secondary agent_router since PluginManager only mounts the first router per file
 from .api import agents, sandbox
-from .api.v2 import soc_ops, saas_global, marketplace, commercial, commercial_lifecycle, compliance, global_platform, autonomous_security, security_intelligence, security_research, global_mdr_mssp, continuous_evolution, itdr, cnapp, easm, waap, dspm, secrets_security, database_security, k8s_security, supply_chain, ndr, platform_protection, malware_analysis, attack_validation, ai_agent_security
+from .api.v2 import soc_ops, saas_global, marketplace, commercial, commercial_lifecycle, compliance, global_platform, autonomous_security, security_intelligence, security_research, global_mdr_mssp, continuous_evolution, itdr, cnapp, easm, waap, dspm, secrets_security, database_security, k8s_security, supply_chain, ndr, platform_protection, malware_analysis, attack_validation, ai_agent_security, predictive_reliability
 app.include_router(agents.agent_router, prefix="/api/agent", tags=["Agent Communication"])
 app.include_router(sandbox.router, prefix="/api/sandbox", tags=["Sandbox"])
 app.include_router(soc_ops.router, prefix="/api/v2/soc", tags=["Enterprise SOC & MDR Operations"])
@@ -514,6 +514,7 @@ app.include_router(platform_protection.router, prefix="/api/v2/platform-protecti
 app.include_router(malware_analysis.router, prefix="/api/v2/malware-analysis", tags=["Advanced Malware Analysis & Detonation Sandbox"])
 app.include_router(attack_validation.router, prefix="/api/v2/attack-validation", tags=["Attack-Path Validation & Automated Breach Emulation"])
 app.include_router(ai_agent_security.router, prefix="/api/v2/ai", tags=["Sovereign AI Agent Security & MCP Governance"])
+app.include_router(predictive_reliability.router, prefix="/api/v2/pri", tags=["Predictive Reliability Intelligence (PI-01..PI-18)"])
 
 
 from .core.sanitizer import sanitize_raw_body # type: ignore
