@@ -36,8 +36,8 @@ async def fix_data():
         countries = ["United States", "France", "Germany", "United Kingdom", "Japan"]
         
         for i, a in enumerate(agents):
-            a.Version = "v2.5.0" if i % 2 == 0 else "v2.3.0"
-            a.TargetVersion = "v2.5.0" if i % 2 == 0 else "v2.4.9"
+            a.Version = "v4.2.5"
+            a.TargetVersion = "v4.2.5"
             a.ActiveUser = random.choice(users)
             a.Country = random.choice(countries)
             a.PublicIp = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"

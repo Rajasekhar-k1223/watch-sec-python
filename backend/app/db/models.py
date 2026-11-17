@@ -177,8 +177,8 @@ class Agent(Base):
     UserLoginTime = Column(String(255), default="Unknown")
     
     # Versioning [NEW]
-    Version = Column(String(50), default="v1.2.2")
-    TargetVersion = Column(String(50), default="v1.2.2")
+    Version = Column(String(50), default="v4.2.5")
+    TargetVersion = Column(String(50), default="v4.2.5")
     
     # Telemetry [NEW]
     CpuUsage = Column(Float, default=0.0)

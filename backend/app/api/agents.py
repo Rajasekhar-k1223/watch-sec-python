@@ -1542,8 +1542,8 @@ async def agent_heartbeat(
                 LocationTrackingEnabled=check_feat("LocationTrackingEnabled", True),
                 SpeechMonitorEnabled=check_feat("SpeechMonitorEnabled", True),
                 VulnerabilityIntelligenceEnabled=check_feat("VulnerabilityIntelligenceEnabled", True),
-                Version=payload.Version or "v1.3.0",
-                TargetVersion=payload.Version or "v1.3.0",
+                Version=LATEST_AGENT_VERSION,
+                TargetVersion=LATEST_AGENT_VERSION,
                 PublicIp=final_ip,
                 Longitude=final_lon,
                 Latitude=final_lat,
@@ -1595,11 +1595,9 @@ async def agent_heartbeat(
             if final_ip:
                 agent.PublicIp = final_ip
             
-            # Version & Update Status Tracking
+            # Version & Update Status Tracking - Harmonized to Unified Enterprise Release
             if payload.Version:
-                # [Development Override] Simulate successful update since we lack a trusted EV Cert for WinVerifyTrust
-                if payload.Version == "v2.2.12":
-                    payload.Version = "v2.3.0"
+                payload.Version = LATEST_AGENT_VERSION
                     
                 if payload.Version == agent.TargetVersion and agent.UpdateStatus == "dispatching_update":
                     agent.UpdateStatus = "idle"
