@@ -18,6 +18,7 @@ from typing import Optional # type: ignore
 from ..db.session import get_db # type: ignore
 from ..db.models import Tenant, User # type: ignore
 from .deps import get_current_user # type: ignore
+from ..core.constants import LATEST_AGENT_VERSION # type: ignore
 
 router = APIRouter()
 
@@ -478,7 +479,7 @@ EOF
     $SUDO systemctl daemon-reload 2>/dev/null
     $SUDO systemctl enable monitorix-agent 2>/dev/null
     $SUDO systemctl restart monitorix-agent 2>/dev/null
-    echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.3.0 (Linux) is now running.\033[0m"
+    echo -e "\033[0;32m[SUCCESS] Monitorix Agent {LATEST_AGENT_VERSION} (Linux) is now running.\033[0m"
 
 # Create LaunchAgent (macOS, Source Only)
 elif [ "$(uname)" = "Darwin" ]; then
@@ -555,7 +556,7 @@ EOF
              echo "  cd $dir_name && sudo python3 $(basename $MAIN_SCRIPT)"
         fi
     else
-        echo -e "\033[0;32m[SUCCESS] Monitorix Agent v2.3.0 (macOS) is now running.\033[0m"
+        echo -e "\033[0;32m[SUCCESS] Monitorix Agent {LATEST_AGENT_VERSION} (macOS) is now running.\033[0m"
     fi
 fi
 """
